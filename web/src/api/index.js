@@ -1,0 +1,96 @@
+import http from './http'
+
+export const authApi = {
+  login: (data) => http.post('/auth/login', data),
+  me: () => http.get('/auth/me'),
+  logout: () => http.post('/auth/logout')
+}
+
+export const kbApi = {
+  list: () => http.get('/kb'),
+  create: (data) => http.post('/kb', data),
+  update: (id, data) => http.put(`/kb/${id}`, data),
+  remove: (id) => http.delete(`/kb/${id}`),
+  updateStatus: (id, status) => http.patch(`/kb/${id}/status`, null, { params: { status } })
+}
+
+export const docApi = {
+  upload: (kbId, files) => {
+    const fd = new FormData()
+    files.forEach((f) => fd.append('files', f))
+    return http.post(`/kb/${kbId}/documents`, fd)
+  },
+  list: (kbId) => http.get(`/kb/${kbId}/documents`),
+  remove: (id) => http.delete(`/documents/${id}`),
+  chunks: (id) => http.get(`/documents/${id}/chunks`),
+  retry: (id) => http.post(`/documents/${id}/retry`)
+}
+
+export const modelApi = {
+  list: () => http.get('/models'),
+  create: (data) => http.post('/models', data),
+  update: (id, data) => http.put(`/models/${id}`, data),
+  remove: (id) => http.delete(`/models/${id}`),
+  test: (id) => http.post(`/models/${id}/test`)
+}
+
+export const chatApi = {
+  createSession: (kbId) => http.post('/chat/session', { kbId }),
+  listSessions: () => http.get('/chat/session'),
+  messages: (id) => http.get(`/chat/session/${id}/messages`),
+  ask: (id, question) => http.post(`/chat/session/${id}/ask`, { question }),
+  rename: (id, title) => http.put(`/chat/session/${id}`, { title }),
+  remove: (id) => http.delete(`/chat/session/${id}`)
+}
+
+export const agentApi = {
+  get: (kbId) => http.get(`/kb/${kbId}/agent`),
+  update: (kbId, data) => http.put(`/kb/${kbId}/agent`, data)
+}
+
+export const bkApi = {
+  list: (kbId, status) => http.get(`/kb/${kbId}/business-knowledge`, { params: { status } }),
+  create: (kbId, data) => http.post(`/kb/${kbId}/business-knowledge`, data),
+  update: (id, data) => http.put(`/business-knowledge/${id}`, data),
+  remove: (id) => http.delete(`/business-knowledge/${id}`),
+  approve: (id) => http.post(`/business-knowledge/${id}/approve`),
+  reject: (id) => http.post(`/business-knowledge/${id}/reject`),
+  merge: (id, targetId) => http.post(`/business-knowledge/${id}/merge`, { targetId }),
+  versions: (id) => http.get(`/business-knowledge/${id}/versions`),
+  rollback: (id, version) => http.post(`/business-knowledge/${id}/versions/${version}/rollback`)
+}
+
+export const qaApi = {
+  list: (kbId, status) => http.get(`/kb/${kbId}/qa-pairs`, { params: { status } }),
+  create: (kbId, data) => http.post(`/kb/${kbId}/qa-pairs`, data),
+  update: (id, data) => http.put(`/qa-pairs/${id}`, data),
+  remove: (id) => http.delete(`/qa-pairs/${id}`),
+  approve: (id) => http.post(`/qa-pairs/${id}/approve`),
+  reject: (id) => http.post(`/qa-pairs/${id}/reject`),
+  disable: (id) => http.post(`/qa-pairs/${id}/disable`),
+  enable: (id) => http.post(`/qa-pairs/${id}/enable`),
+  normalize: (id) => http.post(`/qa-pairs/${id}/normalize`),
+  versions: (id) => http.get(`/qa-pairs/${id}/versions`),
+  rollback: (id, version) => http.post(`/qa-pairs/${id}/versions/${version}/rollback`)
+}
+
+export const extractApi = {
+  create: (data) => http.post('/extract/tasks', data),
+  list: () => http.get('/extract/tasks'),
+  get: (id) => http.get(`/extract/tasks/${id}`),
+  results: (id) => http.get(`/extract/tasks/${id}/results`),
+  retry: (id) => http.post(`/extract/tasks/${id}/retry`)
+}
+
+export const workspaceApi = {
+  info: () => http.get('/workspace'),
+  create: (data) => http.post('/workspace', data),
+  rename: (data) => http.put('/workspace', data),
+  deleteWorkspace: () => http.delete('/workspace'),
+  members: () => http.get('/workspace/members'),
+  createMember: (data) => http.post('/workspace/members', data),
+  inviteMember: (data) => http.post('/workspace/members/invite', data),
+  updateRole: (id, role) => http.put(`/workspace/members/${id}/role`, { role }),
+  removeMember: (id) => http.delete(`/workspace/members/${id}`),
+  transferOwnership: (memberId) => http.post('/workspace/owner/transfer', { memberId })
+}

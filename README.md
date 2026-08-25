@@ -1,0 +1,203 @@
+# SeuKnowledge 知识库与智能问答平台
+
+通用型知识库与智能问答平台：知识资产统一管理 + 基于知识库证据的、可追溯的多节点智能问答。文档 / 业务知识 / 问答对统一入库，问答走 8 节点状态图（意图路由 → 问题改写 → 多源召回 → 交叉编码器精排 → 答案生成 → 自检 → 重试兜底），全程 SSE 流式输出并附证据引用。
+
+## 功能亮点
+
+- **多工作空间与角色权限**：一个用户可属于多个工作空间，四角色（拥有者 / 管理员 / 编辑者 / 普通成员），所有数据按空间隔离
+- **知识库与文档管理**：.txt/.md/.pdf/.docx/.pptx 上传 → 自动解析分块 → 向量化入 Elasticsearch
+- **模型配置**：DashScope + OpenAI 兼容双供应商，按用途绑定（生成 / 抽取 / 检索 / 识图 / 重排 / 自检 / 标题 / 路由），按工作空间隔离，支持连通性测试
+- **智能问答**：多源召回（文档 chunk + 业务知识 + 问答对）+ 交叉编码器精排 + 自检重试，答案带 [1][2] 证据引用
+- **AI 抽取**：自动抽取业务知识（术语/别名/定义/…）与问答对，人工审核 + 启用/禁用 + 版本回退
+- **可观测性**：OpenTelemetry Trace → Langfuse 可视化，含 LLM token 统计
+
+## 技术栈
+
+| 层 | 技术 |
+|---|---|
+| 后端 | Java 21、Spring Boot 3.5、Spring AI 1.1（spring-ai-alibaba graph-core 状态图） |
+| 数据 | MySQL 8（业务数据）、Elasticsearch 8（向量与混合检索 BM25+knn+RRF）、Redis（登录态 / 缓存 / 任务进度） |
+| 前端 | Vue 3 + Vite + Pinia + Element Plus |
+| 模型 | DashScope（通义千问 / text-embedding / qwen-vl / gte-rerank）+ OpenAI 兼容（DeepSeek / ollama / one-api 等） |
+| 可观测性 | OpenTelemetry SDK + OTLP → Langfuse（未配置自动 no-op） |
+
+---
+
+## 快速开始（在全新机器上部署）
+
+以下按"从零开始在一台新机器上运行本系统"的顺序说明，**每一步的依赖与配置项均为必读**。
+
+### 1. 前置软件
+
+| 依赖 | 版本要求 | 用途 | 说明 |
+|---|---|---|---|
+| JDK | **21** | 编译 / 运行后端 | 本项目使用 Java 21 特性（虚拟线程等），低于 21 无法编译 |
+| Maven | 3.8+ | 构建后端 | 无 Maven 也可用仓库自带的 `mvnw` / `mvnw.cmd`（自动下载） |
+| Node.js | 18+ | 构建 / 运行前端 | 含 npm |
+| MySQL | 8.x | 业务数据 | 库名默认 `seuknowledge`，**启动时自动创建**；表结构由 JPA 自动维护，无需手工建表 |
+| Elasticsearch | 8.x | chunk 向量与混合检索 | **启动时自动创建 `kb_chunk` 索引**（默认 1024 维）；需安装中文分词插件，见下文 |
+| Redis | 7.x | 登录态 / 缓存 / 任务进度 | **可选**——未启动时应用自动降级直连 DB，功能不受影响（fail-open） |
+
+> Elasticsearch 中文分词插件（必装，版本必须与 ES 完全一致，装后重启 ES）：
+>
+> ```bash
+> bin/elasticsearch-plugin install analysis-smartcn
+> ```
+
+### 2. 克隆代码并准备配置
+
+```bash
+git clone <你的仓库地址> seuknowledge
+cd seuknowledge
+```
+
+后端所有配置集中在 `src/main/resources/application.yml`，**全部支持环境变量覆盖**（推荐部署方式，密钥不入库、不入日志）。
+
+**必填环境变量（不设置将无法启动）**：
+
+| 环境变量 | 示例值 | 说明 |
+|---|---|---|
+| `MYSQL_PASSWORD` | `your-mysql-password` | MySQL 密码（**无默认值，必填**） |
+| `ES_URIS` | `http://localhost:9200` | Elasticsearch 地址（默认 `http://localhost:9200`，如 ES 在远程请务必设置） |
+
+**常用可选环境变量**：
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_DB` | 127.0.0.1 / 3306 / seuknowledge | MySQL 地址 / 端口 / 库名 |
+| `MYSQL_USER` | root | MySQL 账号 |
+| `ES_USERNAME` / `ES_PASSWORD` | 空 | ES 认证（如开启） |
+| `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` / `REDIS_DATABASE` | 127.0.0.1 / 6379 / 空 / 0 | Redis 连接 |
+| `SERVER_PORT` | 18080 | 后端端口 |
+| `LLAMA_CLOUD_API_KEY` | 空 | LlamaParse API Key（敏感，建议环境变量注入） |
+| `LANGFUSE_OTEL_ENDPOINT` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | 空 | Langfuse 追踪（可选，不配置自动 no-op） |
+
+> 完整键清单（功能类参数如分块大小、重排配额、限流、缓存 TTL 等）见 `application.yml` 的 `seuknowledge.*` 段，均带默认值，按需调整即可。
+
+### 3. 数据库初始化（可选：手工预建）
+
+应用默认在启动时自动建表（JPA `ddl-auto: update`）并创建内置默认账号，**通常无需手工建库**；也可选择手工预建：
+
+```bash
+mysql -uroot -p < sql/schema.sql
+```
+
+`sql/schema.sql` 为 Hibernate schema export 导出的 **13 张表结构 + 内置默认账号种子**（admin 的 BCrypt 哈希、默认工作空间及其 OWNER 成员关系），**不含任何个人/业务数据**，可重复执行（`IF NOT EXISTS` + `INSERT IGNORE`）；预建后应用启动会自动跳过已存在的账号。Elasticsearch 的 `kb_chunk` 索引由应用启动时程序化创建，无需手工建。
+
+### 4. 配置模型服务（必配，否则问答/抽取不可用）
+
+系统不绑定具体模型厂商：文本与向量模型是问答/抽取的基础，通过 **DashScope（阿里云百炼）** 或任意 **OpenAI 兼容服务**（DeepSeek、ollama、one-api、SiliconFlow 等）提供。
+
+**模型类型与用途**：
+
+| 模型类型 | 用途 | 必配？ | 说明 |
+|---|---|---|---|
+| CHAT | GENERATE（答案生成/抽取/闲聊）/ VERIFY（自检校验）/ ROUTER（意图路由/问题改写）/ TITLE（会话标题概括） | **必配**（至少 GENERATE） | 文本模型；不同用途可绑不同模型（如生成用大模型、自检/路由用小模型以省成本），未绑定时回退通用配置 |
+| EMBEDDING | RETRIEVE（向量检索） | **必配** | 向量模型，维度需与 `KB_ES_DIMENSIONS`（默认 1024）一致 |
+| VISION | VISION（PDF/PPTX 图片页与扫描页转写） | 可选 | 识图模型 |
+| RERANK | RERANK（交叉编码器精排） | 可选 | 重排模型 |
+| TITLE | TITLE（会话标题概括） | 可选 | 未配置时回退 CHAT GENERATE |
+
+**配置步骤**（登录后在「模型配置」页操作）：
+
+1. 新建「文本模型 CHAT」：选供应商（DASHSCOPE / OPENAI_COMPAT）→ 填模型名（如 `deepseek-chat`）→ 填 Base URL（OPENAI_COMPAT 填服务根地址，**不要带 `/v1`**，系统自动拼接）→ 填 API Key → 勾选用途（GENERATE，可同时绑 VERIFY/ROUTER/TITLE 或另建条目）→ 设为默认
+2. 新建「向量模型 EMBEDDING」：如 DashScope `text-embedding-v4` 或 OpenAI 兼容服务
+3. 可选：VISION 识图模型（PDF 扫描页）、RERANK 重排模型（精排质量，如 `gte-rerank-v2`）
+4. 每条配置点击**连通性测试**，通过后保存
+
+**API Key 安全约定**：模型配置页的 `apiKey` 填 `env:环境变量名` 引用真实 Key（如 `env:ALIBABA_API_KEY`），真实 Key 通过环境变量注入，**不落库、不落日志、不外传**。
+
+### 5. 启动后端
+
+```bash
+# Linux / macOS
+MYSQL_PASSWORD=xxx ES_URIS=http://localhost:9200 ./mvnw spring-boot:run
+
+# Windows PowerShell
+$env:MYSQL_PASSWORD='xxx'; $env:ES_URIS='http://localhost:9200'; .\mvnw.cmd spring-boot:run
+```
+
+- 默认端口 **18080**（可用 `SERVER_PORT` 覆盖）；Swagger UI：`http://localhost:18080/swagger-ui.html`
+- 首次启动自动创建内置管理员账号（默认账号与角色见下文）
+
+### 6. 启动前端
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+- 默认端口 **5173**，`/api` 已代理到后端 18080（可用 `VITE_PROXY_TARGET` 覆盖）
+- 浏览器访问 `http://localhost:5173`
+
+### 7. 默认账号与角色
+
+- **系统内置账号**：`admin / admin123`（系统管理员 ADMIN，默认工作空间拥有者 OWNER）。初始用户名/密码可用 `seuknowledge.security.admin-username` / `admin-password` 配置覆盖，登录后亦可修改；**生产环境请修改默认密码**。
+- **工作空间角色（OWNER / ADMIN / EDITOR / MEMBER）**：非独立登录账号，由拥有者/管理员在「成员管理」中分配——「创建新账号」时初始密码由邀请者设置，「邀请已有用户」沿用其原账号。
+- 手工预建数据库（执行 `sql/schema.sql`）后，可直接用 `admin/admin123` 登录。
+
+### 8. 首次使用流程
+
+1. 登录（admin/admin123）→ 新建或切换工作空间
+2. **模型配置**：配置文本 + 向量模型（apiKey 建议 `env:` 引用）并执行**连通性测试**；（可选）配置识图 / 重排模型
+3. 建知识库 → 上传文档（自动解析、分块、向量化）
+4. （可选）AI 抽取：对文档创建抽取任务 → 在业务知识 / 问答对页审核草稿
+5. 智能问答：选择知识库提问，答案流式输出并附证据引用
+
+---
+
+## 配置参考（完整环境变量表）
+
+### 连接类
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_DB` | 127.0.0.1 / 3306 / seuknowledge | MySQL 地址 / 端口 / 库名 |
+| `MYSQL_USER` / `MYSQL_PASSWORD` | root / —（必填） | MySQL 账号密码 |
+| `ES_URIS` | http://localhost:9200 | ES 地址 |
+| `ES_USERNAME` / `ES_PASSWORD` | 空 | ES 认证（如开启） |
+| `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` / `REDIS_DATABASE` | 127.0.0.1 / 6379 / 空 / 0 | Redis 连接 |
+| `LLAMA_CLOUD_API_KEY` | 空 | LlamaParse API Key（敏感，建议环境变量注入） |
+| `LANGFUSE_OTEL_ENDPOINT` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | 空 | Langfuse 追踪（可选） |
+
+### 功能类（有默认值，按需调整）
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `SERVER_PORT` | 18080 | 后端端口 |
+| `KB_TOKEN_TTL` | 604800 | 登录 token 有效期（秒） |
+| `KB_CACHE_MEMBER_TTL` / `KB_CACHE_MODEL_TTL` / `KB_CACHE_AGENT_TTL` / `KB_CACHE_KB_TTL` / `KB_CACHE_KB_COUNT_TTL` / `KB_CACHE_SESSION_TTL` / `KB_CACHE_HISTORY_TTL` / `KB_CACHE_TASK_TTL` | 300 / 600 / 600 / 300 / 300 / 60 / 600 / 86400 | 各类缓存 TTL（秒） |
+| `KB_RATE_LIMIT_ENABLED` / `KB_RATE_LIMIT_ASK_PER_MINUTE` | false / 30 | 问答限流开关与每用户每分钟上限 |
+| `KB_FILE_STORAGE_PATH` | ./data/files | 文档存储目录 |
+| `KB_FILE_MAX_SIZE` | 20971520 (20MB) | 单文件大小上限（字节，与 multipart 上限对齐；上传超大文件需调大） |
+| `KB_QA_MESSAGE_WINDOW` / `KB_QA_MAX_RETRY` | 20 / 2 | 对话记忆窗口条数 / 自检重试上限 |
+| `KB_RERANK_CHUNK_TOP` / `KB_RERANK_OTHER_TOP` | 4 / 4 | 精排配额（文档 chunk / 业务知识+问答对合并；**重排模型本身在模型配置页配置**） |
+| `KB_RERANK_MAX_DOCS` / `KB_RERANK_MAX_CHARS` / `KB_RERANK_TIMEOUT_MS` | 20 / 1500 / 10000 | 精排单请求上限 / 单条截断 / 超时（超时自动降级 ES 分） |
+| `KB_CHUNK_SIZE` / `KB_CHUNK_OVERLAP` | 800 / 120 | 文档分块大小（字符）与重叠（标题感知分块） |
+| `KB_VISION_PARSING` | true | PDF 识图总开关（需配置 VISION 类型模型） |
+| `KB_VISION_AUTO` / `KB_VISION_MIN_TEXT` / `KB_VISION_DPI` / `KB_VISION_PARALLEL` | true / 50 / 100 / 3 | 按需识图开关 / 扫描页判定阈值 / 渲染分辨率 / 并行度 |
+| `KB_LLAMAPARSE_ENABLED` / `KB_LLAMAPARSE_TIER` / `KB_LLAMAPARSE_LANGUAGE` | false / cost_effective / ch_sim | LlamaParse 开关 / 档位 / OCR 语言 |
+| `KB_LLAMAPARSE_TAKE_SCREENSHOT` / `KB_LLAMAPARSE_FILL_MISSING_PAGES` | true / true | 整页截图返回 / 缺页 VLM 补全（后者需 VISION 模型） |
+| `KB_ES_INDEX` / `KB_ES_DIMENSIONS` | kb_chunk / 1024 | ES 索引名与向量维度（**改维度需重建索引**） |
+| `KB_ASYNC_CORE_SIZE` / `KB_ASYNC_MAX_SIZE` / `KB_ASYNC_QUEUE_CAPACITY` | 8 / 32 / 256 | 通用异步线程池 |
+| `KB_TRACING_ENABLED` | true | OpenTelemetry 追踪总开关 |
+| `LOG_LEVEL_LLM` | debug | LLM I/O 调试日志级别（含 prompt/输出等敏感内容，生产建议 `info`） |
+| `ACCESS_LOG_ENABLED` | true | Tomcat HTTP 访问日志开关 |
+
+> 完整键清单见 `application.yml` 的 `seuknowledge.*` 段。
+
+---
+
+## 日志
+
+- **输出位置**：控制台 + `logs/app.log`（INFO，按日期+大小自动轮转，保留 14 天）；LLM 调用详情（prompt/输出/耗时/token）独立写入 `logs/llm.log`（DEBUG，含知识库内容，**生产建议设置 `LOG_LEVEL_LLM=info`**）；HTTP 访问日志 `logs/access.*.log`（`ACCESS_LOG_ENABLED=false` 可关）。`logs/` 不入库
+- **上下文关联**：每条日志携带 `requestId / userId / workspaceId / sessionId`（异步任务自动继承）。排查一次问答：`grep "<requestId>" logs/app.log` 即可串起改写→召回→精排→生成→校验全链路；`logs/llm.log` 可查看每次模型调用的 prompt 与原始输出
+
+## 测试
+
+```bash
+mvn test
+```
+
+当前 **39 个测试类、306 个用例全绿**（分块器、文档解析、模型解析、模型配置、知识库、会话、抽取任务、多工作空间成员管理、重排客户端/节点、标题生成等）。

@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  日志配置：控制台 + 文件（logs/app.log，按日期+大小轮转）+ LLM I/O 专用（logs/llm.log）。
+  - pattern 输出 MDC 上下文：requestId / userId / workspaceId / sessionId（无值显示 -）
+  - com.ai.konwledgerepo.llm 独立文件且 additivity=false：LLM prompt/输出属敏感内容，
+    不与业务日志混写；生产可经 LOG_LEVEL_LLM=info 关闭
+  - 文件路径相对进程工作目录（user.dir），即项目根 logs/
+-->
+<configuration>
+
+    <property name="LOG_PATTERN"
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %X{requestId:-} %X{userId:-} %X{workspaceId:-} %X{sessionId:-} %logger{40} - %msg%n"/>
+    <property name="LLM_PATTERN"
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %X{requestId:-} %X{userId:-} %X{workspaceId:-} %X{sessionId:-} %msg%n"/>
+
+    <!-- 控制台 -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!-- 业务日志：logs/app.log（INFO 起，按日期+大小轮转，保留 14 天，总量上限 1GB） -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/app.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>logs/app.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>50MB</maxFileSize>
+            <maxHistory>14</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!-- LLM I/O 调试日志：logs/llm.log（prompt/输出/耗时/token，独立轮转，总量上限 2GB） -->
+    <appender name="LLM_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/llm.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>logs/llm.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>50MB</maxFileSize>
+            <maxHistory>14</maxHistory>
+            <totalSizeCap>2GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${LLM_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <logger name="com.ai.konwledgerepo.llm" level="DEBUG" additivity="false">
+        <appender-ref ref="LLM_FILE"/>
+    </logger>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="FILE"/>
+    </root>
+
+</configuration>

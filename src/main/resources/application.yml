@@ -1,0 +1,144 @@
+spring:
+  application:
+    name: SeuKnowledge
+
+  # ===== 虚拟线程（Spring Boot 3.2+）：Tomcat 请求线程虚拟线程化，阻塞让出载体线程 =====
+  threads:
+    virtual:
+      enabled: ${KB_VIRTUAL_THREADS:true}
+
+  # ===== MySQL（业务数据，默认本机 3306，密码必填）=====
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:127.0.0.1}:${MYSQL_PORT:3306}/${MYSQL_DB:seuknowledge}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false&createDatabaseIfNotExist=true
+    username: ${MYSQL_USER:root}
+    password: ${MYSQL_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+        format_sql: true
+
+  # ===== Elasticsearch（chunk 向量检索，默认本机 9200，无密码）=====
+  elasticsearch:
+    uris: ${ES_URIS:http://localhost:9200}
+    username: ${ES_USERNAME:}
+    password: ${ES_PASSWORD:}
+
+  # ===== Redis（登录态 / 缓存 / 任务进度；默认本机 6379 无密码）=====
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      timeout: ${REDIS_TIMEOUT:2s}
+      lettuce:
+        pool:
+          max-active: ${REDIS_POOL_MAX_ACTIVE:16}
+          max-idle: 8
+          min-idle: 2
+
+  # ===== 文件上传限制（建议默认上限 20MB，可配置）=====
+  servlet:
+    multipart:
+      max-file-size: ${KB_FILE_MAX_SIZE:20MB}
+      max-request-size: ${KB_REQUEST_MAX_SIZE:100MB}
+
+# ===== 内嵌容器（Tomcat 访问日志，零代码）=====
+server:
+  # 端口约定：18080 为本机开发约定端口（8080 属 Windows 保留端口段，曾致前后端端口不对应），
+  # 与前端 vite 代理默认目标对齐（web/vite.config.js）；可用环境变量 SERVER_PORT 覆盖
+  port: ${SERVER_PORT:18080}
+  tomcat:
+    accesslog:
+      enabled: ${ACCESS_LOG_ENABLED:true}   # HTTP 访问日志开关（写入 logs/ 目录）
+      directory: ${user.dir}/logs           # Tomcat 相对路径基于临时目录，显式指向工作目录下 logs/
+      prefix: access
+      suffix: .log
+      pattern: '%h %l %u [%{yyyy-MM-dd HH:mm:ss.SSS}t] "%r" %s %b %D ms'
+
+# ===== API 文档 =====
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+# ===== SeuKnowledge 自定义配置 =====
+seuknowledge:
+  security:
+    token-ttl-seconds: ${KB_TOKEN_TTL:604800}   # 登录 token 有效期（秒），默认 7 天
+  cache:
+    member-ttl-seconds: ${KB_CACHE_MEMBER_TTL:300}     # 用户→工作空间角色缓存
+    model-ttl-seconds: ${KB_CACHE_MODEL_TTL:600}       # 模型配置解析缓存
+    agent-ttl-seconds: ${KB_CACHE_AGENT_TTL:600}       # Agent 配置快照缓存
+    kb-ttl-seconds: ${KB_CACHE_KB_TTL:300}             # 知识库快照缓存
+    kb-count-ttl-seconds: ${KB_CACHE_KB_COUNT_TTL:300} # 知识库文档计数缓存
+    kb-list-ttl-seconds: ${KB_CACHE_KB_LIST_TTL:60}    # 知识库列表缓存（独立键，勿与会话 TTL 混用）
+    session-ttl-seconds: ${KB_CACHE_SESSION_TTL:60}    # 会话列表/消息缓存
+    history-ttl-seconds: ${KB_CACHE_HISTORY_TTL:600}   # 会话记忆窗口缓存
+    task-ttl-seconds: ${KB_CACHE_TASK_TTL:86400}       # 抽取任务进度缓存
+  rate-limit:
+    enabled: ${KB_RATE_LIMIT_ENABLED:false}            # /ask 限流总开关（默认关闭）
+    ask-per-minute: ${KB_RATE_LIMIT_ASK_PER_MINUTE:30} # 每用户每分钟最大问答次数
+  file:
+    storage-path: ${KB_FILE_STORAGE_PATH:./data/files}
+    max-size: ${KB_FILE_MAX_SIZE:20971520}   # 单文件大小上限（字节，默认 20MB；与 spring.servlet.multipart.max-file-size 对齐，测试大文件可调大）
+  qa:
+    message-window: ${KB_QA_MESSAGE_WINDOW:20}   # 对话记忆窗口条数
+    max-retry: ${KB_QA_MAX_RETRY:2}              # 自检重试上限
+    concurrency-limit: ${KB_CONCURRENCY_LIMIT:32}           # QA 链路全局并发上限（公平信号量，超限排队等待或超时）
+    concurrency-timeout-seconds: ${KB_CONCURRENCY_TIMEOUT:30} # 信号量等待超时秒数（超时拒答"系统繁忙"）
+    parallel: ${KB_QA_PARALLEL:true}                        # 节点内并行开关（false 回退串行，供 A/B 对比）
+  document:
+    vision-parsing: ${KB_VISION_PARSING:true}    # PDF 解析是否启用识图模型 OCR/描述（需配置 VISION 类型模型）
+    vision-auto: ${KB_VISION_AUTO:true}          # 按需识图：纯文字页跳过识图，仅图片页/扫描页调用识图模型（false=每页识图）
+    vision-min-text: ${KB_VISION_MIN_TEXT:50}    # 页文本字符数低于此值视为扫描页（即使检测不到图片也识图）
+    vision-dpi: ${KB_VISION_DPI:100}             # 页面渲染分辨率（降低可显著减少识图延迟与超时；默认 100）
+    vision-parallel: ${KB_VISION_PARALLEL:3}     # 识图并行度（仅 LLM 调用进线程池，渲染仍在主线程；≤1 走串行）
+    chunk-size: ${KB_CHUNK_SIZE:800}              # 分块大小（字符）：标题感知分块，超长段落按句切分
+    chunk-overlap: ${KB_CHUNK_OVERLAP:120}         # 分块间重叠字符数（上下文衔接，自动限制不超过 chunk-size/2）
+    llamaparse:                                     # LlamaParse 云端解析（pdf/docx → Markdown → 递归分块）
+      enabled: ${KB_LLAMAPARSE_ENABLED:false}       # 总开关（默认关；启用后 pdf 优先走云端，失败回退 PDFBox）
+      api-key: ${LLAMA_CLOUD_API_KEY:}              # LlamaParse API Key（cloud.llamaindex.ai 控制台，敏感信息建议环境变量注入）
+      base-url: ${KB_LLAMAPARSE_BASE_URL:https://api.cloud.llamaindex.ai}
+      tier: ${KB_LLAMAPARSE_TIER:cost_effective}    # fast/cost_effective/agentic/agentic_plus（markdown 输出需 cost_effective 起）
+      version: ${KB_LLAMAPARSE_VERSION:latest}      # tier 对应的解析器版本（cost_effective 必须显式指定，默认 latest）
+      language: ${KB_LLAMAPARSE_LANGUAGE:ch_sim}    # OCR 语言（简体中文 ch_sim / 繁体 ch_tra / 英文 en 等，可逗号分隔多个）
+      poll-interval-seconds: ${KB_LLAMAPARSE_POLL_INTERVAL:5}   # 任务轮询间隔
+      max-poll-seconds: ${KB_LLAMAPARSE_MAX_POLL:900}           # 任务最大等待时间（超时抛错，pdf 回退）
+      parsing-instruction: ${KB_LLAMAPARSE_INSTRUCTION:}        # 解析指令（留空用官方默认）
+      take-screenshot: ${KB_LLAMAPARSE_TAKE_SCREENSHOT:true}    # 返回每页整页截图（本地下载按需：仅 PPTX 文字较少页（md 为空/< vision-min-text）下载，PDF 路径不下载）
+      fill-missing-pages: ${KB_LLAMAPARSE_FILL_MISSING_PAGES:true} # 缺页补全：LlamaParse 结果缺页时用识图模型转写 Markdown 并入 md 流（需配置 VISION 类型模型）
+      output-dir: ${KB_LLAMAPARSE_OUTPUT_DIR:./data/llamaparse} # 转换结果 Markdown 导出目录（便于检查转化效果，可为空禁用）
+  recall:                                         # 知识召回策略参数：每查询每来源召回多少条进精排候选
+    chunk-top: ${KB_RECALL_CHUNK_TOP:15}          # 文档 chunk 每查询召回条数（进精排候选）
+    source-top: ${KB_RECALL_SOURCE_TOP:8}         # 业务知识/问答对各每查询召回条数（进精排候选）
+  rerank:                                         # 交叉编码器精排策略参数（重排模型本身在模型配置页配置：model_type=RERANK）
+    chunk-top: ${KB_RERANK_CHUNK_TOP:6}           # 精排后 CHUNK（文档 chunk）配额
+    other-top: ${KB_RERANK_OTHER_TOP:4}           # 精排后业务知识+问答对合并配额（共 other-top 条）
+    max-docs: ${KB_RERANK_MAX_DOCS:20}            # 单次请求 documents 上限（官网单次输入 30K token，20×800 字符≈16K 字符留安全余量）
+    max-chars-per-doc: ${KB_RERANK_MAX_CHARS:1500} # 单条 document 截断字符数（防超长）
+    timeout-ms: ${KB_RERANK_TIMEOUT_MS:10000}     # 编码器调用超时（超时/异常触发降级）
+  async:
+    core-size: ${KB_ASYNC_CORE_SIZE:8}             # 通用 @Async 池（解析/抽取/流式问答）核心线程数
+    max-size: ${KB_ASYNC_MAX_SIZE:32}              # 通用 @Async 池最大线程数
+    queue-capacity: ${KB_ASYNC_QUEUE_CAPACITY:256} # 通用 @Async 池队列容量（满时 CallerRuns 兜底执行）
+  es:
+    index-name: ${KB_ES_INDEX:kb_chunk}          # 向量索引名（chunk/业务知识/问答对多源共用）
+    vector-dimensions: ${KB_ES_DIMENSIONS:1024}  # 向量维度（通义 text-embedding-v3=1024；OpenAI 3-small=1536）
+  tracing:
+    enabled: ${KB_TRACING_ENABLED:true}          # OpenTelemetry 追踪总开关（无 key 时自动降级 no-op）
+    endpoint: ${LANGFUSE_OTEL_ENDPOINT:https://cloud.langfuse.com/api/public/otel/v1/traces}  # Langfuse OTLP 摄取端点（Cloud 需带 /v1/traces；自托管为 /api/public/otel）
+    service-name: seuknowledge                   # 服务名（Langfuse 中项目内区分）
+    langfuse-public-key: ${LANGFUSE_PUBLIC_KEY:} # Langfuse Public Key
+    langfuse-secret-key: ${LANGFUSE_SECRET_KEY:} # Langfuse Secret Key（敏感，建议环境变量注入）
+
+logging:
+  level:
+    com.ai.konwledgerepo: debug
+    com.ai.konwledgerepo.llm: ${LOG_LEVEL_LLM:debug}   # LLM I/O 调试日志（logs/llm.log），含 prompt/输出等敏感内容，生产建议 info

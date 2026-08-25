@@ -1,0 +1,74 @@
+package com.ai.konwledgerepo.service.chat;
+
+import com.ai.konwledgerepo.common.BizException;
+import com.ai.konwledgerepo.common.RedisCacheService;
+import com.ai.konwledgerepo.common.RedisKeys;
+import com.ai.konwledgerepo.entity.ChatMessage;
+import com.ai.konwledgerepo.entity.ChatSession;
+import com.ai.konwledgerepo.entity.MessageRole;
+import com.ai.konwledgerepo.repository.ChatMessageRepository;
+import com.ai.konwledgerepo.repository.ChatSessionRepository;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+/**
+ * 消息落库域：问答后统一持久化（消息 + 会话状态 + 标题），事务边界唯一承载点。
+ * 同步 ask 与流式 ask 共用，保证「消息与会话持久化原子完成、历史一致」。
+ */
+@Service
+public class ChatMessageStore {
+
+    private final ChatMessageRepository messageRepository;
+    private final ChatSessionRepository sessionRepository;
+    private final RedisCacheService redisCacheService;
+    private final ChatHistoryService historyService;
+    private final ChatSessionService sessionService;
+
+    public ChatMessageStore(ChatMessageRepository messageRepository,
+                            ChatSessionRepository sessionRepository,
+                            RedisCacheService redisCacheService,
+                            ChatHistoryService historyService,
+                            ChatSessionService sessionService) {
+        this.messageRepository = messageRepository;
+        this.sessionRepository = sessionRepository;
+        this.redisCacheService = redisCacheService;
+        this.historyService = historyService;
+        this.sessionService = sessionService;
+    }
+
+    /**
+     * 问答后统一落库：用户/助手消息 + 会话状态（消息数/最后时间），并失效会话列表缓存。
+     * <p>
+     * 标题生成已迁移至 {@link SessionTitleService}（异步补写），本方法不再处理标题。
+     * <p>
+     * 并发安全：事务内先对会话行加悲观锁（SELECT ... FOR UPDATE，见
+     * {@link ChatSessionRepository#findByIdForUpdate}），使同一会话的落库严格串行——
+     * 后到事务在锁查询处排队，读到前者已提交状态后正确累计，消息写入顺序严格交替；
+     * 跨会话行互不阻塞，保持并行。锁持有时间仅为落库事务时长（毫秒级）。
+     */
+    @Transactional
+    public void persistAnswer(ChatSession session, Long userId, String question, String answer, String refs,
+                              Long workspaceId) {
+        // 悲观锁 + 当前读：以锁查询的最新实体为准，防止并发读-改-写丢失更新
+        ChatSession locked = sessionRepository.findByIdForUpdate(session.getId())
+                .orElseThrow(() -> new BizException("会话不存在或已删除"));
+        saveMessage(locked.getId(), MessageRole.USER.value(), question, null);
+        saveMessage(locked.getId(), MessageRole.ASSISTANT.value(), answer, refs);
+        locked.setMessageCount(locked.getMessageCount() + 2);
+        locked.setLastMessageAt(java.time.LocalDateTime.now());
+        sessionRepository.save(locked);
+        sessionService.evictSessionList(userId, workspaceId);
+    }
+
+    /** 保存单条消息：落库 + 追加会话记忆缓存 + 失效消息列表缓存 */
+    public void saveMessage(Long sessionId, String role, String content, String refs) {
+        ChatMessage message = new ChatMessage();
+        message.setSessionId(sessionId);
+        message.setRole(role);
+        message.setContent(content);
+        message.setRefs(refs);
+        messageRepository.save(message);
+        historyService.appendHistory(sessionId, role, content);
+        redisCacheService.delete(RedisKeys.messages(sessionId));
+    }
+}

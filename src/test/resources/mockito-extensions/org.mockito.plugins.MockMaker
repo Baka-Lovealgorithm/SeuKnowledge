@@ -1,0 +1,4 @@
+# 本环境 JDK 21 无法完成 inline mock maker 的 agent 附加（attach 被限制），
+# 切换到 subclass mock maker（无需 agent attach）。
+# 约束：不可 mock 静态方法/final 类/构造器 —— 当前测试集均不涉及，满足要求。
+mock-maker-subclass

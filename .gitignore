@@ -1,0 +1,62 @@
+HELP.md
+target/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+### Node / 前端构建产物 ###
+web/node_modules/
+web/dist/
+web/*.log
+web/vite-dev.log
+
+### 运行时数据（上传文件 / LlamaParse 导出 / 日志等，不入库）###
+data/
+logs/
+
+### 产品资料冗余压缩包（ZRDDS产品资料/ 目录已在库内）###
+ZRDDS产品资料.zip
+
+### 产品资料二进制素材（PDF/PPTX/CHM，仅本地使用，不入库）###
+ZRDDS产品资料/
+
+### 本机本地配置 ###
+.claude/
+
+### 测试与验证产物（本机使用，不公开）###
+测试报告_*.md
+scripts/
+k6/
+test-data/
+agent.md
+instruction.md
+need.md
+tolist.md

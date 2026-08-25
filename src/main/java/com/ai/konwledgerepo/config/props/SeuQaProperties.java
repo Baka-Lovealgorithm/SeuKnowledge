@@ -1,0 +1,16 @@
+package com.ai.konwledgerepo.config.props;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.DefaultValue;
+
+/**
+ * seuknowledge.qa.* 配置（问答链路全局默认）。
+ */
+@ConfigurationProperties(prefix = "seuknowledge.qa")
+public record SeuQaProperties(
+        @DefaultValue("20") int messageWindow,
+        @DefaultValue("2") int maxRetry,
+        @DefaultValue("32") int concurrencyLimit,
+        @DefaultValue("30") int concurrencyTimeoutSeconds,
+        @DefaultValue("true") boolean parallel) {
+}

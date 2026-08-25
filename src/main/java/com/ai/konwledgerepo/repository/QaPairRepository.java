@@ -1,0 +1,28 @@
+package com.ai.konwledgerepo.repository;
+
+import com.ai.konwledgerepo.entity.QaPair;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.Collection;
+import java.util.List;
+import java.util.Optional;
+
+public interface QaPairRepository extends JpaRepository<QaPair, Long> {
+
+    List<QaPair> findByKbIdAndDeletedFalseOrderByIdDesc(Long kbId);
+
+    List<QaPair> findByKbIdAndDeletedFalseAndStatusOrderByIdDesc(Long kbId, String status);
+
+    List<QaPair> findByHistoryGroupIdOrderByVersionDesc(String historyGroupId);
+
+    Optional<QaPair> findFirstByHistoryGroupIdAndDeletedFalse(String historyGroupId);
+
+    /** 按来源文档查询（抽取任务结果预览） */
+    List<QaPair> findBySourceDocIdInAndDeletedFalseAndStatus(Collection<Long> docIds, String status);
+
+    /** 同知识库相同问题的未删记录（抽取去重：DRAFT 将被替换为最新抽取结果） */
+    List<QaPair> findByKbIdAndQuestionAndDeletedFalseAndStatus(Long kbId, String question, String status);
+
+    /** 按知识库硬删除全部记录（含软删版本，清空知识库内容时调用） */
+    void deleteByKbId(Long kbId);
+}
