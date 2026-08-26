@@ -15,8 +15,12 @@ import com.ai.konwledgerepo.service.vector.SourceIndexer;
 import com.ai.konwledgerepo.service.workspace.WorkspaceAccess;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionOperations;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -33,25 +37,30 @@ import java.util.UUID;
 @Service
 public class BusinessKnowledgeService {
 
+    private static final Logger log = LoggerFactory.getLogger(BusinessKnowledgeService.class);
+
     private final BusinessKnowledgeRepository repository;
     private final KnowledgeBaseService kbService;
     private final DocumentRepository documentRepository;
     private final SourceIndexer sourceIndexer;
     private final WorkspaceAccess workspaceAccess;
     private final ObjectMapper objectMapper;
+    private final TransactionOperations transactionOperations;
 
     public BusinessKnowledgeService(BusinessKnowledgeRepository repository,
                                     KnowledgeBaseService kbService,
                                     DocumentRepository documentRepository,
                                     SourceIndexer sourceIndexer,
                                     WorkspaceAccess workspaceAccess,
-                                    ObjectMapper objectMapper) {
+                                    ObjectMapper objectMapper,
+                                    TransactionOperations transactionOperations) {
         this.repository = repository;
         this.kbService = kbService;
         this.documentRepository = documentRepository;
         this.sourceIndexer = sourceIndexer;
         this.workspaceAccess = workspaceAccess;
         this.objectMapper = objectMapper;
+        this.transactionOperations = transactionOperations;
     }
 
     public List<BusinessKnowledgeResponse> list(Long kbId, String status) {
@@ -69,20 +78,36 @@ public class BusinessKnowledgeService {
     /**
      * 抽取任务专用创建（去重）：同知识库相同术语的未删 DRAFT 草稿先软删，
      * 用最新抽取结果替换，避免重复草稿堆积；已审核（APPROVED/REJECTED）记录不受影响。
-     * 与普通 create 共用 doCreate（同事务由本方法注解承载，避免自调用绕过代理）。
+     * <p>
+     * 并发安全：最多 2 次尝试——每次在独立事务内软删同名 DRAFT 后插入新行；
+     * 若因并发生成列唯一索引冲突抛出 DuplicateKeyException，重试一次。
      */
-    @Transactional
     public BusinessKnowledgeResponse createDraft(Long kbId, BusinessKnowledgeRequest request) {
         kbService.getEntity(kbId);
         String term = request.term() == null ? null : request.term().trim();
-        if (term != null && !term.isEmpty()) {
-            List<BusinessKnowledge> dups = repository.findByKbIdAndTermAndDeletedFalseAndStatus(kbId, term, ReviewStatus.DRAFT.value());
-            for (BusinessKnowledge dup : dups) {
-                dup.setDeleted(true);
-                repository.save(dup);
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                return transactionOperations.execute(status -> {
+                    if (term != null && !term.isEmpty()) {
+                        List<BusinessKnowledge> dups = repository.findByKbIdAndTermAndDeletedFalseAndStatus(
+                                kbId, term, ReviewStatus.DRAFT.value());
+                        for (BusinessKnowledge dup : dups) {
+                            dup.setDeleted(true);
+                            repository.save(dup);
+                        }
+                        // 关键：flush 使软删落库（active_term 置 NULL），后续 INSERT 不受唯一约束冲突
+                        repository.flush();
+                    }
+                    return doCreate(kbId, request);
+                });
+            } catch (DuplicateKeyException e) {
+                log.warn("createDraft 并发冲突（kb={}, term={}），重试一次", kbId, term);
+                if (attempt >= 1) {
+                    throw new BizException("草稿创建冲突，请重试");
+                }
             }
         }
-        return doCreate(kbId, request);
+        throw new BizException("草稿创建失败"); // unreachable
     }
 
     /** 新建记录（默认 DRAFT + 版本 1）；create / createDraft 共用，事务由调用方注解承载 */
@@ -93,7 +118,7 @@ public class BusinessKnowledgeService {
         bk.setKbId(kbId);
         bk.setHistoryGroupId(UUID.randomUUID().toString());
         bk.setVersion(1);
-        repository.save(bk);
+        repository.saveAndFlush(bk);
         return toResponse(bk);
     }
 
@@ -102,6 +127,7 @@ public class BusinessKnowledgeService {
         BusinessKnowledge current = requireInWorkspace(id, workspaceId);
         current.setDeleted(true);
         repository.save(current);
+        repository.flush(); // 关键：软删先落库，释放 active_term 唯一约束位
         syncIndex(current);
 
         BusinessKnowledge fresh = new BusinessKnowledge();
@@ -120,6 +146,7 @@ public class BusinessKnowledgeService {
         BusinessKnowledge current = requireInWorkspace(id, workspaceId);
         current.setDeleted(true);
         repository.save(current);
+        repository.flush(); // 关键：软删先落库，释放 active_term 唯一约束位
         syncIndex(current);
     }
 
@@ -195,6 +222,7 @@ public class BusinessKnowledgeService {
         }
         current.setDeleted(true);
         repository.save(current);
+        repository.flush(); // 关键：软删先落库，释放 active_term 唯一约束位
         syncIndex(current);
         target.setDeleted(false);
         target.setStatus(ReviewStatus.APPROVED.value());

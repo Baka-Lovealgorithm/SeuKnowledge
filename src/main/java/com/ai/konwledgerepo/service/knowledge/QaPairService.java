@@ -19,9 +19,13 @@ import com.ai.konwledgerepo.tracing.QaTracing;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionOperations;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -35,6 +39,7 @@ import java.util.regex.Pattern;
 @Service
 public class QaPairService {
 
+    private static final Logger log = LoggerFactory.getLogger(QaPairService.class);
     private static final Pattern JSON_OBJECT_PATTERN = Pattern.compile("\\{.*}", Pattern.DOTALL);
 
     private final QaPairRepository repository;
@@ -46,6 +51,7 @@ public class QaPairService {
     private final PromptCatalog promptCatalog;
     private final ObjectMapper objectMapper;
     private final QaTracing qaTracing;
+    private final TransactionOperations transactionOperations;
 
     public QaPairService(QaPairRepository repository,
                          KnowledgeBaseService kbService,
@@ -55,7 +61,8 @@ public class QaPairService {
                          WorkspaceAccess workspaceAccess,
                          PromptCatalog promptCatalog,
                          ObjectMapper objectMapper,
-                         QaTracing qaTracing) {
+                         QaTracing qaTracing,
+                         TransactionOperations transactionOperations) {
         this.repository = repository;
         this.kbService = kbService;
         this.documentRepository = documentRepository;
@@ -65,6 +72,7 @@ public class QaPairService {
         this.promptCatalog = promptCatalog;
         this.objectMapper = objectMapper;
         this.qaTracing = qaTracing;
+        this.transactionOperations = transactionOperations;
     }
 
     public List<QaPairResponse> list(Long kbId, String status) {
@@ -82,20 +90,35 @@ public class QaPairService {
     /**
      * 抽取任务专用创建（去重）：同知识库相同问题的未删 DRAFT 草稿先软删，
      * 用最新抽取结果替换，避免重复草稿堆积；已审核（APPROVED/REJECTED/DISABLED）记录不受影响。
-     * 与普通 create 共用 doCreate（同事务由本方法注解承载，避免自调用绕过代理）。
+     * <p>
+     * 并发安全：最多 2 次尝试——事务内软删同名 DRAFT 后插入新行；
+     * DuplicateKeyException 触发重试一次。
      */
-    @Transactional
     public QaPairResponse createDraft(Long kbId, QaPairRequest request) {
         kbService.getEntity(kbId);
         String question = request.question() == null ? null : request.question().trim();
-        if (question != null && !question.isEmpty()) {
-            List<QaPair> dups = repository.findByKbIdAndQuestionAndDeletedFalseAndStatus(kbId, question, ReviewStatus.DRAFT.value());
-            for (QaPair dup : dups) {
-                dup.setDeleted(true);
-                repository.save(dup);
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                return transactionOperations.execute(status -> {
+                    if (question != null && !question.isEmpty()) {
+                        List<QaPair> dups = repository.findByKbIdAndQuestionAndDeletedFalseAndStatus(
+                                kbId, question, ReviewStatus.DRAFT.value());
+                        for (QaPair dup : dups) {
+                            dup.setDeleted(true);
+                            repository.save(dup);
+                        }
+                        repository.flush(); // 软删先落库，释放 active_question 唯一约束位
+                    }
+                    return doCreate(kbId, request);
+                });
+            } catch (DuplicateKeyException e) {
+                log.warn("createDraft 并发冲突（kb={}, question={}），重试一次", kbId, question);
+                if (attempt >= 1) {
+                    throw new BizException("草稿创建冲突，请重试");
+                }
             }
         }
-        return doCreate(kbId, request);
+        throw new BizException("草稿创建失败"); // unreachable
     }
 
     /** 新建记录（默认 DRAFT + 版本 1）；create / createDraft 共用，事务由调用方注解承载 */
@@ -106,7 +129,7 @@ public class QaPairService {
         pair.setKbId(kbId);
         pair.setHistoryGroupId(UUID.randomUUID().toString());
         pair.setVersion(1);
-        repository.save(pair);
+        repository.saveAndFlush(pair);
         return toResponse(pair);
     }
 
@@ -115,6 +138,7 @@ public class QaPairService {
         QaPair current = requireInWorkspace(id, workspaceId);
         current.setDeleted(true);
         repository.save(current);
+        repository.flush(); // 关键：软删先落库，释放 active_question 唯一约束位
         syncIndex(current);
 
         QaPair fresh = new QaPair();
@@ -133,6 +157,7 @@ public class QaPairService {
         QaPair current = requireInWorkspace(id, workspaceId);
         current.setDeleted(true);
         repository.save(current);
+        repository.flush(); // 关键：软删先落库，释放 active_question 唯一约束位
         syncIndex(current);
     }
 
@@ -211,6 +236,7 @@ public class QaPairService {
         }
         current.setDeleted(true);
         repository.save(current);
+        repository.flush(); // 关键：软删先落库，释放 active_question 唯一约束位
         syncIndex(current);
         target.setDeleted(false);
         target.setStatus(ReviewStatus.APPROVED.value());

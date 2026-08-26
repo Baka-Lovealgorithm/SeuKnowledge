@@ -13,6 +13,8 @@ import com.ai.konwledgerepo.service.workspace.WorkspaceAccess;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.transaction.support.TransactionOperations;
 
 import java.util.List;
 import java.util.Optional;
@@ -22,6 +24,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class BusinessKnowledgeServiceTest {
@@ -29,6 +33,7 @@ class BusinessKnowledgeServiceTest {
     private BusinessKnowledgeRepository repo;
     private KnowledgeBaseRepository kbRepo;
     private KnowledgeBaseService kbService;
+    private TransactionOperations txOps;
     private BusinessKnowledgeService service;
 
     /** 测试用工作空间 id（WorkspaceAccess 为真实实例，归属校验真实生效） */
@@ -41,16 +46,20 @@ class BusinessKnowledgeServiceTest {
         kbService = mock(KnowledgeBaseService.class);
         DocumentRepository docRepo = mock(DocumentRepository.class);
         SourceIndexer sourceIndexer = mock(SourceIndexer.class);
-        // WorkspaceAccess 用真实实例：requireKb 走 kbRepo.findById —— id 型用例的实体均属 kbId=1L，
-        // 这里统一桩出「知识库 1 属于 WS_ID」，归属校验真实生效
+        txOps = mock(TransactionOperations.class);
+        // TransactionOperations.execute 内联执行 callback（模拟真实事务行为）
+        when(txOps.execute(any())).thenAnswer(inv -> {
+            var callback = inv.getArgument(0, org.springframework.transaction.support.TransactionCallback.class);
+            return callback.doInTransaction(null);
+        });
+        // WorkspaceAccess 用真实实例
         KnowledgeBase kb = new KnowledgeBase();
         kb.setId(1L);
         kb.setWorkspaceId(WS_ID);
         when(kbRepo.findById(1L)).thenReturn(Optional.of(kb));
-        // create/createDraft 的知识库存在性校验走 KnowledgeBaseService.getEntity
         when(kbService.getEntity(1L)).thenReturn(kb);
         service = new BusinessKnowledgeService(repo, kbService, docRepo, sourceIndexer,
-                new WorkspaceAccess(kbRepo, docRepo), new ObjectMapper());
+                new WorkspaceAccess(kbRepo, docRepo), new ObjectMapper(), txOps);
     }
 
     private BusinessKnowledgeRequest req() {
@@ -60,6 +69,7 @@ class BusinessKnowledgeServiceTest {
     @Test
     void create_setsDraftAndVersionOne() {
         when(repo.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(repo.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
 
         BusinessKnowledgeResponse resp = service.create(1L, req());
         assertEquals(1, resp.version());
@@ -69,6 +79,7 @@ class BusinessKnowledgeServiceTest {
     @Test
     void createDraft_softDeletesExistingSameTermDraft() {
         when(repo.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(repo.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
 
         // 已存在同名未删 DRAFT：应被软删替换，避免重复草稿堆积
         BusinessKnowledge old = new BusinessKnowledge();
@@ -87,6 +98,7 @@ class BusinessKnowledgeServiceTest {
     @Test
     void createDraft_noDraftMatch_createsNormally() {
         when(repo.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(repo.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
         // 已审核同名记录不在 DRAFT 查询内，不应被软删
         when(repo.findByKbIdAndTermAndDeletedFalseAndStatus(1L, "年度调休", "DRAFT"))
                 .thenReturn(List.of());
@@ -106,6 +118,7 @@ class BusinessKnowledgeServiceTest {
         existing.setDeleted(false);
         when(repo.findById(1L)).thenReturn(Optional.of(existing));
         when(repo.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(repo.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
 
         BusinessKnowledgeResponse resp = service.update(1L, req(), WS_ID);
         assertEquals(2, resp.version(), "编辑应生成 version+1 的新版本");
@@ -132,6 +145,7 @@ class BusinessKnowledgeServiceTest {
         when(repo.findById(2L)).thenReturn(Optional.of(current));
         when(repo.findByHistoryGroupIdOrderByVersionDesc("g1")).thenReturn(List.of(current, target));
         when(repo.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(repo.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
 
         BusinessKnowledgeResponse resp = service.rollback(2L, 1, WS_ID);
         assertEquals(1, resp.version(), "回退后返回目标版本");
@@ -147,6 +161,7 @@ class BusinessKnowledgeServiceTest {
         bk.setDeleted(false);
         when(repo.findById(1L)).thenReturn(Optional.of(bk));
         when(repo.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(repo.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
 
         assertEquals("APPROVED", service.approve(1L, WS_ID).status());
     }
@@ -159,5 +174,24 @@ class BusinessKnowledgeServiceTest {
         when(repo.findById(1L)).thenReturn(Optional.of(deleted));
         org.junit.jupiter.api.Assertions.assertThrows(
                 com.ai.konwledgerepo.common.BizException.class, () -> service.approve(1L, WS_ID));
+    }
+
+    @Test
+    void createDraft_duplicateKey_retriesOnce() {
+        when(repo.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(repo.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        when(repo.findByKbIdAndTermAndDeletedFalseAndStatus(1L, "年度调休", "DRAFT"))
+                .thenReturn(List.of()); // 首次查无 DRAFT
+
+        // 首次 saveAndFlush 抛 DuplicateKey（并发插入），第二次成功
+        when(repo.saveAndFlush(any())).thenThrow(new DuplicateKeyException("dup"))
+                .thenAnswer(inv -> inv.getArgument(0));
+
+        BusinessKnowledgeResponse resp = service.createDraft(1L, req());
+        assertEquals("DRAFT", resp.status());
+        // 两次 execute → dedup 查询两次 + saveAndFlush 两次（1抛+1成功）
+        verify(repo, times(2)).findByKbIdAndTermAndDeletedFalseAndStatus(1L, "年度调休", "DRAFT");
+        verify(repo, times(2)).saveAndFlush(any());
     }
 }

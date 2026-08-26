@@ -3,6 +3,7 @@ package com.ai.konwledgerepo.entity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 
 /**
  * 文档。文件实体落盘，chunk 向量在 ES，元数据在 MySQL。
@@ -36,6 +37,7 @@ public class Document extends BaseEntity {
 
     /** 文档版本号，支持版本管理（一期基础） */
     @Column
+    @Version
     private Integer version = 1;
 
     @Column(name = "error_msg", length = 500)

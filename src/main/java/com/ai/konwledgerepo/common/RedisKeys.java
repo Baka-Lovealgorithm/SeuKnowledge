@@ -94,6 +94,21 @@ public final class RedisKeys {
         return PREFIX + "titleGen:" + sessionId;
     }
 
+    /** 文档解析 in-flight guard（文档级互斥；TTL 30min，解析超时后自动失效） */
+    public static String docParse(Long docId) {
+        return PREFIX + "doc:parse:" + docId;
+    }
+
+    /** 抽取任务执行互斥（任务级；TTL 8h，任务最长执行时间） */
+    public static String taskRun(Long taskId) {
+        return PREFIX + "task:run:" + taskId;
+    }
+
+    /** 抽取文档级互斥（同一文档同时仅一个抽取任务处理；TTL 8h） */
+    public static String taskExtract(Long docId) {
+        return PREFIX + "task:extract:" + docId;
+    }
+
     private RedisKeys() {
     }
 }

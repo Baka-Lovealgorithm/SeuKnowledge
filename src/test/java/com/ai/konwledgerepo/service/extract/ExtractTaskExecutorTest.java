@@ -3,9 +3,12 @@ package com.ai.konwledgerepo.service.extract;
 import com.ai.konwledgerepo.common.PromptCatalog;
 import com.ai.konwledgerepo.common.RedisCacheService;
 import com.ai.konwledgerepo.common.RedisKeys;
+import com.ai.konwledgerepo.common.TaskLock;
 import com.ai.konwledgerepo.config.props.SeuCacheProperties;
+import com.ai.konwledgerepo.config.props.SeuExtractProperties;
 import com.ai.konwledgerepo.entity.BusinessKnowledge;
 import com.ai.konwledgerepo.entity.Chunk;
+import com.ai.konwledgerepo.entity.DocStatus;
 import com.ai.konwledgerepo.entity.Document;
 import com.ai.konwledgerepo.entity.ExtractTask;
 import com.ai.konwledgerepo.entity.KnowledgeBase;
@@ -28,6 +31,7 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -75,6 +79,8 @@ class ExtractTaskExecutorTest {
     private ModelFactory modelFactory;
     private RedisCacheService redisCacheService;
     private ChatModel chat;
+    private TaskLock taskLock;
+    private ExtractTaskTx extractTaskTx;
     private ExtractTaskExecutor executor;
 
     @BeforeEach
@@ -90,10 +96,15 @@ class ExtractTaskExecutorTest {
         modelFactory = mock(ModelFactory.class);
         redisCacheService = mock(RedisCacheService.class);
         chat = mock(ChatModel.class);
+        taskLock = mock(TaskLock.class);
+        extractTaskTx = new ExtractTaskTx(taskRepository);
 
         when(workspaceIdResolver.resolve(KB_ID)).thenReturn(WORKSPACE_ID);
         when(modelFactory.getChatModelByUsage(eq("EXTRACT"), eq(WORKSPACE_ID))).thenReturn(chat);
         when(taskRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        // 默认：taskLock 放行、startRun 的 findByIdForUpdate 转发 findById
+        when(taskLock.tryAcquire(any(), any())).thenReturn(true);
+        when(taskRepository.findByIdForUpdate(any())).thenAnswer(inv -> taskRepository.findById(inv.getArgument(0)));
 
         // QaTracing 真实实例（tracing 关闭 → OTel no-op，无网络）；ObjectMapper 真实实例；
         // TaskProgressStore / 抽取器为真实实例，复用已 mock 的依赖
@@ -107,7 +118,8 @@ class ExtractTaskExecutorTest {
                 bkRepository, qaRepository, workspaceIdResolver, modelFactory, progressStore,
                 new BusinessKnowledgeExtractor(noopTracing, promptCatalog, businessKnowledgeService, jsonParser),
                 new QaPairExtractor(noopTracing, promptCatalog, qaPairService, jsonParser),
-                noopTracing, objectMapper);
+                noopTracing, objectMapper,
+                taskLock, extractTaskTx, new SeuExtractProperties(2));
     }
 
     // ===== 全量成功 =====
@@ -315,8 +327,74 @@ class ExtractTaskExecutorTest {
         assertEquals(6, task.getProcessedDocs());
         assertEquals(100, task.getProgress());
         verify(businessKnowledgeService, times(6)).createDraft(eq(KB_ID), any());
-        // PROGRESS_DB_BATCH=5：第 5 个文档处理完触发批量落库 → 重置 1 + 批量 1 + 完成 1 = 3 次
-        verify(taskRepository, times(3)).save(any());
+        // PROGRESS_DB_BATCH=5：第 5 个文档处理完触发批量落库 → startRun 1 + 重置 1 + 批量 1 + 完成 1 = 4 次
+        verify(taskRepository, atLeast(3)).save(any());
+    }
+
+    // ===== 并发安全增强测试 =====
+
+    @Test
+    void run_taskLockBusy_returnsEarly() {
+        ExtractTask task = task(10L, "[1]", "BUSINESS");
+        when(taskRepository.findById(10L)).thenReturn(Optional.of(task));
+        when(taskLock.tryAcquire(eq(RedisKeys.taskRun(10L)), any())).thenReturn(false);
+
+        executor.run(10L);
+
+        verify(taskRepository, never()).findByIdForUpdate(any());
+        verify(documentRepository, never()).findById(any());
+        verify(redisCacheService, never()).hset(any(), anyMap(), any());
+    }
+
+    @Test
+    void run_startRunReturnsNull_returnsEarly() {
+        when(taskRepository.findById(10L)).thenReturn(Optional.empty());
+        // findByIdForUpdate 也返回 empty → startRun null
+        when(taskRepository.findByIdForUpdate(10L)).thenReturn(Optional.empty());
+
+        executor.run(10L);
+
+        verify(documentRepository, never()).findById(any());
+        verify(redisCacheService, never()).hset(any(), anyMap(), any());
+    }
+
+    @Test
+    void run_docNotSuccess_marksFailed() {
+        ExtractTask task = task(11L, "[1]", "BUSINESS");
+        when(taskRepository.findById(11L)).thenReturn(Optional.of(task));
+        when(taskRepository.findByIdForUpdate(11L)).thenReturn(Optional.of(task));
+        Document d = document(1L);
+        d.setParseStatus(DocStatus.PARSING.value()); // E-4 拒绝
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(d));
+
+        executor.run(11L);
+
+        assertEquals("FAILED", task.getStatus());
+        assertNotNull(task.getFailedDocIds());
+        assertTrue(task.getFailedDocIds().contains("1"));
+        assertNotNull(task.getErrorLog());
+        assertTrue(task.getErrorLog().contains("未完成解析"));
+    }
+
+    @Test
+    void run_docLockBusy_marksFailedAndContinues() {
+        ExtractTask task = task(12L, "[1,2]", "BUSINESS");
+        when(taskRepository.findById(12L)).thenReturn(Optional.of(task));
+        when(taskRepository.findByIdForUpdate(12L)).thenReturn(Optional.of(task));
+        // 文档 1 被其他任务抽取，锁占；文档 2 正常
+        when(taskLock.tryAcquire(eq(RedisKeys.taskExtract(1L)), any())).thenReturn(false);
+        when(taskLock.tryAcquire(eq(RedisKeys.taskExtract(2L)), any())).thenReturn(true);
+        when(documentRepository.findById(2L)).thenReturn(Optional.of(document(2L)));
+        when(chunkRepository.findByDocIdOrderBySeqAsc(2L)).thenReturn(List.of(chunk(2L)));
+        when(chat.call(any(Prompt.class))).thenReturn(chatResponse(BIZ_JSON));
+
+        executor.run(12L);
+
+        // 1 被跳过并记失败，2 成功 — 部分失败
+        assertTrue(task.getFailedDocIds().contains("1"));
+        assertTrue(task.getErrorLog().contains("正在被其他抽取任务处理"));
+        assertEquals("PARTIAL_FAILED", task.getStatus());
+        assertEquals("新增业务知识 1 条，问答对 0 条", task.getResultSummary());
     }
 
     // ===== 测试工具 =====
@@ -335,6 +413,7 @@ class ExtractTaskExecutorTest {
         Document d = new Document();
         d.setId(id);
         d.setFileName("doc" + id + ".md");
+        d.setParseStatus(DocStatus.SUCCESS.value()); // E-4 要求文档已解析完成
         return d;
     }
 

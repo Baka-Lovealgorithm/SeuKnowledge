@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS kb_business_knowledge (
     scope TEXT,
     source_doc_name varchar(255),
     term varchar(255) not null,
+    active_term varchar(255) GENERATED ALWAYS AS (CASE WHEN deleted = 0 AND status = 'DRAFT' THEN term ELSE NULL END) STORED,
+    CONSTRAINT uk_kb_active_term UNIQUE (kb_id, active_term),
     primary key (id)
 ) engine=InnoDB;
 
@@ -194,6 +196,8 @@ CREATE TABLE IF NOT EXISTS kb_qa_pair (
     question TEXT not null,
     source_doc_name varchar(255),
     synonyms TEXT,
+    active_question char(32) GENERATED ALWAYS AS (CASE WHEN deleted = 0 AND status = 'DRAFT' THEN MD5(COALESCE(question,'')) ELSE NULL END) STORED,
+    CONSTRAINT uk_kb_active_question UNIQUE (kb_id, active_question),
     primary key (id)
 ) engine=InnoDB;
 

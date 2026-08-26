@@ -128,17 +128,20 @@ public class DocumentService {
                 .toList();
     }
 
-    /** 解析失败重试：清空旧分块与向量后重新解析 */
+    /** 解析失败重试：CAS 仅允许从 SUCCESS/FAILED/ERROR 进入 PENDING，0 行 → 解析中或已删除 */
     @Transactional
     public void retry(Long docId) {
-        Document doc = getEntity(docId);
+        int updated = documentRepository.casPendingForRetry(docId);
+        if (updated == 0) {
+            if (documentRepository.existsById(docId)) {
+                throw new BizException("文档解析进行中，无法重试");
+            }
+            throw new BizException("文档不存在或已被删除");
+        }
+        // 清空旧分块与向量（幂等），重新触发解析
         chunkRepository.deleteByDocId(docId);
         vectorIngestionService.deleteByDocId(docId);
-        doc.setParseStatus(DocStatus.PENDING.value());
-        doc.setErrorMsg(null);
-        doc.setChunkCount(0);
-        documentRepository.save(doc);
-        evictKbCaches(doc.getKbId());
+        evictKbCaches(documentRepository.findById(docId).orElseThrow().getKbId());
         // 事务提交后异步重新解析
         afterCommitExecutor.runAfterCommit(() -> parseExecutor.parseAsync(docId));
     }

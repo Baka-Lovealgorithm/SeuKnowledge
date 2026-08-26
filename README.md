@@ -84,6 +84,8 @@ mysql -uroot -p < sql/schema.sql
 
 `sql/schema.sql` 为 Hibernate schema export 导出的 **13 张表结构 + 内置默认账号种子**（admin 的 BCrypt 哈希、默认工作空间及其 OWNER 成员关系），**不含任何个人/业务数据**，可重复执行（`IF NOT EXISTS` + `INSERT IGNORE`）；预建后应用启动会自动跳过已存在的账号。Elasticsearch 的 `kb_chunk` 索引由应用启动时程序化创建，无需手工建。
 
+> 已有数据库升级：执行 `sql/migrate_v2_unique_draft.sql` 添加 DRAFT 草稿唯一约束（去重 + 生成列索引，防并发重复草稿）。全新部署的 schema.sql 已含此约束，无需迁移。
+
 ### 4. 配置模型服务（必配，否则问答/抽取不可用）
 
 系统不绑定具体模型厂商：文本与向量模型是问答/抽取的基础，通过 **DashScope（阿里云百炼）** 或任意 **OpenAI 兼容服务**（DeepSeek、ollama、one-api、SiliconFlow 等）提供。
@@ -181,6 +183,7 @@ npm run dev
 | `KB_LLAMAPARSE_TAKE_SCREENSHOT` / `KB_LLAMAPARSE_FILL_MISSING_PAGES` | true / true | 整页截图返回 / 缺页 VLM 补全（后者需 VISION 模型） |
 | `KB_ES_INDEX` / `KB_ES_DIMENSIONS` | kb_chunk / 1024 | ES 索引名与向量维度（**改维度需重建索引**） |
 | `KB_ASYNC_CORE_SIZE` / `KB_ASYNC_MAX_SIZE` / `KB_ASYNC_QUEUE_CAPACITY` | 8 / 32 / 256 | 通用异步线程池 |
+| `KB_EXTRACT_CONCURRENCY` | 2 | 抽取任务全局并发上限（公平信号量，超限排队等待） |
 | `KB_TRACING_ENABLED` | true | OpenTelemetry 追踪总开关 |
 | `LOG_LEVEL_LLM` | debug | LLM I/O 调试日志级别（含 prompt/输出等敏感内容，生产建议 `info`） |
 | `ACCESS_LOG_ENABLED` | true | Tomcat HTTP 访问日志开关 |
