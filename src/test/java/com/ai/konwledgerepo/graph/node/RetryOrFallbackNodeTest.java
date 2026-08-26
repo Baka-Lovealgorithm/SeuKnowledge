@@ -39,13 +39,13 @@ class RetryOrFallbackNodeTest {
         objectMapper = new ObjectMapper();
         // 默认节点关闭部分回答（partialAnswer=false），既有低分用例仍走拒答
         node = new RetryOrFallbackNode(qaTracing, objectMapper,
-                new SeuQaProperties(20, 2, 32, 30, false, false, false, 0.4));
+                new SeuQaProperties(20, 2, 32, 30, false, false, false, 0.4, false));
     }
 
     /** 开启 partialAnswer 的节点（模拟灰度开关打开） */
     private RetryOrFallbackNode partialNode() {
         return new RetryOrFallbackNode(qaTracing, objectMapper,
-                new SeuQaProperties(20, 2, 32, 30, false, false, true, 0.4));
+                new SeuQaProperties(20, 2, 32, 30, false, false, true, 0.4, false));
     }
 
     private ChunkEvidence ev() {

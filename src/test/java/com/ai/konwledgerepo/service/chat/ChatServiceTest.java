@@ -96,7 +96,7 @@ class ChatServiceTest {
         titleService = mock(SessionTitleService.class);
         redisCacheService = mock(RedisCacheService.class);
         // ChatService 为门面：内部组装五个子服务（与生产 Spring 注入同构），保持真实逻辑可测
-        SeuQaProperties qaProps = new SeuQaProperties(20, 2, 32, 30, true, false, false, 0.4);
+        SeuQaProperties qaProps = new SeuQaProperties(20, 2, 32, 30, true, false, false, 0.4, false);
         SeuCacheProperties cacheProps =
                 new SeuCacheProperties(300, 600, 600, 300, 300, 60, 60, 600, 86400);
         // WorkspaceAccess 用真实实例（requireBelongs 不触库），保证跨空间越权用例仍走真实归属校验

@@ -44,7 +44,7 @@ class KnowledgeRecallNodeTest {
         vectorSearchService = mock(VectorSearchService.class);
         qaTracing = QaTracing.disabled();
         node = new KnowledgeRecallNode(vectorSearchService, qaTracing, new SeuRecallProperties(8, 8),
-                Executors.newVirtualThreadPerTaskExecutor(), new SeuQaProperties(20, 2, 32, 30, true, false, false, 0.4));
+                Executors.newVirtualThreadPerTaskExecutor(), new SeuQaProperties(20, 2, 32, 30, true, false, false, 0.4, false));
     }
 
     private ChunkEvidence ev(long chunkId, String sourceType, double score) {
@@ -117,7 +117,7 @@ class KnowledgeRecallNodeTest {
         // 证据池扩容：CHUNK 每查询召回 15、BUSINESS/QA 各 8——topK 必须按配置透传
         KnowledgeRecallNode expanded = new KnowledgeRecallNode(vectorSearchService, qaTracing,
                 new SeuRecallProperties(15, 8), Executors.newVirtualThreadPerTaskExecutor(),
-                new SeuQaProperties(20, 2, 32, 30, true, false, false, 0.4));
+                new SeuQaProperties(20, 2, 32, 30, true, false, false, 0.4, false));
         when(vectorSearchService.search(anyLong(), anyString(), anyInt(), anyList())).thenReturn(List.of());
 
         Map<String, Object> data = new HashMap<>();

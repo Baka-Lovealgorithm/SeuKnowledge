@@ -15,5 +15,6 @@ public record SeuQaProperties(
         @DefaultValue("true") boolean parallel,
         @DefaultValue("false") boolean earlyAbort,
         @DefaultValue("false") boolean partialAnswer,
-        @DefaultValue("0.4") double partialFloor) {
+        @DefaultValue("0.4") double partialFloor,
+        @DefaultValue("false") boolean verifyJsonMode) {
 }

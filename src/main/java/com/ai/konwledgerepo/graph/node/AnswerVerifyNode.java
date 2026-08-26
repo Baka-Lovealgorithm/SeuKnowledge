@@ -74,6 +74,7 @@ public class AnswerVerifyNode implements NodeAction {
     private final Executor qaExecutor;
     private final boolean parallel;
     private final boolean earlyAbort;
+    private final boolean jsonMode;
 
     public AnswerVerifyNode(ModelFactory modelFactory, QaTracing qaTracing, PromptCatalog promptCatalog,
                             ExtractJsonParser jsonParser,
@@ -86,6 +87,7 @@ public class AnswerVerifyNode implements NodeAction {
         this.qaExecutor = qaExecutor;
         this.parallel = qaProps.parallel();
         this.earlyAbort = qaProps.earlyAbort();
+        this.jsonMode = qaProps.verifyJsonMode();
     }
 
     @Override
@@ -143,7 +145,7 @@ public class AnswerVerifyNode implements NodeAction {
                             ModelConfig phase1Cfg = modelFactory.resolveChatConfig(ModelUsage.VERIFY.value(), workspaceId);
                             String phase1Prompt = promptCatalog.get("answer-verify").formatted(agentPrompt, prevContext, evidence, question, answer);
                             String phase1Resp = LlmTrace.call(qaTracing, phase1Chat, phase1Prompt,
-                                    JudgeOptions.of(phase1Chat, phase1Cfg, MAX_VERIFY_TOKENS));
+                                    JudgeOptions.of(phase1Chat, phase1Cfg, MAX_VERIFY_TOKENS, jsonMode));
                             return parseResult(phase1Resp);
                         }), qaExecutor);
                 CompletableFuture<List<ClaimVerdict>> phase2F = CompletableFuture.supplyAsync(
@@ -205,7 +207,7 @@ public class AnswerVerifyNode implements NodeAction {
                 ChatModel chat = modelFactory.getChatModelByUsage(ModelUsage.VERIFY.value(), workspaceId);
                 ModelConfig cfg = modelFactory.resolveChatConfig(ModelUsage.VERIFY.value(), workspaceId);
                 String prompt = promptCatalog.get("answer-verify").formatted(agentPrompt, prevContext, evidence, question, answer);
-                String response = LlmTrace.call(qaTracing, chat, prompt, JudgeOptions.of(chat, cfg, MAX_VERIFY_TOKENS));
+                String response = LlmTrace.call(qaTracing, chat, prompt, JudgeOptions.of(chat, cfg, MAX_VERIFY_TOKENS, jsonMode));
                 result = parseResult(response);
                 span.setAttribute("score", result.score());
                 span.setAttribute("missing_info", result.missingInfo());
@@ -292,7 +294,7 @@ public class AnswerVerifyNode implements NodeAction {
             String verifyPrompt = promptCatalog.get("answer-faithfulness")
                     .formatted(agentPrompt, evidence, question, answer);
             String verifyResponse = LlmTrace.call(qaTracing, verifyChat, verifyPrompt,
-                    JudgeOptions.of(verifyChat, verifyCfg, MAX_FAITHFULNESS_TOKENS));
+                    JudgeOptions.of(verifyChat, verifyCfg, MAX_FAITHFULNESS_TOKENS, jsonMode));
             List<Map<String, Object>> items = jsonParser.parseArray(verifyResponse);
             List<ClaimVerdict> verdicts = new ArrayList<>();
             for (Map<String, Object> item : items) {

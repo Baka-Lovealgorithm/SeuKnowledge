@@ -60,7 +60,7 @@ class AnswerVerifyNodeTest {
         node = new AnswerVerifyNode(modelFactory, qaTracing, new PromptCatalog(),
                 new ExtractJsonParser(new ObjectMapper()),
                 Executors.newVirtualThreadPerTaskExecutor(),
-                new SeuQaProperties(20, 2, 32, 30, false, false, false, 0.4)); // parallel=false 走串行，earlyAbort=false 默认关闭
+                new SeuQaProperties(20, 2, 32, 30, false, false, false, 0.4, false)); // parallel=false 走串行，earlyAbort=false 默认关闭
     }
 
     /** 依次返回各阶段 LLM 输出（第一次=阶段一自评，后续=阶段二 faithfulness） */
@@ -305,7 +305,7 @@ class AnswerVerifyNodeTest {
         AnswerVerifyNode earlyNode = new AnswerVerifyNode(modelFactory, qaTracing, new PromptCatalog(),
                 new ExtractJsonParser(new ObjectMapper()),
                 Executors.newVirtualThreadPerTaskExecutor(),
-                new SeuQaProperties(20, 2, 32, 30, false, true, false, 0.4)); // parallel=false, earlyAbort=true
+                new SeuQaProperties(20, 2, 32, 30, false, true, false, 0.4, false)); // parallel=false, earlyAbort=true
         stubLlm("{\"score\": 40, \"missing\": \"缺少步骤数据\"}");
         List<ChunkEvidence> evs = List.of(ev(1, "报销需填写申请表。"));
         Map<String, Object> out = earlyNode.apply(stateWithRetry("报销需填写申请表。", evs, 1,
@@ -324,7 +324,7 @@ class AnswerVerifyNodeTest {
         AnswerVerifyNode earlyNode = new AnswerVerifyNode(modelFactory, qaTracing, new PromptCatalog(),
                 new ExtractJsonParser(new ObjectMapper()),
                 Executors.newVirtualThreadPerTaskExecutor(),
-                new SeuQaProperties(20, 2, 32, 30, false, true, false, 0.4));
+                new SeuQaProperties(20, 2, 32, 30, false, true, false, 0.4, false));
         // delta 非空（prevKeys 与当前不同），模型输出 noImprovement:true
         stubLlm("{\"score\": 40, \"missing\": \"缺少步骤数据\", \"noImprovement\": true}");
         List<ChunkEvidence> evs = List.of(ev(1, "报销需填写申请表。"), ev(2, "附发票原件。"));
@@ -339,7 +339,7 @@ class AnswerVerifyNodeTest {
         AnswerVerifyNode earlyNode = new AnswerVerifyNode(modelFactory, qaTracing, new PromptCatalog(),
                 new ExtractJsonParser(new ObjectMapper()),
                 Executors.newVirtualThreadPerTaskExecutor(),
-                new SeuQaProperties(20, 2, 32, 30, false, true, false, 0.4));
+                new SeuQaProperties(20, 2, 32, 30, false, true, false, 0.4, false));
         // 模型没输出 noImprovement 字段 → 缺省 false
         stubLlm("{\"score\": 40, \"missing\": \"缺少步骤数据\"}");
         List<ChunkEvidence> evs = List.of(ev(1, "报销需填写申请表。"), ev(2, "附发票原件。"));
@@ -354,7 +354,7 @@ class AnswerVerifyNodeTest {
         AnswerVerifyNode earlyNode = new AnswerVerifyNode(modelFactory, qaTracing, new PromptCatalog(),
                 new ExtractJsonParser(new ObjectMapper()),
                 Executors.newVirtualThreadPerTaskExecutor(),
-                new SeuQaProperties(20, 2, 32, 30, false, true, false, 0.4));
+                new SeuQaProperties(20, 2, 32, 30, false, true, false, 0.4, false));
         // retry=0，即使 delta 空也不触发
         stubLlm("{\"score\": 85, \"missing\": \"\"}");
         List<ChunkEvidence> evs = List.of(ev(1, "报销需填写申请表。"));
@@ -362,5 +362,19 @@ class AnswerVerifyNodeTest {
                 List.of("CHUNK:1")));
 
         assertEquals(false, out.get(QaContextKey.NO_IMPROVEMENT), "retry=0 时不触发提早终止");
+    }
+
+    @Test
+    void jsonModeEnabled_node_verifySucceeds() throws Exception {
+        // jsonMode=true 不影响解析容错，verify 流程应正常完成
+        AnswerVerifyNode jsonNode = new AnswerVerifyNode(modelFactory, qaTracing, new PromptCatalog(),
+                new ExtractJsonParser(new ObjectMapper()),
+                Executors.newVirtualThreadPerTaskExecutor(),
+                new SeuQaProperties(20, 2, 32, 30, false, false, false, 0.4, true));
+        stubLlm("{\"score\": 85, \"missing\": \"\", \"noImprovement\": false}");
+        List<ChunkEvidence> evs = List.of(ev(1, "报销需填写申请表。"));
+        Map<String, Object> out = jsonNode.apply(stateWithRetry("报销需填写申请表。", evs, 0, List.of()));
+        assertEquals(0.85, (Double) out.get(QaContextKey.VERIFY_SCORE));
+        assertEquals("", out.get(QaContextKey.MISSING_INFO));
     }
 }
