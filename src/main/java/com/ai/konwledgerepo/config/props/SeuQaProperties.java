@@ -12,5 +12,6 @@ public record SeuQaProperties(
         @DefaultValue("2") int maxRetry,
         @DefaultValue("32") int concurrencyLimit,
         @DefaultValue("30") int concurrencyTimeoutSeconds,
-        @DefaultValue("true") boolean parallel) {
+        @DefaultValue("true") boolean parallel,
+        @DefaultValue("false") boolean earlyAbort) {
 }

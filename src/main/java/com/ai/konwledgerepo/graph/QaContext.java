@@ -81,6 +81,13 @@ public final class QaContext {
                 .orElse(def);
     }
 
+    public static boolean booleanValue(OverAllState state, String key, boolean def) {
+        return state.value(key)
+                .filter(v -> v instanceof Boolean)
+                .map(v -> (Boolean) v)
+                .orElse(def);
+    }
+
     /**
      * 证据列表序列化为引用 JSON 数组字符串（chunkId/docName/page/sourceType/title）。
      * 答案生成与拒答兜底共用，保证 REFS 结构一致（前端 refs 卡片渲染）。

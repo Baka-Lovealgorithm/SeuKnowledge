@@ -60,7 +60,7 @@ class AnswerVerifyNodeTest {
         node = new AnswerVerifyNode(modelFactory, qaTracing, new PromptCatalog(),
                 new ExtractJsonParser(new ObjectMapper()),
                 Executors.newVirtualThreadPerTaskExecutor(),
-                new SeuQaProperties(20, 2, 32, 30, false)); // parallel=false 走串行，避免顺序 stub 与并行冲突
+                new SeuQaProperties(20, 2, 32, 30, false, false)); // parallel=false 走串行，earlyAbort=false 默认关闭
     }
 
     /** 依次返回各阶段 LLM 输出（第一次=阶段一自评，后续=阶段二 faithfulness） */
@@ -273,5 +273,94 @@ class AnswerVerifyNodeTest {
         verify(chat, times(2)).call(captor.capture());
         OpenAiChatOptions opts = (OpenAiChatOptions) captor.getAllValues().get(1).getOptions();
         assertEquals(Map.of("enable_thinking", false), opts.getExtraBody(), "自定义参数模板应原样透传");
+    }
+
+    // ===== 提前终止（earlyAbort） =====
+
+    private OverAllState stateWithRetry(String answer, List<ChunkEvidence> chunks, int retry, List<String> prevChunkIds) {
+        Map<String, Object> data = new HashMap<>();
+        data.put(QaContextKey.RAW_QUESTION, "如何申请报销？");
+        data.put(QaContextKey.ANSWER, answer);
+        data.put(QaContextKey.CHUNKS, chunks);
+        data.put(QaContextKey.RETRY_COUNT, retry);
+        data.put(QaContextKey.PREV_CHUNK_IDS, prevChunkIds);
+        data.put(QaContextKey.MISSING_INFO, "缺少步骤数据");
+        return new OverAllState(data);
+    }
+
+    @Test
+    void earlyAbort_disabled_noNoImprovementFlag() throws Exception {
+        // earlyAbort=false 时即使 delta 为空也不触发
+        stubLlm("{\"score\": 85, \"missing\": \"\"}");
+        List<ChunkEvidence> evs = List.of(ev(1, "报销需填写申请表。"));
+        Map<String, Object> out = node.apply(stateWithRetry("报销需填写申请表。", evs, 1,
+                List.of("CHUNK:1"))); // prevKeys == currentKeys → delta empty
+
+        assertEquals(false, out.get(QaContextKey.NO_IMPROVEMENT), "earlyAbort=false 时不输出 noImprovement");
+    }
+
+    @Test
+    void earlyAbort_noNewEvidence_deterministicNoImprovement() throws Exception {
+        // 构造一个 earlyAbort=true 的节点
+        AnswerVerifyNode earlyNode = new AnswerVerifyNode(modelFactory, qaTracing, new PromptCatalog(),
+                new ExtractJsonParser(new ObjectMapper()),
+                Executors.newVirtualThreadPerTaskExecutor(),
+                new SeuQaProperties(20, 2, 32, 30, false, true)); // parallel=false, earlyAbort=true
+        stubLlm("{\"score\": 40, \"missing\": \"缺少步骤数据\"}");
+        List<ChunkEvidence> evs = List.of(ev(1, "报销需填写申请表。"));
+        Map<String, Object> out = earlyNode.apply(stateWithRetry("报销需填写申请表。", evs, 1,
+                List.of("CHUNK:1"))); // delta 空
+
+        assertEquals(true, out.get(QaContextKey.NO_IMPROVEMENT), "delta 空 → 确定性 noImprovement=true");
+        assertEquals(0.4, (Double) out.get(QaContextKey.VERIFY_SCORE));
+        // PREV_CHUNK_IDS 已写回本轮 keys
+        List<String> prevKeys = (List<String>) out.get(QaContextKey.PREV_CHUNK_IDS);
+        assertEquals(1, prevKeys.size());
+        assertTrue(prevKeys.get(0).contains("CHUNK:1"));
+    }
+
+    @Test
+    void earlyAbort_modelSaysNoImprovement_flagSet() throws Exception {
+        AnswerVerifyNode earlyNode = new AnswerVerifyNode(modelFactory, qaTracing, new PromptCatalog(),
+                new ExtractJsonParser(new ObjectMapper()),
+                Executors.newVirtualThreadPerTaskExecutor(),
+                new SeuQaProperties(20, 2, 32, 30, false, true));
+        // delta 非空（prevKeys 与当前不同），模型输出 noImprovement:true
+        stubLlm("{\"score\": 40, \"missing\": \"缺少步骤数据\", \"noImprovement\": true}");
+        List<ChunkEvidence> evs = List.of(ev(1, "报销需填写申请表。"), ev(2, "附发票原件。"));
+        Map<String, Object> out = earlyNode.apply(stateWithRetry("报销需填写申请表。", evs, 1,
+                List.of("CHUNK:1"))); // delta = {CHUNK:2}
+
+        assertEquals(true, out.get(QaContextKey.NO_IMPROVEMENT), "模型判定 noImprovement=true");
+    }
+
+    @Test
+    void earlyAbort_modelOmitsField_failOpenFalse() throws Exception {
+        AnswerVerifyNode earlyNode = new AnswerVerifyNode(modelFactory, qaTracing, new PromptCatalog(),
+                new ExtractJsonParser(new ObjectMapper()),
+                Executors.newVirtualThreadPerTaskExecutor(),
+                new SeuQaProperties(20, 2, 32, 30, false, true));
+        // 模型没输出 noImprovement 字段 → 缺省 false
+        stubLlm("{\"score\": 40, \"missing\": \"缺少步骤数据\"}");
+        List<ChunkEvidence> evs = List.of(ev(1, "报销需填写申请表。"), ev(2, "附发票原件。"));
+        Map<String, Object> out = earlyNode.apply(stateWithRetry("报销需填写申请表。", evs, 1,
+                List.of("CHUNK:1")));
+
+        assertEquals(false, out.get(QaContextKey.NO_IMPROVEMENT), "缺省 noImprovement 字段 → false");
+    }
+
+    @Test
+    void earlyAbort_retryZero_notTriggered() throws Exception {
+        AnswerVerifyNode earlyNode = new AnswerVerifyNode(modelFactory, qaTracing, new PromptCatalog(),
+                new ExtractJsonParser(new ObjectMapper()),
+                Executors.newVirtualThreadPerTaskExecutor(),
+                new SeuQaProperties(20, 2, 32, 30, false, true));
+        // retry=0，即使 delta 空也不触发
+        stubLlm("{\"score\": 85, \"missing\": \"\"}");
+        List<ChunkEvidence> evs = List.of(ev(1, "报销需填写申请表。"));
+        Map<String, Object> out = earlyNode.apply(stateWithRetry("报销需填写申请表。", evs, 0,
+                List.of("CHUNK:1")));
+
+        assertEquals(false, out.get(QaContextKey.NO_IMPROVEMENT), "retry=0 时不触发提早终止");
     }
 }

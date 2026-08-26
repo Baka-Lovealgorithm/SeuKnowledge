@@ -173,6 +173,7 @@ public class QaGraphRunner {
         double faithfulness = -1.0;
         int unsupported = 0;
         int contradicted = 0;
+        boolean noImprovement = false;
         if (state != null) {
             intent = state.value(QaContextKey.INTENT).map(String::valueOf).orElse(null);
             answer = state.value(QaContextKey.ANSWER).map(String::valueOf).orElse(null);
@@ -196,10 +197,15 @@ public class QaGraphRunner {
             if (contraV instanceof List<?> list) {
                 contradicted = list.size();
             }
+            Object noImpV = state.value(QaContextKey.NO_IMPROVEMENT).orElse(null);
+            if (noImpV instanceof Boolean b) {
+                noImprovement = b;
+            }
         }
-        log.info("问答汇总 sessionId={} kbId={} 耗时={}ms 意图={} 证据池={} 重试={} faithfulness={} 无支撑={} 矛盾={} token(in/out/total)={}/{}/{} 答案字符={}",
+        log.info("问答汇总 sessionId={} kbId={} 耗时={}ms 意图={} 证据池={} 重试={} faithfulness={} 无支撑={} 矛盾={} 无改善={} token(in/out/total)={}/{}/{} 答案字符={}",
                 input.sessionId(), input.kbId(), costMs, intent, accumulated, retry,
                 faithfulness < 0 ? "-" : String.format("%.2f", faithfulness), unsupported, contradicted,
+                noImprovement,
                 tokens[0], tokens[1], tokens[2],
                 answer == null ? 0 : answer.length());
     }
@@ -216,6 +222,8 @@ public class QaGraphRunner {
         initialState.put(QaContextKey.MAX_RETRY, input.maxRetry());
         initialState.put(QaContextKey.AGENT, input.agent());
         initialState.put(QaContextKey.NEXT, QaState.QUERY_REWRITE.name());
+        initialState.put(QaContextKey.PREV_CHUNK_IDS, List.of());
+        initialState.put(QaContextKey.NO_IMPROVEMENT, false);
 
         // 每次问答使用唯一 threadId，避免 graph-core 按 threadId 缓存的上次状态污染本次执行
         RunnableConfig config = RunnableConfig.builder()
@@ -236,6 +244,7 @@ public class QaGraphRunner {
                     QaContextKey.VERIFY_SCORE, QaContextKey.FAITHFULNESS_SCORE,
                     QaContextKey.UNSUPPORTED_CLAIMS, QaContextKey.CONTRADICTED_CLAIMS,
                     QaContextKey.MISSING_INFO,
+                    QaContextKey.PREV_CHUNK_IDS, QaContextKey.NO_IMPROVEMENT,
                     QaContextKey.RETRY_COUNT, QaContextKey.MAX_RETRY,
                     QaContextKey.NEXT, QaContextKey.HISTORY, QaContextKey.CHAT_ONLY_ANSWER,
                     QaContextKey.AGENT)) {

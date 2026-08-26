@@ -57,12 +57,13 @@ public class RetryOrFallbackNode implements NodeAction {
             double score = QaContext.doubleValue(state, QaContextKey.VERIFY_SCORE, 0.0);
             int retry = QaContext.intValue(state, QaContextKey.RETRY_COUNT, 0);
             int maxRetry = QaContext.intValue(state, QaContextKey.MAX_RETRY, 2);
+            boolean noImprovement = QaContext.booleanValue(state, QaContextKey.NO_IMPROVEMENT, false);
             AgentConfig agent = QaContext.agent(state);
             // 自检阈值与重试上限优先取 Agent 配置（动态可调），缺省回退全局默认
             double threshold = (agent == null || agent.verifyThreshold() <= 0) ? THRESHOLD : agent.verifyThreshold();
             int agentMaxRetry = (agent == null || agent.maxRetry() <= 0) ? maxRetry : agent.maxRetry();
 
-            if (score < threshold && retry < agentMaxRetry) {
+            if (score < threshold && retry < agentMaxRetry && !noImprovement) {
                 SseStreamContext.sendStage("RETRY_FALLBACK", "自检未通过（得分 " + Math.round(score * 100) + "），准备第 "
                         + (retry + 1) + " 次重试召回");
                 span.setAttribute("action", "retry");
@@ -72,10 +73,16 @@ public class RetryOrFallbackNode implements NodeAction {
                         QaContextKey.RETRY_COUNT, retry + 1,
                         QaContextKey.NEXT, QaState.QUERY_REWRITE.name());
             }
-            // 重试已用尽仍低于阈值：显式拒答并附候选证据（不再原样输出低分答案）
+            // 重试已用尽或新增证据无改善仍低于阈值：显式拒答并附候选证据（不再原样输出低分答案）
             if (score < threshold) {
-                SseStreamContext.sendStage("RETRY_FALLBACK", "自检未通过（得分 " + Math.round(score * 100)
-                        + "），重试已用尽，显式拒答并附候选证据");
+                if (noImprovement) {
+                    SseStreamContext.sendStage("RETRY_FALLBACK", "自检未通过（得分 " + Math.round(score * 100)
+                            + "）且新增证据无改善，提前拒答并附候选证据");
+                    span.setAttribute("no_improvement", true);
+                } else {
+                    SseStreamContext.sendStage("RETRY_FALLBACK", "自检未通过（得分 " + Math.round(score * 100)
+                            + "），重试已用尽，显式拒答并附候选证据");
+                }
                 span.setAttribute("action", "refuse");
                 span.setAttribute("reason", "score_below_threshold_after_retries");
                 span.setAttribute("score", score);

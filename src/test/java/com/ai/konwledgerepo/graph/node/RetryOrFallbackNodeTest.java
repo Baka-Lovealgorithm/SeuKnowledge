@@ -149,4 +149,55 @@ class RetryOrFallbackNodeTest {
                 "maxRetry=0 时无重试预算，低分直接拒答");
         assertEquals("TERMINAL", out.get(QaContextKey.NEXT));
     }
+
+    // ===== 提前终止（noImprovement） =====
+
+    private OverAllState stateWithNoImprovement(List<ChunkEvidence> chunks, Double score, Integer retry,
+                                                Integer maxRetry, boolean noImprovement) {
+        Map<String, Object> data = new HashMap<>();
+        data.put(QaContextKey.CHUNKS, chunks);
+        if (score != null) {
+            data.put(QaContextKey.VERIFY_SCORE, score);
+        }
+        if (retry != null) {
+            data.put(QaContextKey.RETRY_COUNT, retry);
+        }
+        if (maxRetry != null) {
+            data.put(QaContextKey.MAX_RETRY, maxRetry);
+        }
+        data.put(QaContextKey.NO_IMPROVEMENT, noImprovement);
+        return new OverAllState(data);
+    }
+
+    @Test
+    void noImprovement_lowScore_notExhausted_refusesInsteadOfRetry() throws Exception {
+        // noImprovement=true 时即使有重试预算也直接拒答，不再重试
+        Map<String, Object> out = node.apply(
+                stateWithNoImprovement(List.of(ev()), 0.5, 1, 2, true));
+
+        assertEquals(Defaults.INSUFFICIENT_EVIDENCE_REFUSAL, out.get(QaContextKey.ANSWER),
+                "noImprovement 时低分应直接拒答，不重试");
+        assertEquals("TERMINAL", out.get(QaContextKey.NEXT));
+        assertFalse(out.containsKey(QaContextKey.RETRY_COUNT), "未进入重试分支，RETRY_COUNT 不应被写回（不 +1）");
+    }
+
+    @Test
+    void noImprovement_highScore_stillAnswers() throws Exception {
+        // noImprovement=true 但分数达标 → 正常输出，不误伤
+        Map<String, Object> out = node.apply(
+                stateWithNoImprovement(List.of(ev()), 0.9, 1, 2, true));
+
+        assertEquals("TERMINAL", out.get(QaContextKey.NEXT));
+        assertFalse(out.containsKey(QaContextKey.ANSWER), "达标时不应写拒答文案");
+    }
+
+    @Test
+    void noImprovement_lowScore_noRetryBudget_refuses() throws Exception {
+        // noImprovement=true + 低分 + 已达上限 → 正常拒答
+        Map<String, Object> out = node.apply(
+                stateWithNoImprovement(List.of(ev()), 0.5, 2, 2, true));
+
+        assertEquals(Defaults.INSUFFICIENT_EVIDENCE_REFUSAL, out.get(QaContextKey.ANSWER));
+        assertEquals("TERMINAL", out.get(QaContextKey.NEXT));
+    }
 }

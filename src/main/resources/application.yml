@@ -94,6 +94,7 @@ seuknowledge:
     concurrency-limit: ${KB_CONCURRENCY_LIMIT:32}           # QA 链路全局并发上限（公平信号量，超限排队等待或超时）
     concurrency-timeout-seconds: ${KB_CONCURRENCY_TIMEOUT:30} # 信号量等待超时秒数（超时拒答"系统繁忙"）
     parallel: ${KB_QA_PARALLEL:true}                        # 节点内并行开关（false 回退串行，供 A/B 对比）
+    early-abort: ${KB_QA_EARLY_ABORT:false}                     # verify 阶段一新增证据无改善时提前进入证据不足分支（重试≥1 时生效）
   document:
     vision-parsing: ${KB_VISION_PARSING:true}    # PDF 解析是否启用识图模型 OCR/描述（需配置 VISION 类型模型）
     vision-auto: ${KB_VISION_AUTO:true}          # 按需识图：纯文字页跳过识图，仅图片页/扫描页调用识图模型（false=每页识图）

@@ -27,6 +27,10 @@ public final class QaContextKey {
     public static final String CONTRADICTED_CLAIMS = "contradictedClaims";
     /** 答案自检输出的"缺失信息"反馈（重试轮供 QueryRewrite 定向改写；为空表示无需定向） */
     public static final String MISSING_INFO = "missingInfo";
+    /** 上一轮 CHUNKS 的 dedupKey 集合（累计算法本轮的 delta 即新增证据） */
+    public static final String PREV_CHUNK_IDS = "prevChunkIds";
+    /** 新增证据未改善（verify 判定本轮新增证据未明显帮助回答问题，提前终止重试） */
+    public static final String NO_IMPROVEMENT = "noImprovement";
     public static final String RETRY_COUNT = "retryCount";
     public static final String MAX_RETRY = "maxRetry";
     public static final String NEXT = "next";

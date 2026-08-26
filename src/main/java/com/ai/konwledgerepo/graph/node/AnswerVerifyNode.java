@@ -24,13 +24,17 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import com.ai.konwledgerepo.entity.SourceType;
 
 /**
  * 答案自检节点（两阶段）：
@@ -55,8 +59,8 @@ public class AnswerVerifyNode implements NodeAction {
     /** 阶段二（faithfulness）输出上限：断言 JSON 数组为任务固有量级（13 断言约 1400 token），4000 覆盖 20+ 断言场景且防失控 */
     private static final int MAX_FAITHFULNESS_TOKENS = 4000;
 
-    /** 自检结果：分数 + 缺失信息反馈（空串表示无需定向改写） */
-    public record VerifyResult(double score, String missingInfo) {
+    /** 自检结果：分数 + 缺失信息反馈（空串表示无需定向改写）+ 新增证据未改善标记 */
+    public record VerifyResult(double score, String missingInfo, boolean noImprovement) {
     }
 
     /** 断言判定结果 */
@@ -69,6 +73,7 @@ public class AnswerVerifyNode implements NodeAction {
     private final ExtractJsonParser jsonParser;
     private final Executor qaExecutor;
     private final boolean parallel;
+    private final boolean earlyAbort;
 
     public AnswerVerifyNode(ModelFactory modelFactory, QaTracing qaTracing, PromptCatalog promptCatalog,
                             ExtractJsonParser jsonParser,
@@ -80,6 +85,7 @@ public class AnswerVerifyNode implements NodeAction {
         this.jsonParser = jsonParser;
         this.qaExecutor = qaExecutor;
         this.parallel = qaProps.parallel();
+        this.earlyAbort = qaProps.earlyAbort();
     }
 
     @Override
@@ -91,8 +97,25 @@ public class AnswerVerifyNode implements NodeAction {
             String answer = state.value(QaContextKey.ANSWER).map(String::valueOf).orElse("");
             List<ChunkEvidence> chunks = QaContext.chunks(state.value(QaContextKey.CHUNKS).orElse(List.of()));
 
+            // ===== 提前终止判定：计算本轮新增证据（delta），供阶段一判断"新增证据是否明显帮助" =====
+            int retry = QaContext.intValue(state, QaContextKey.RETRY_COUNT, 0);
+            Set<String> prevKeys = new HashSet<>(QaContext.stringList(state, QaContextKey.PREV_CHUNK_IDS));
+            List<String> currentKeys = new ArrayList<>();
+            for (ChunkEvidence c : chunks) {
+                currentKeys.add(SourceType.dedupKey(c.sourceType(), c.chunkId()));
+            }
+            Set<String> deltaKeys = new HashSet<>(currentKeys);
+            deltaKeys.removeAll(prevKeys);
+            boolean earlyAbortActive = earlyAbort && retry >= 1;
+            String prevMissing = state.value(QaContextKey.MISSING_INFO).map(String::valueOf).orElse("");
+            String prevContext = earlyAbortActive
+                    ? ("缺失信息：" + (prevMissing.isBlank() ? "无" : prevMissing)
+                        + (deltaKeys.isEmpty() ? "（本轮无新增证据）" : "（本轮新增证据已标注【本轮新增】）"))
+                    : "（无，首次评估）";
+            Set<String> markKeys = earlyAbortActive ? deltaKeys : Set.of();
+
             // 证据上下文：全部证据的标题 + 内容片段（让评估器知道覆盖了哪些主题，才能指出缺什么）
-            String evidence = chunks.isEmpty() ? "（无召回证据）" : buildEvidence(chunks);
+            String evidence = chunks.isEmpty() ? "（无召回证据）" : buildEvidence(chunks, markKeys);
 
             AgentConfig agent = QaContext.agent(state);
             String agentPrompt = (agent == null || agent.systemPrompt() == null || agent.systemPrompt().isBlank())
@@ -118,7 +141,7 @@ public class AnswerVerifyNode implements NodeAction {
                         ContextPropagator.wrapSupplier(() -> {
                             ChatModel phase1Chat = modelFactory.getChatModelByUsage(ModelUsage.VERIFY.value(), workspaceId);
                             ModelConfig phase1Cfg = modelFactory.resolveChatConfig(ModelUsage.VERIFY.value(), workspaceId);
-                            String phase1Prompt = promptCatalog.get("answer-verify").formatted(agentPrompt, evidence, question, answer);
+                            String phase1Prompt = promptCatalog.get("answer-verify").formatted(agentPrompt, prevContext, evidence, question, answer);
                             String phase1Resp = LlmTrace.call(qaTracing, phase1Chat, phase1Prompt,
                                     JudgeOptions.of(phase1Chat, phase1Cfg, MAX_VERIFY_TOKENS));
                             return parseResult(phase1Resp);
@@ -181,7 +204,7 @@ public class AnswerVerifyNode implements NodeAction {
                 // 串行路径（parallel=false 或无需阶段二）
                 ChatModel chat = modelFactory.getChatModelByUsage(ModelUsage.VERIFY.value(), workspaceId);
                 ModelConfig cfg = modelFactory.resolveChatConfig(ModelUsage.VERIFY.value(), workspaceId);
-                String prompt = promptCatalog.get("answer-verify").formatted(agentPrompt, evidence, question, answer);
+                String prompt = promptCatalog.get("answer-verify").formatted(agentPrompt, prevContext, evidence, question, answer);
                 String response = LlmTrace.call(qaTracing, chat, prompt, JudgeOptions.of(chat, cfg, MAX_VERIFY_TOKENS));
                 result = parseResult(response);
                 span.setAttribute("score", result.score());
@@ -217,7 +240,7 @@ public class AnswerVerifyNode implements NodeAction {
                 }
             }
 
-            // ===== 组合分 + MISSING_INFO 融合 =====
+            // ===== 组合分 + MISSING_INFO 融合 + 提前终止标记 =====
             if (faithfulness < 1.0 || supportedCount > 0) {
                 span.setAttribute("faithfulness", faithfulness);
                 span.setAttribute("claims", totalClaims);
@@ -228,12 +251,29 @@ public class AnswerVerifyNode implements NodeAction {
             span.setAttribute("combined_score", combined);
             String missingInfo = mergeMissingInfo(result.missingInfo(), unsupported, contradicted);
 
+            // 提前终止：delta 为空（确定性）或模型判定 noImprovement（仅 earlyAbortActive 时生效）
+            boolean noImprovement = false;
+            if (earlyAbortActive) {
+                if (deltaKeys.isEmpty()) {
+                    noImprovement = true;
+                    log.info("AnswerVerify 本轮无新增证据（delta 为空），提前终止重试");
+                } else if (result.noImprovement()) {
+                    noImprovement = true;
+                    log.info("AnswerVerify 模型判定新增证据未改善，提前终止重试");
+                }
+            }
+            if (noImprovement) {
+                span.setAttribute("no_improvement", true);
+            }
+
             return Map.of(
                     QaContextKey.VERIFY_SCORE, combined,
                     QaContextKey.MISSING_INFO, missingInfo,
                     QaContextKey.FAITHFULNESS_SCORE, faithfulness,
                     QaContextKey.UNSUPPORTED_CLAIMS, unsupported,
                     QaContextKey.CONTRADICTED_CLAIMS, contradicted,
+                    QaContextKey.NO_IMPROVEMENT, noImprovement,
+                    QaContextKey.PREV_CHUNK_IDS, currentKeys,
                     QaContextKey.NEXT, QaState.RETRY_FALLBACK.name());
         } catch (Exception e) {
             span.recordException(e);
@@ -312,14 +352,19 @@ public class AnswerVerifyNode implements NodeAction {
         return t.length() > MAX_CLAIM_LEN ? t.substring(0, MAX_CLAIM_LEN) + "…" : t;
     }
 
-    /** 全部证据：来源/文档/标题 + 完整内容片段（judge 需看证据全文才能准确判 SUPPORTED/UNSUPPORTED，与答案生成节点看齐） */
-    private static String buildEvidence(List<ChunkEvidence> chunks) {
+    /** 全部证据：来源/文档/标题 + 内容片段。newKeys 非空时标注【本轮新增】供 earlyAbort 判断。 */
+    private static String buildEvidence(List<ChunkEvidence> chunks, Set<String> newKeys) {
+        boolean mark = newKeys != null && !newKeys.isEmpty();
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < chunks.size(); i++) {
             ChunkEvidence c = chunks.get(i);
             String title = c.title() == null || c.title().isBlank() ? c.docName() : c.title();
             String snippet = c.content() == null ? "" : c.content();
-            sb.append("[").append(i + 1).append("] ").append(c.sourceType())
+            sb.append("[").append(i + 1).append("] ");
+            if (mark && newKeys.contains(SourceType.dedupKey(c.sourceType(), c.chunkId()))) {
+                sb.append("【本轮新增】");
+            }
+            sb.append(c.sourceType())
                     .append("《").append(c.docName()).append("》 标题：").append(title)
                     .append("\n").append(snippet).append("\n\n");
         }
@@ -332,13 +377,14 @@ public class AnswerVerifyNode implements NodeAction {
      */
     private VerifyResult parseResult(String response) {
         if (response == null || response.isBlank()) {
-            return new VerifyResult(0.0, "");
+            return new VerifyResult(0.0, "", false);
         }
         Map<String, Object> obj = jsonParser.parseObject(response);
         if (!obj.isEmpty() && obj.get("score") instanceof Number scoreNum) {
             double score = Math.min(100, Math.max(0, scoreNum.doubleValue())) / 100.0;
             String missing = obj.get("missing") == null ? "" : String.valueOf(obj.get("missing")).trim();
-            return new VerifyResult(score, normalizeMissing(missing));
+            boolean noImp = obj.get("noImprovement") instanceof Boolean b && b;
+            return new VerifyResult(score, normalizeMissing(missing), noImp);
         }
         String missing = "";
         String scoreText = response;
@@ -358,7 +404,7 @@ public class AnswerVerifyNode implements NodeAction {
             int value = Integer.parseInt(matcher.group(1));
             score = Math.min(100, Math.max(0, value)) / 100.0;
         }
-        return new VerifyResult(score, missing);
+        return new VerifyResult(score, missing, false);
     }
 
     /** 缺失信息规范化：「无」与空串归一为空；去尾部标点；超长截断 */
