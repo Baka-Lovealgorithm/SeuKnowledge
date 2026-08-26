@@ -1,6 +1,7 @@
 package com.ai.konwledgerepo.graph.node;
 
 import com.ai.konwledgerepo.common.Defaults;
+import com.ai.konwledgerepo.config.props.SeuQaProperties;
 import com.ai.konwledgerepo.graph.AgentConfig;
 import com.ai.konwledgerepo.graph.ChunkEvidence;
 import com.ai.konwledgerepo.graph.QaContextKey;
@@ -36,7 +37,15 @@ class RetryOrFallbackNodeTest {
     void setUp() {
         qaTracing = QaTracing.disabled();
         objectMapper = new ObjectMapper();
-        node = new RetryOrFallbackNode(qaTracing, objectMapper);
+        // 默认节点关闭部分回答（partialAnswer=false），既有低分用例仍走拒答
+        node = new RetryOrFallbackNode(qaTracing, objectMapper,
+                new SeuQaProperties(20, 2, 32, 30, false, false, false, 0.4));
+    }
+
+    /** 开启 partialAnswer 的节点（模拟灰度开关打开） */
+    private RetryOrFallbackNode partialNode() {
+        return new RetryOrFallbackNode(qaTracing, objectMapper,
+                new SeuQaProperties(20, 2, 32, 30, false, false, true, 0.4));
     }
 
     private ChunkEvidence ev() {
@@ -196,6 +205,99 @@ class RetryOrFallbackNodeTest {
         // noImprovement=true + 低分 + 已达上限 → 正常拒答
         Map<String, Object> out = node.apply(
                 stateWithNoImprovement(List.of(ev()), 0.5, 2, 2, true));
+
+        assertEquals(Defaults.INSUFFICIENT_EVIDENCE_REFUSAL, out.get(QaContextKey.ANSWER));
+        assertEquals("TERMINAL", out.get(QaContextKey.NEXT));
+    }
+
+    // ===== 部分回答（partialAnswer） =====
+
+    private OverAllState stateForPartial(Double score, Integer retry, Integer maxRetry,
+                                         String answer, String missingInfo, List<String> contradicted) {
+        Map<String, Object> data = new HashMap<>();
+        data.put(QaContextKey.CHUNKS, List.of(ev()));
+        if (score != null) {
+            data.put(QaContextKey.VERIFY_SCORE, score);
+        }
+        if (retry != null) {
+            data.put(QaContextKey.RETRY_COUNT, retry);
+        }
+        if (maxRetry != null) {
+            data.put(QaContextKey.MAX_RETRY, maxRetry);
+        }
+        if (answer != null) {
+            data.put(QaContextKey.ANSWER, answer);
+        }
+        if (missingInfo != null) {
+            data.put(QaContextKey.MISSING_INFO, missingInfo);
+        }
+        if (contradicted != null) {
+            data.put(QaContextKey.CONTRADICTED_CLAIMS, contradicted);
+        }
+        return new OverAllState(data);
+    }
+
+    @Test
+    void partialEnabled_belowThreshold_noContradiction_partialAnswer() throws Exception {
+        Map<String, Object> out = partialNode().apply(stateForPartial(
+                0.5, 2, 2, "ZRDDS 支持多平台多协议。", "2026年产品路线图无相关信息", List.of()));
+
+        String answer = (String) out.get(QaContextKey.ANSWER);
+        assertTrue(answer.startsWith(Defaults.PARTIAL_ANSWER_PREFIX), "部分回答应带前置声明");
+        assertTrue(answer.contains("ZRDDS 支持多平台多协议。"), "应保留合成答案原文");
+        assertTrue(answer.contains("2026年产品路线图无相关信息"), "应附缺漏声明（缺失信息）");
+        assertEquals("TERMINAL", out.get(QaContextKey.NEXT));
+        JsonNode refsNode = objectMapper.readTree((String) out.get(QaContextKey.REFS));
+        assertEquals(1, refsNode.size(), "部分回答仍应附候选证据供自查");
+        assertFalse(out.containsKey(QaContextKey.RETRY_COUNT), "未进入重试分支，RETRY_COUNT 不应 +1");
+    }
+
+    @Test
+    void partialEnabled_scoreBelowFloor_refuses() throws Exception {
+        // 分数 0.3 低于 partialFloor=0.4：即使无矛盾断言也拒答，防输出几乎无支撑的答案
+        Map<String, Object> out = partialNode().apply(stateForPartial(
+                0.3, 2, 2, "组合答案", "缺失内容", List.of()));
+
+        assertEquals(Defaults.INSUFFICIENT_EVIDENCE_REFUSAL, out.get(QaContextKey.ANSWER));
+        assertEquals("TERMINAL", out.get(QaContextKey.NEXT));
+    }
+
+    @Test
+    void partialEnabled_withContradiction_refuses() throws Exception {
+        // 存在矛盾断言（与证据冲突）→ 绝不出部分回答，仍拒答
+        Map<String, Object> out = partialNode().apply(stateForPartial(
+                0.5, 2, 2, "组合答案", "缺失内容", List.of("与证据矛盾的断言")));
+
+        assertEquals(Defaults.INSUFFICIENT_EVIDENCE_REFUSAL, out.get(QaContextKey.ANSWER));
+        assertEquals("TERMINAL", out.get(QaContextKey.NEXT));
+    }
+
+    @Test
+    void partialEnabled_noMissingInfo_suffixOmitted() throws Exception {
+        Map<String, Object> out = partialNode().apply(stateForPartial(
+                0.5, 2, 2, "组合答案", "", List.of()));
+
+        String answer = (String) out.get(QaContextKey.ANSWER);
+        assertTrue(answer.startsWith(Defaults.PARTIAL_ANSWER_PREFIX));
+        assertTrue(answer.contains("组合答案"));
+        assertFalse(answer.contains("未能得到证据支撑"), "缺失信息为空时不应附缺漏声明");
+    }
+
+    @Test
+    void partialEnabled_retryBudgetStillRetries() throws Exception {
+        // 还有重试预算时优先重试召回，部分回答只替代"放弃"出口，不提前启用
+        Map<String, Object> out = partialNode().apply(stateForPartial(
+                0.5, 0, 2, "组合答案", "缺失内容", List.of()));
+
+        assertEquals(QaState.QUERY_REWRITE.name(), out.get(QaContextKey.NEXT));
+        assertEquals(1, out.get(QaContextKey.RETRY_COUNT));
+    }
+
+    @Test
+    void partialDisabled_belowThreshold_stillRefuses() throws Exception {
+        // 灰度开关关闭时维持原二元行为（默认节点 partialAnswer=false）
+        Map<String, Object> out = node.apply(stateForPartial(
+                0.5, 2, 2, "组合答案", "缺失内容", List.of()));
 
         assertEquals(Defaults.INSUFFICIENT_EVIDENCE_REFUSAL, out.get(QaContextKey.ANSWER));
         assertEquals("TERMINAL", out.get(QaContextKey.NEXT));

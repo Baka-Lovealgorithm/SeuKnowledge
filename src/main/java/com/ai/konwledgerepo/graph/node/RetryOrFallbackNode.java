@@ -1,6 +1,7 @@
 package com.ai.konwledgerepo.graph.node;
 
 import com.ai.konwledgerepo.common.Defaults;
+import com.ai.konwledgerepo.config.props.SeuQaProperties;
 import com.ai.konwledgerepo.graph.AgentConfig;
 import com.ai.konwledgerepo.graph.ChunkEvidence;
 import com.ai.konwledgerepo.graph.QaContext;
@@ -21,8 +22,9 @@ import java.util.Map;
  * 重试与兜底节点：
  * - 无召回证据 → 诚实兜底（Defaults.INSUFFICIENT_EVIDENCE_ANSWER）
  * - 置信度低于阈值且未达重试上限 → 回 QUERY_REWRITE 扩大召回重试
- * - 置信度低于阈值且重试已用尽 → 显式拒答（Defaults.INSUFFICIENT_EVIDENCE_REFUSAL），
- *   REFS 携带候选证据供用户自查，不再原样输出低分答案
+ * - 置信度低于阈值且重试已用尽（或提前终止）→ 三级出口：
+ *   部分回答（partialAnswer 开启、无矛盾断言、分数≥partialFloor）→ 合成答案 + 缺漏声明 + REFS，
+ *   否则显式拒答（Defaults.INSUFFICIENT_EVIDENCE_REFUSAL）+ REFS 供用户自查
  * - 置信度达标 → 给出当前答案
  */
 @Component
@@ -32,10 +34,14 @@ public class RetryOrFallbackNode implements NodeAction {
 
     private final QaTracing qaTracing;
     private final ObjectMapper objectMapper;
+    private final boolean partialAnswer;
+    private final double partialFloor;
 
-    public RetryOrFallbackNode(QaTracing qaTracing, ObjectMapper objectMapper) {
+    public RetryOrFallbackNode(QaTracing qaTracing, ObjectMapper objectMapper, SeuQaProperties qaProps) {
         this.qaTracing = qaTracing;
         this.objectMapper = objectMapper;
+        this.partialAnswer = qaProps.partialAnswer();
+        this.partialFloor = qaProps.partialFloor();
     }
 
     @Override
@@ -73,8 +79,14 @@ public class RetryOrFallbackNode implements NodeAction {
                         QaContextKey.RETRY_COUNT, retry + 1,
                         QaContextKey.NEXT, QaState.QUERY_REWRITE.name());
             }
-            // 重试已用尽或新增证据无改善仍低于阈值：显式拒答并附候选证据（不再原样输出低分答案）
+            // 重试已用尽或新增证据无改善仍低于阈值：三级出口
             if (score < threshold) {
+                if (tryPartialAnswer(state, chunks, score, noImprovement, span)) {
+                    return Map.of(
+                            QaContextKey.ANSWER, buildPartialAnswer(state),
+                            QaContextKey.REFS, QaContext.toRefsJson(chunks, objectMapper),
+                            QaContextKey.NEXT, QaState.TERMINAL.name());
+                }
                 if (noImprovement) {
                     SseStreamContext.sendStage("RETRY_FALLBACK", "自检未通过（得分 " + Math.round(score * 100)
                             + "）且新增证据无改善，提前拒答并附候选证据");
@@ -104,5 +116,47 @@ public class RetryOrFallbackNode implements NodeAction {
         } finally {
             span.end();
         }
+    }
+
+    /**
+     * 部分回答判定：开关开启、无矛盾断言（矛盾=与证据冲突，绝不出）、分数≥下限时，
+     * 输出合成答案 + 缺漏声明 + 候选证据，替代显式拒答。
+     */
+    private boolean tryPartialAnswer(OverAllState state, List<ChunkEvidence> chunks, double score,
+                                     boolean noImprovement, Span span) {
+        if (!partialAnswer) {
+            return false;
+        }
+        List<String> contradicted = QaContext.stringList(state, QaContextKey.CONTRADICTED_CLAIMS);
+        if (!contradicted.isEmpty()) {
+            return false;
+        }
+        if (score < partialFloor) {
+            return false;
+        }
+        SseStreamContext.sendStage("RETRY_FALLBACK", "自检未通过（得分 " + Math.round(score * 100)
+                + "），无矛盾断言且达部分回答下限，输出部分答案并提示缺漏");
+        span.setAttribute("action", "partial");
+        span.setAttribute("reason", "score_below_threshold_no_contradiction");
+        span.setAttribute("score", score);
+        span.setAttribute("retry_count", QaContext.intValue(state, QaContextKey.RETRY_COUNT, 0));
+        if (noImprovement) {
+            span.setAttribute("no_improvement", true);
+        }
+        return true;
+    }
+
+    /** 组装部分回答：前置声明 + 合成答案（保留原引用）+ 缺漏声明（缺失信息为空时省略） */
+    private String buildPartialAnswer(OverAllState state) {
+        String composed = state.value(QaContextKey.ANSWER).map(String::valueOf).orElse("");
+        String missing = state.value(QaContextKey.MISSING_INFO).map(String::valueOf).orElse("").trim();
+        StringBuilder sb = new StringBuilder(Defaults.PARTIAL_ANSWER_PREFIX);
+        if (composed != null && !composed.isBlank()) {
+            sb.append(composed);
+        }
+        if (!missing.isEmpty() && !"无".equals(missing)) {
+            sb.append(Defaults.PARTIAL_ANSWER_MISSING_SUFFIX.formatted(missing));
+        }
+        return sb.toString();
     }
 }

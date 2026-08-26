@@ -13,5 +13,7 @@ public record SeuQaProperties(
         @DefaultValue("32") int concurrencyLimit,
         @DefaultValue("30") int concurrencyTimeoutSeconds,
         @DefaultValue("true") boolean parallel,
-        @DefaultValue("false") boolean earlyAbort) {
+        @DefaultValue("false") boolean earlyAbort,
+        @DefaultValue("false") boolean partialAnswer,
+        @DefaultValue("0.4") double partialFloor) {
 }
