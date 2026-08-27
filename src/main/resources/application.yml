@@ -75,6 +75,9 @@ seuknowledge:
     login-fail-max: ${KB_LOGIN_FAIL_MAX:5}      # 连续登录失败达此数触发临时锁定
     login-fail-window-seconds: ${KB_LOGIN_FAIL_WINDOW:900} # 登录失败计数窗口（秒，默认 15 分钟）
     login-lock-seconds: ${KB_LOGIN_LOCK:900}     # 登录锁定时长（秒，默认 15 分钟）
+  infra-check:
+    enabled: ${KB_INFRA_CHECK:true}              # 启动时 Redis/MySQL/ES 连通性自检（false 跳过）
+    fail-fast: ${KB_INFRA_FAIL_FAST:false}       # 任一项失败即阻断启动（生产建议 true；开发默认 false 只告警）
   cache:
     member-ttl-seconds: ${KB_CACHE_MEMBER_TTL:300}     # 用户→工作空间角色缓存
     model-ttl-seconds: ${KB_CACHE_MODEL_TTL:600}       # 模型配置解析缓存
