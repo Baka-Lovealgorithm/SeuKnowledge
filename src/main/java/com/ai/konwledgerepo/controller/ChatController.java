@@ -119,6 +119,15 @@ public class ChatController {
         });
     }
 
+    /** 取消流式生成（幂等）：停止当前会话的问答流，保留部分答案。 */
+    @PostMapping("/session/{id}/ask/cancel")
+    public ApiResponse<Void> cancelAsk(@PathVariable Long id,
+                                       @RequestAttribute("userId") Long userId,
+                                       @RequestAttribute("workspaceId") Long workspaceId) {
+        chatService.cancelAsk(id, userId, workspaceId);
+        return ApiResponse.ok();
+    }
+
     /** 限流/防重拒绝时返回携带 error 事件的 SSE 流，前端按 data.type === 'error' 处理 */
     private SseEmitter sseError(String message) {
         SseEmitter emitter = new SseEmitter();

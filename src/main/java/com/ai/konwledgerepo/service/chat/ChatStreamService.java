@@ -2,9 +2,10 @@ package com.ai.konwledgerepo.service.chat;
 
 import com.ai.konwledgerepo.common.BizException;
 import com.ai.konwledgerepo.common.Defaults;
-import com.ai.konwledgerepo.common.ErrorCodes;
+import com.ai.konwledgerepo.common.GenerationCancelledException;
 import com.ai.konwledgerepo.common.RedisKeys;
 import com.ai.konwledgerepo.common.SseStreamContext;
+import com.ai.konwledgerepo.common.SseStreamContext.SseFlow;
 import com.ai.konwledgerepo.common.TaskLock;
 import com.ai.konwledgerepo.common.Texts;
 import com.ai.konwledgerepo.config.props.SeuQaProperties;
@@ -15,7 +16,6 @@ import com.ai.konwledgerepo.graph.QaContext;
 import com.ai.konwledgerepo.graph.QaContextKey;
 import com.ai.konwledgerepo.graph.QaGraphRunner;
 import com.ai.konwledgerepo.service.agent.AgentService;
-import com.ai.konwledgerepo.service.chat.HistoryEntry;
 import com.ai.konwledgerepo.service.knowledgebase.KnowledgeBaseService;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import org.springframework.scheduling.annotation.Async;
@@ -25,12 +25,15 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 流式问答域（SSE）：链路执行期间答案逐 token 推送，末尾推送 refs 与 done。
  * 由 Controller 经 {@link ChatService} 门面调用，本类 {@code @Async("streamVirtualExecutor")} 走独立虚拟线程池，
  * 避免阻塞 Servlet 线程（Tomcat 已虚拟线程化）且不与文档解析/抽取竞争平台线程池；
  * 持久化统一委托 {@link ChatMessageStore}（消息与会话状态原子落库）。
+ * <p>
+ * v2 支持用户主动停止生成：{@link #cancel(Long)} 设置取消标志，token 级检查立即中断 LLM 流。
  */
 @Service
 public class ChatStreamService {
@@ -46,6 +49,9 @@ public class ChatStreamService {
     private final Duration lockTtl;
     private final int maxRetry;
     private final int messageWindow;
+
+    /** 活动中的流式任务（sessionId → SseFlow），供取消端点查找 */
+    private final ConcurrentHashMap<Long, SseFlow> activeFlows = new ConcurrentHashMap<>();
 
     public ChatStreamService(ChatSessionService sessionService,
                              ChatHistoryService historyService,
@@ -100,6 +106,11 @@ public class ChatStreamService {
             titleService.submitAutoTitle(session, question, workspaceId);
 
             SseStreamContext.set(emitter);
+            SseFlow flow = SseStreamContext.getFlow();
+            if (flow != null) {
+                activeFlows.put(sessionId, flow);
+            }
+
             OverAllState result = qaGraphRunner.run(input);
 
             String answer = result.value(QaContextKey.CHAT_ONLY_ANSWER)
@@ -119,6 +130,20 @@ public class ChatStreamService {
 
             sendSseEvent(emitter, "done", null);
             emitter.complete();
+        } catch (GenerationCancelledException e) {
+            // 用户主动停止：持久化部分答案（部分答案来自异常携带的已累积 delta）
+            try {
+                ChatSession session = sessionService.getSession(sessionId, userId, workspaceId);
+                messageStore.persistInterruptedAnswer(session, userId, question, e.getPartial(), workspaceId);
+            } catch (Exception ex) {
+                // 落库失败不影响停止语义
+            }
+            try {
+                sendSseEvent(emitter, "stopped", null);
+                emitter.complete();
+            } catch (Exception ignored) {
+                // 连接已断开
+            }
         } catch (Exception e) {
             try {
                 sendSseEvent(emitter, "error", Texts.truncate(Texts.friendlyError(e.getMessage()), 200));
@@ -127,8 +152,20 @@ public class ChatStreamService {
                 // 连接已断开
             }
         } finally {
+            activeFlows.remove(sessionId);
             SseStreamContext.clear();
             taskLock.release(RedisKeys.askLock(sessionId));
+        }
+    }
+
+    /**
+     * 取消指定会话的流式生成（幂等）。
+     * 由取消端点调用，设置共享取消标志后，流式回调在下一 token 立即停止。
+     */
+    public void cancel(Long sessionId) {
+        SseFlow flow = activeFlows.get(sessionId);
+        if (flow != null) {
+            flow.cancelled.set(true);
         }
     }
 

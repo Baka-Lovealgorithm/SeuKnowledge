@@ -71,4 +71,34 @@ public class ChatMessageStore {
         historyService.appendHistory(sessionId, role, content);
         redisCacheService.delete(RedisKeys.messages(sessionId));
     }
+
+    /** 保存单条消息（带 interrupted 标记） */
+    public void saveMessage(Long sessionId, String role, String content, String refs, boolean interrupted) {
+        ChatMessage message = new ChatMessage();
+        message.setSessionId(sessionId);
+        message.setRole(role);
+        message.setContent(content);
+        message.setRefs(refs);
+        message.setInterrupted(interrupted);
+        messageRepository.save(message);
+        historyService.appendHistory(sessionId, role, content, interrupted);
+        redisCacheService.delete(RedisKeys.messages(sessionId));
+    }
+
+    /**
+     * 停止生成后持久化部分答案：USER 消息 + ASSISTANT 消息（interrupted=true）。
+     * 与 {@link #persistAnswer} 一致的悲观锁事务。
+     */
+    @Transactional
+    public void persistInterruptedAnswer(ChatSession session, Long userId, String question, String partialAnswer,
+                                         Long workspaceId) {
+        ChatSession locked = sessionRepository.findByIdForUpdate(session.getId())
+                .orElseThrow(() -> new BizException("会话不存在或已删除"));
+        saveMessage(locked.getId(), MessageRole.USER.value(), question, null, false);
+        saveMessage(locked.getId(), MessageRole.ASSISTANT.value(), partialAnswer == null ? "" : partialAnswer, "[]", true);
+        locked.setMessageCount(locked.getMessageCount() + 2);
+        locked.setLastMessageAt(java.time.LocalDateTime.now());
+        sessionRepository.save(locked);
+        sessionService.evictSessionList(userId, workspaceId);
+    }
 }

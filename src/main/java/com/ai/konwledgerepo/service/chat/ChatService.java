@@ -67,4 +67,10 @@ public class ChatService {
     public void askStreamAsync(Long sessionId, Long userId, String question, SseEmitter emitter, Long workspaceId) {
         streamService.askStreamAsync(sessionId, userId, question, emitter, workspaceId);
     }
+
+    /** 取消流式问答（幂等，仅校验归属） */
+    public void cancelAsk(Long sessionId, Long userId, Long workspaceId) {
+        sessionService.getSession(sessionId, userId, workspaceId); // 校验归属
+        streamService.cancel(sessionId);
+    }
 }

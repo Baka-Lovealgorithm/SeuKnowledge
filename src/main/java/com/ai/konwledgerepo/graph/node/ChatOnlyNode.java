@@ -35,6 +35,7 @@ public class ChatOnlyNode implements NodeAction {
 
     @Override
     public Map<String, Object> apply(OverAllState state) throws Exception {
+        SseStreamContext.throwIfCancelled();
         SseStreamContext.sendStage("CHAT_ONLY", "闲聊回复");
         Span span = qaTracing.begin("node/chat_only");
         try {
@@ -46,9 +47,12 @@ public class ChatOnlyNode implements NodeAction {
 
             String answer;
             SseEmitter emitter = SseStreamContext.get();
+            java.util.concurrent.atomic.AtomicBoolean cancelled = SseStreamContext.cancelFlag();
+            java.util.function.BooleanSupplier cancelSupplier = cancelled == null ? null : cancelled::get;
             if (emitter != null) {
                 // 流式回调运行在模型供应商/Reactor 线程（ThreadLocal 不可见），用捕获的 emitter 显式推送
-                answer = LlmTrace.stream(qaTracing, chat, prompt, text -> SseStreamContext.send(emitter, "delta", text));
+                answer = LlmTrace.stream(qaTracing, chat, prompt,
+                        text -> SseStreamContext.send(emitter, "delta", text), cancelSupplier);
                 SseStreamContext.markDeltaSent();
             } else {
                 answer = LlmTrace.call(qaTracing, chat, prompt);

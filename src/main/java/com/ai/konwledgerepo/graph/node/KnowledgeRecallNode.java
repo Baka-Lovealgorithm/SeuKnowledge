@@ -60,6 +60,7 @@ public class KnowledgeRecallNode implements NodeAction {
 
     @Override
     public Map<String, Object> apply(OverAllState state) throws Exception {
+        SseStreamContext.throwIfCancelled();
         long kbId = QaContext.longValue(state, QaContextKey.KB_ID, -1L);
         List<String> queries = QaContext.stringList(state, QaContextKey.QUERIES);
         if (kbId < 0 || queries.isEmpty()) {

@@ -52,6 +52,7 @@ public class AnswerComposeNode implements NodeAction {
 
     @Override
     public Map<String, Object> apply(OverAllState state) throws Exception {
+        SseStreamContext.throwIfCancelled();
         SseStreamContext.sendStage("ANSWER_COMPOSE", "答案生成");
         Span span = qaTracing.begin("node/answer_compose");
         try {
@@ -115,16 +116,20 @@ public class AnswerComposeNode implements NodeAction {
         }
     }
 
-    /** 有 SSE 上下文且为首轮时流式输出答案 token；重试轮次或非流式一次性生成（避免重试重复输出） */
+    /** 有 SSE 上下文且为首轮时流式输出答案 token；重试轮次或非流式一次性生成（避免重试重复输出）。支持取消标志。 */
     private String generateAnswer(OverAllState state, ChatModel chat, List<Message> messages) {
         SseEmitter emitter = SseStreamContext.get();
         int retry = QaContext.intValue(state, QaContextKey.RETRY_COUNT, 0);
+        java.util.concurrent.atomic.AtomicBoolean cancelled = SseStreamContext.cancelFlag();
+        java.util.function.BooleanSupplier cancelSupplier = cancelled == null ? null : cancelled::get;
         if (emitter == null || retry > 0) {
-            return LlmTrace.call(qaTracing, chat, messages);
+            return LlmTrace.call(qaTracing, chat, messages, null, cancelSupplier);
         }
         // 流式回调可能运行在模型供应商/Reactor 线程（ThreadLocal 不可见），
-        // 必须使用捕获的 emitter 显式推送（见 SseStreamContext.send(emitter, ...)）
-        String answer = LlmTrace.stream(qaTracing, chat, messages, text -> SseStreamContext.send(emitter, "delta", text));
+        // 必须使用捕获的 emitter 显式推送（见 SseStreamContext.send(emitter, ...)）；
+        // 取消标志通过 AtomicBoolean 引用跨线程可见
+        String answer = LlmTrace.stream(qaTracing, chat, messages,
+                text -> SseStreamContext.send(emitter, "delta", text), cancelSupplier);
         SseStreamContext.markDeltaSent();
         return answer;
     }

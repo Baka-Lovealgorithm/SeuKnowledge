@@ -29,6 +29,10 @@ public class ChatMessage extends BaseEntity {
     @Column(length = 32)
     private String intent;
 
+    /** 是否被用户中途停止 */
+    @Column
+    private Boolean interrupted;
+
     public Long getSessionId() {
         return sessionId;
     }
@@ -67,5 +71,13 @@ public class ChatMessage extends BaseEntity {
 
     public void setIntent(String intent) {
         this.intent = intent;
+    }
+
+    public Boolean getInterrupted() {
+        return interrupted;
+    }
+
+    public void setInterrupted(Boolean interrupted) {
+        this.interrupted = interrupted;
     }
 }

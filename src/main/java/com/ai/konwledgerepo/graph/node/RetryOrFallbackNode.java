@@ -46,6 +46,7 @@ public class RetryOrFallbackNode implements NodeAction {
 
     @Override
     public Map<String, Object> apply(OverAllState state) throws Exception {
+        SseStreamContext.throwIfCancelled();
         Span span = qaTracing.begin("node/retry_fallback");
         try {
             List<ChunkEvidence> chunks = QaContext.chunks(state.value(QaContextKey.CHUNKS).orElse(List.of()));

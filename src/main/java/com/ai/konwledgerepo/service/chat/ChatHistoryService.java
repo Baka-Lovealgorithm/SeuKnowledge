@@ -5,6 +5,7 @@ import com.ai.konwledgerepo.common.RedisKeys;
 import com.ai.konwledgerepo.config.props.SeuCacheProperties;
 import com.ai.konwledgerepo.config.props.SeuQaProperties;
 import com.ai.konwledgerepo.entity.ChatMessage;
+import com.ai.konwledgerepo.entity.MessageRole;
 import com.ai.konwledgerepo.repository.ChatMessageRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
 import org.springframework.data.domain.PageRequest;
@@ -18,7 +19,9 @@ import java.util.Optional;
 
 /**
  * 会话记忆域：问答历史窗口的读取与缓存维护。
- * 缓存策略（fail-open，Redis 不可用自动回源 DB）：history:{sessionId}（TTL 600s，消息保存后追加）。
+ * 缓存策略（fail-open，Redis 不可用自动回源 DB）：history:v2:{sessionId}（TTL 600s，消息保存后追加）。
+ * <p>
+ * v2：拦截被中断的 assistant 消息（interrupted=true），不进入 LLM 多轮上下文。
  */
 @Service
 public class ChatHistoryService {
@@ -38,14 +41,15 @@ public class ChatHistoryService {
         this.historyTtl = Duration.ofSeconds(cacheProps.historyTtlSeconds());
     }
 
-    /** 会话记忆读取：Redis 缓存优先（请求窗口不超过缓存容量 messageWindow 时），miss 回源 DB 回填 */
+    /** 会话记忆读取：Redis 缓存优先（请求窗口不超过缓存容量 messageWindow 时），miss 回源 DB 回填。
+     * 返回值已过滤被中断的 assistant 消息（保留其前面的 user 问题）。 */
     public List<HistoryEntry> cachedHistory(Long sessionId, int window) {
         int safeWindow = window <= 0 ? messageWindow : window;
         Optional<List<HistoryEntry>> cached = redisCacheService.get(RedisKeys.history(sessionId),
                 new TypeReference<List<HistoryEntry>>() {
                 });
         if (cached.isPresent() && safeWindow <= messageWindow) {
-            List<HistoryEntry> entries = cached.get();
+            List<HistoryEntry> entries = filterInterrupted(cached.get());
             if (entries.size() > safeWindow) {
                 return new ArrayList<>(entries.subList(entries.size() - safeWindow, entries.size()));
             }
@@ -56,22 +60,39 @@ public class ChatHistoryService {
         return entries;
     }
 
-    /** 从 DB 加载最近 window 条记忆（缓存容量按全局窗口上限截断，保证任意窗口请求可命中缓存） */
+    /** 从 DB 加载最近 window 条记忆（缓存容量按全局窗口上限截断，保证任意窗口请求可命中缓存）。
+     * 返回值已过滤被中断的 assistant 消息。 */
     private List<HistoryEntry> loadHistoryFromDb(Long sessionId, int window) {
         List<ChatMessage> recent = new ArrayList<>(
                 messageRepository.findBySessionIdOrderByIdDesc(sessionId, PageRequest.of(0, window)));
         Collections.reverse(recent);
         List<HistoryEntry> entries = recent.stream()
-                .map(m -> new HistoryEntry(m.getRole(), m.getContent()))
+                .map(m -> {
+                    Boolean interrupted = m.getInterrupted();
+                    return new HistoryEntry(m.getRole(), m.getContent(), interrupted != null && interrupted);
+                })
                 .toList();
+        entries = filterInterrupted(entries);
         if (entries.size() > messageWindow) {
             entries = new ArrayList<>(entries.subList(entries.size() - messageWindow, entries.size()));
         }
         return entries;
     }
 
+    /** 丢弃被中断的 assistant 消息；保留其前面的 user 问题（后续多轮仍在同一会话中操作） */
+    private static List<HistoryEntry> filterInterrupted(List<HistoryEntry> entries) {
+        return entries.stream()
+                .filter(e -> !(MessageRole.ASSISTANT.value().equals(e.role()) && Boolean.TRUE.equals(e.interrupted())))
+                .toList();
+    }
+
     /** 消息保存后追加到会话记忆缓存（截断到全局窗口）；缓存 miss 时不维护，由下次读取回源重建 */
     public void appendHistory(Long sessionId, String role, String content) {
+        appendHistory(sessionId, role, content, false);
+    }
+
+    /** 消息保存后追加到会话记忆缓存（带 interrupted 标记） */
+    public void appendHistory(Long sessionId, String role, String content, boolean interrupted) {
         Optional<List<HistoryEntry>> cached = redisCacheService.get(RedisKeys.history(sessionId),
                 new TypeReference<List<HistoryEntry>>() {
                 });
@@ -79,7 +100,7 @@ public class ChatHistoryService {
             return;
         }
         List<HistoryEntry> updated = new ArrayList<>(cached.get());
-        updated.add(new HistoryEntry(role, content));
+        updated.add(new HistoryEntry(role, content, interrupted));
         if (updated.size() > messageWindow) {
             updated = new ArrayList<>(updated.subList(updated.size() - messageWindow, updated.size()));
         }

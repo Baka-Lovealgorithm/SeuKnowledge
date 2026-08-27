@@ -25,8 +25,11 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
+
+import com.ai.konwledgerepo.common.GenerationCancelledException;
 
 /**
  * 带链路追踪的 LLM / 向量 / 识图调用封装。
@@ -88,7 +91,13 @@ public final class LlmTrace {
 
     /** 流式文本调用：逐 token 回调 onDelta，末尾统计 usage（取最后一条携带 usage 的响应）。 */
     public static String stream(QaTracing tracing, ChatModel chat, String prompt, Consumer<String> onDelta) {
-        return stream(tracing, chat, List.of(new UserMessage(prompt)), onDelta);
+        return stream(tracing, chat, List.of(new UserMessage(prompt)), onDelta, null);
+    }
+
+    /** 流式文本调用（可取消）：逐 token 回调 onDelta，cancelled 非空时每 token 检查取消标志。 */
+    public static String stream(QaTracing tracing, ChatModel chat, String prompt, Consumer<String> onDelta,
+                                BooleanSupplier cancelled) {
+        return stream(tracing, chat, List.of(new UserMessage(prompt)), onDelta, cancelled);
     }
 
     // ===== List<Message> 重载（结构化传参：消息角色化） =====
@@ -103,11 +112,28 @@ public final class LlmTrace {
      * 消息角色化：SystemMessage 放指令，UserMessage 放数据，清晰分离注入面。
      */
     public static String call(QaTracing tracing, ChatModel chat, List<Message> messages, ChatOptions options) {
+        return call(tracing, chat, messages, options, null);
+    }
+
+    /**
+     * 同步调用（消息列表 + 完整 options + 可取消）。
+     * cancelled 非空时，执行前检查取消标志，为 true 直接抛 {@link GenerationCancelledException}。
+     */
+    public static String call(QaTracing tracing, ChatModel chat, List<Message> messages, ChatOptions options,
+                              BooleanSupplier cancelled) {
+        if (cancelled != null && cancelled.getAsBoolean()) {
+            throw new GenerationCancelledException("");
+        }
         Span span = tracing.beginGeneration(chat);
         long start = System.currentTimeMillis();
         try (Scope scope = span.makeCurrent()) {
             Prompt p = options == null ? new Prompt(messages) : new Prompt(messages, options);
-            ChatResponse response = awaitWithTimeout("text", () -> chat.call(p), llmTimeout);
+            ChatResponse response = awaitWithTimeout("text", () -> {
+                if (cancelled != null && cancelled.getAsBoolean()) {
+                    throw new GenerationCancelledException("");
+                }
+                return chat.call(p);
+            }, llmTimeout);
             Usage usage = usageOf(response);
             QaTracing.setUsage(span, usage);
             TokenAccumulator.accumulate(TokenAccumulator.TYPE_TEXT, usage);
@@ -119,6 +145,9 @@ public final class LlmTrace {
             if (e instanceof LlmTimeoutException) {
                 span.setAttribute("llm.timeout", true);
             }
+            if (e instanceof GenerationCancelledException) {
+                span.setAttribute("llm.cancelled", true);
+            }
             span.recordException(e);
             logDirectError("text", QaTracing.modelName(chat), render(messages), e, System.currentTimeMillis() - start);
             throw e;
@@ -129,6 +158,12 @@ public final class LlmTrace {
 
     /** 流式调用（消息列表）：逐 token 回调 onDelta */
     public static String stream(QaTracing tracing, ChatModel chat, List<Message> messages, Consumer<String> onDelta) {
+        return stream(tracing, chat, messages, onDelta, null);
+    }
+
+    /** 流式调用（消息列表，可取消）：逐 token 回调 onDelta；cancelled 非空时每 token 检查。 */
+    public static String stream(QaTracing tracing, ChatModel chat, List<Message> messages, Consumer<String> onDelta,
+                                BooleanSupplier cancelled) {
         Span span = tracing.beginGeneration(chat);
         long start = System.currentTimeMillis();
         try (Scope scope = span.makeCurrent()) {
@@ -144,6 +179,9 @@ public final class LlmTrace {
                             ? null : response.getResult().getOutput().getText();
                     if (t != null && !t.isEmpty()) {
                         sb.append(t);
+                        if (cancelled != null && cancelled.getAsBoolean()) {
+                            throw new GenerationCancelledException(sb.toString());
+                        }
                         if (onDelta != null) {
                             onDelta.accept(t);
                         }
@@ -158,6 +196,9 @@ public final class LlmTrace {
         } catch (Exception e) {
             if (e instanceof LlmTimeoutException) {
                 span.setAttribute("llm.timeout", true);
+            }
+            if (e instanceof GenerationCancelledException) {
+                span.setAttribute("llm.cancelled", true);
             }
             span.recordException(e);
             logDirectError("stream", QaTracing.modelName(chat), render(messages), e, System.currentTimeMillis() - start);

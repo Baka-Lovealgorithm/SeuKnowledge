@@ -1,6 +1,6 @@
 <template>
   <el-container class="chat-page">
-    <el-aside width="280px" class="chat-aside">
+    <el-aside v-show="!sidebarCollapsed" width="280px" class="chat-aside">
       <div class="aside-top">
         <el-select v-model="kbId" placeholder="选择知识库" style="width: 100%" @change="onKbChange">
           <el-option v-for="kb in kbs" :key="kb.id" :label="kb.name" :value="kb.id" />
@@ -27,23 +27,29 @@
         >
           <el-checkbox v-if="manageMode" :model-value="selectedIds.has(s.id)" class="session-check" @click.stop @change="toggleSelect(s)" />
           <div class="session-title">
-            {{ s.title && s.title !== '新会话' ? s.title : '会话 #' + s.id }}
+            <span class="session-name">{{ s.title && s.title !== '新会话' ? s.title : '会话 #' + s.id }}</span>
             <span class="session-ops" @click.stop>
               <el-icon class="op" @click="openRename(s)"><Edit /></el-icon>
               <el-icon class="op danger" @click="removeSession(s)"><Delete /></el-icon>
             </span>
           </div>
-          <div class="session-meta">{{ s.messageCount }} 条消息 · {{ fmt(s.lastMessageAt || s.createdAt) }}</div>
         </div>
       </div>
     </el-aside>
     <el-container>
+      <el-header class="chat-header-bar">
+        <el-button class="toggle-sidebar-btn" text @click="toggleSidebar" :title="sidebarCollapsed ? '展开对话列表' : '收起对话列表'">
+          <el-icon :size="18"><Expand v-if="sidebarCollapsed" /><Fold v-else /></el-icon>
+        </el-button>
+        <span class="chat-title">{{ currentSessionTitle }}</span>
+      </el-header>
       <el-main class="chat-main" ref="mainRef">
         <div v-if="!sessionId" class="empty-tip">选择一个知识库并新建会话，开始提问</div>
         <div v-for="(m, i) in messages" :key="i" class="msg-row" :class="m.role.toLowerCase()">
           <div class="msg-bubble">
             <div class="msg-role">{{ m.role === 'USER' ? '我' : '助手' }}</div>
             <div class="msg-content"><MdContent :content="m.content" /></div>
+            <el-tag v-if="m.role === 'ASSISTANT' && m.interrupted" type="info" size="small" style="margin-top:6px">已停止</el-tag>
             <div v-if="m.role === 'ASSISTANT' && refsList[i]" class="msg-refs">
               <div v-for="(r, j) in refsList[i]" :key="j" class="ref-item">
                 <span class="ref-index">[{{ j + 1 }}]</span>
@@ -75,10 +81,11 @@
         <el-input
           v-model="input" placeholder="输入问题，回车发送"
           :disabled="(!sessionId && !draft) || isSendingCurrent"
-          @keyup.enter="send"
+          @keyup.enter="isSendingCurrent ? null : send()"
         >
           <template #append>
-            <el-button :loading="isSendingCurrent" @click="send">发送</el-button>
+            <el-button v-if="isSendingCurrent" type="danger" @click="stopCurrent">⏹ 停止</el-button>
+            <el-button v-else @click="send">发送</el-button>
           </template>
         </el-input>
       </el-footer>
@@ -97,7 +104,7 @@
 <script setup>
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Edit, Delete } from '@element-plus/icons-vue'
+import { Edit, Delete, Expand, Fold } from '@element-plus/icons-vue'
 import { chatApi, kbApi } from '../api'
 import { useAuthStore } from '../stores/auth'
 import MdContent from '../components/MdContent.vue'
@@ -114,12 +121,26 @@ const input = ref('')
 const draft = ref(false)
 const stageStore = reactive(new Map())
 const sendingSessions = reactive(new Set())
+const aborters = reactive(new Map())
+const stoppedSessions = reactive(new Set())
 const manageMode = ref(false)
 const selectedIds = reactive(new Set())
 const mainRef = ref(null)
 const renameVisible = ref(false)
 const renameTitle = ref('')
 const renamingSession = ref(null)
+const sidebarCollapsed = ref(false)
+
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+}
+
+const currentSessionTitle = computed(() => {
+  if (draft.value || !sessionId.value) return '新对话'
+  const s = sessions.value.find((x) => x.id === sessionId.value)
+  if (s && s.title && s.title !== '新会话') return s.title
+  return '会话 #' + sessionId.value
+})
 
 // ===== 问答阶段状态（SSE stage 事件 → 流程条）=====
 const STAGES = [
@@ -279,12 +300,15 @@ async function send() {
   messages.value.push({ role: 'ASSISTANT', content: '' })
   refsList.value.push([])
   scrollBottom()
+  const ctrl = new AbortController()
+  aborters.set(sentSessionId, ctrl)
   try {
     const token = localStorage.getItem('token')
     const resp = await fetch(`/api/chat/session/${sentSessionId}/ask/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ question: q })
+      body: JSON.stringify({ question: q }),
+      signal: ctrl.signal
     })
     if (!resp.ok || !resp.body) {
       let msg = '请求失败（HTTP ' + resp.status + '）'
@@ -295,6 +319,7 @@ async function send() {
     const decoder = new TextDecoder()
     let buffer = ''
     let receivedDone = false
+    let receivedStop = false
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
@@ -314,13 +339,16 @@ async function send() {
         } else if (data.type === 'done') {
           receivedDone = true
           stageStore.set(sentSessionId, { id: 'DONE', text: '回答完成', done: true })
+        } else if (data.type === 'stopped') {
+          receivedStop = true
+          stageStore.set(sentSessionId, { id: 'DONE', text: '已停止', done: true })
         } else if (data.type === 'error') {
           throw new Error(data.content || '问答失败')
         }
       }
     }
-    if (!receivedDone) throw new Error('连接中断，请稍后重试')
-    stageStore.set(sentSessionId, { id: 'DONE', text: '回答完成', done: true })
+    if (!receivedDone && !receivedStop) throw new Error('连接中断，请稍后重试')
+    stageStore.set(sentSessionId, { id: 'DONE', text: receivedStop ? '已停止' : '回答完成', done: true })
     setTimeout(async () => {
       stageStore.delete(sentSessionId)
       if (cur()) await refreshSessions()
@@ -329,15 +357,37 @@ async function send() {
     if (s) s.messageCount += 2
   } catch (e) {
     stageStore.delete(sentSessionId)
-    const msg = friendlyError((e && e.message) || '')
-    if (cur()) {
-      if (!messages.value[idx].content) messages.value[idx].content = msg
-      ElMessage.error(msg)
+    const stopped = stoppedSessions.has(sentSessionId) || (e && e.name === 'AbortError')
+    if (stopped) {
+      stoppedSessions.delete(sentSessionId)
+      if (cur() && messages.value[idx]) {
+        messages.value[idx].interrupted = true
+      }
+      stageStore.set(sentSessionId, { id: 'DONE', text: '已停止', done: true })
+      setTimeout(async () => {
+        stageStore.delete(sentSessionId)
+        if (cur()) await refreshSessions()
+      }, 1600)
+    } else {
+      const msg = friendlyError((e && e.message) || '')
+      if (cur()) {
+        if (!messages.value[idx].content) messages.value[idx].content = msg
+        ElMessage.error(msg)
+      }
     }
   } finally {
+    aborters.delete(sentSessionId)
     sendingSessions.delete(sentSessionId)
     scrollBottom()
   }
+}
+
+async function stopCurrent() {
+  const sid = sessionId.value
+  if (!sid) return
+  stoppedSessions.add(sid)
+  aborters.get(sid)?.abort()
+  chatApi.cancelAsk(sid).catch(() => {})
 }
 
 /** 刷新会话列表（服务端按最后对话时间倒序），用于展示自动生成的标题与最新排序 */
@@ -432,6 +482,10 @@ onMounted(loadKbs)
 <style scoped>
 .chat-page { height: calc(100vh - 110px); border: 1px solid #e6e6e6; background: #fff; }
 .chat-aside { border-right: 1px solid #e6e6e6; display: flex; flex-direction: column; }
+.chat-header-bar { display: flex; align-items: center; gap: 8px; background: #fff; border-bottom: 1px solid #e6e6e6; padding: 0 12px; height: 48px; }
+.toggle-sidebar-btn { padding: 4px; color: #606266; }
+.toggle-sidebar-btn:hover { color: #409eff; }
+.chat-title { font-weight: 600; font-size: 14px; color: #303133; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .aside-top { padding: 12px; border-bottom: 1px solid #f0f0f0; }
 .manage-bar { padding: 6px 14px; border-bottom: 1px solid #f0f0f0; display: flex; align-items: center; gap: 8px; }
 .session-list { flex: 1; overflow: auto; }
@@ -439,13 +493,13 @@ onMounted(loadKbs)
 .session-item:hover { background: #f5f7fa; }
 .session-item.active { background: #ecf5ff; }
 .session-check { flex-shrink: 0; margin-top: 2px; }
-.session-title { display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 14px; }
-.session-ops { display: inline-flex; gap: 6px; opacity: 0; transition: opacity 0.2s; }
+.session-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 600; font-size: 14px; }
+.session-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-ops { display: inline-flex; gap: 6px; opacity: 0; transition: opacity 0.2s; flex-shrink: 0; }
 .session-item:hover .session-ops { opacity: 1; }
 .op { cursor: pointer; color: #909399; }
 .op:hover { color: #409eff; }
 .op.danger:hover { color: #f56c6c; }
-.session-meta { color: #909399; font-size: 12px; margin-top: 4px; }
 .chat-main { overflow-y: auto; background: #f5f7fa; }
 .empty-tip { text-align: center; color: #909399; margin-top: 80px; }
 .msg-row { display: flex; margin-bottom: 16px; }

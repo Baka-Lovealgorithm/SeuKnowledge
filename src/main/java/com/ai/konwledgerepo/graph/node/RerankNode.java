@@ -51,6 +51,7 @@ public class RerankNode implements NodeAction {
 
     @Override
     public Map<String, Object> apply(OverAllState state) throws Exception {
+        SseStreamContext.throwIfCancelled();
         SseStreamContext.sendStage("RERANK", "证据精排（交叉编码器：文档 " + chunkTop
                 + " / 业务知识+问答对 " + otherTop + "）");
         Span span = qaTracing.begin("node/rerank");

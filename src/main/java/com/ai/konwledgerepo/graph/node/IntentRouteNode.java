@@ -49,6 +49,7 @@ public class IntentRouteNode implements NodeAction {
 
     @Override
     public Map<String, Object> apply(OverAllState state) throws Exception {
+        SseStreamContext.throwIfCancelled();
         SseStreamContext.sendStage("INTENT_ROUTE", "意图分析");
         Span span = qaTracing.begin("node/intent_route");
         try {

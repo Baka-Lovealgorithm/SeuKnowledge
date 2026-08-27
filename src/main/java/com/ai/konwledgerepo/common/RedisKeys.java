@@ -69,9 +69,9 @@ public final class RedisKeys {
         return PREFIX + "msgs:" + sessionId;
     }
 
-    /** 会话记忆窗口（List&lt;HistoryEntry&gt; JSON） */
+    /** 会话记忆窗口（List&lt;HistoryEntry&gt; JSON，v2 含 interrupted 字段） */
     public static String history(Long sessionId) {
-        return PREFIX + "history:" + sessionId;
+        return PREFIX + "history:v2:" + sessionId;
     }
 
     /** 抽取任务进度 Hash（ExtractTaskExecutor 写入，ExtractTaskService 读取） */

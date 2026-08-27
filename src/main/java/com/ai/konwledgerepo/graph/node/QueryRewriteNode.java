@@ -54,6 +54,7 @@ public class QueryRewriteNode implements NodeAction {
 
     @Override
     public Map<String, Object> apply(OverAllState state) throws Exception {
+        SseStreamContext.throwIfCancelled();
         int retry = QaContext.intValue(state, QaContextKey.RETRY_COUNT, 0);
         SseStreamContext.sendStage("QUERY_REWRITE",
                 retry > 0 ? "问题改写（第 " + retry + " 次重试）" : "问题改写");

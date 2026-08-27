@@ -40,7 +40,8 @@ export const chatApi = {
   messages: (id) => http.get(`/chat/session/${id}/messages`),
   ask: (id, question) => http.post(`/chat/session/${id}/ask`, { question }),
   rename: (id, title) => http.put(`/chat/session/${id}`, { title }),
-  remove: (id) => http.delete(`/chat/session/${id}`)
+  remove: (id) => http.delete(`/chat/session/${id}`),
+  cancelAsk: (id) => http.post(`/chat/session/${id}/ask/cancel`)
 }
 
 export const agentApi = {

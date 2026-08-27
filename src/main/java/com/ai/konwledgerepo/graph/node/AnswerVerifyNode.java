@@ -96,6 +96,7 @@ public class AnswerVerifyNode implements NodeAction {
 
     @Override
     public Map<String, Object> apply(OverAllState state) throws Exception {
+        SseStreamContext.throwIfCancelled();
         SseStreamContext.sendStage("ANSWER_VERIFY", "答案自检");
         Span span = qaTracing.begin("node/answer_verify");
         try {
