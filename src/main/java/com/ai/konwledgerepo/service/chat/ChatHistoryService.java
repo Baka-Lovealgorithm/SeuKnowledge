@@ -5,7 +5,6 @@ import com.ai.konwledgerepo.common.RedisKeys;
 import com.ai.konwledgerepo.config.props.SeuCacheProperties;
 import com.ai.konwledgerepo.config.props.SeuQaProperties;
 import com.ai.konwledgerepo.entity.ChatMessage;
-import com.ai.konwledgerepo.entity.MessageRole;
 import com.ai.konwledgerepo.repository.ChatMessageRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
 import org.springframework.data.domain.PageRequest;
@@ -37,13 +36,6 @@ public class ChatHistoryService {
         this.redisCacheService = redisCacheService;
         this.messageWindow = qaProps.messageWindow();
         this.historyTtl = Duration.ofSeconds(cacheProps.historyTtlSeconds());
-    }
-
-    /** 最近消息窗口（升序），格式化为问答历史；窗口大小取 Agent 记忆策略配置 */
-    public List<String> recentHistory(Long sessionId, int window) {
-        return cachedHistory(sessionId, window).stream()
-                .map(e -> (MessageRole.USER.is(e.role()) ? "用户" : "助手") + ": " + e.content())
-                .toList();
     }
 
     /** 会话记忆读取：Redis 缓存优先（请求窗口不超过缓存容量 messageWindow 时），miss 回源 DB 回填 */

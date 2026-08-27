@@ -1,6 +1,7 @@
 package com.ai.konwledgerepo.graph;
 
 import com.ai.konwledgerepo.entity.SourceType;
+import com.ai.konwledgerepo.service.chat.HistoryEntry;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -19,7 +20,7 @@ public final class QaContext {
 
     /** 单次问答的入参（不进状态图存储） */
     public record QaInput(Long kbId, String kbName, Long sessionId, String question,
-                          List<String> history, int maxRetry, AgentConfig agent, Long workspaceId) {
+                          List<HistoryEntry> history, int maxRetry, AgentConfig agent, Long workspaceId) {
     }
 
     /** 读取 Agent 配置快照；未注入时返回 null，节点自行回退默认行为 */
@@ -104,6 +105,12 @@ public final class QaContext {
             refs.add(ref);
         }
         return mapper.writeValueAsString(refs);
+    }
+
+    @SuppressWarnings("unchecked")
+    public static List<HistoryEntry> history(OverAllState state) {
+        Object value = state.value(QaContextKey.HISTORY).orElse(List.of());
+        return value instanceof List<?> list ? (List<HistoryEntry>) list : List.of();
     }
 
     private QaContext() {

@@ -11,6 +11,7 @@ import com.ai.konwledgerepo.graph.AgentConfig;
 import com.ai.konwledgerepo.graph.QaContext;
 import com.ai.konwledgerepo.graph.QaContextKey;
 import com.ai.konwledgerepo.graph.QaGraphRunner;
+import com.ai.konwledgerepo.service.chat.HistoryEntry;
 import com.ai.konwledgerepo.service.agent.AgentService;
 import com.ai.konwledgerepo.service.knowledgebase.KnowledgeBaseService;
 import com.alibaba.cloud.ai.graph.OverAllState;
@@ -68,7 +69,7 @@ public class QaAnswerService {
         }
 
         AgentConfig agent = agentService.toAgentConfig(kb.getId(), kb.getName(), maxRetry, messageWindow);
-        List<String> history = historyService.recentHistory(sessionId, agent.memoryWindow());
+        List<HistoryEntry> history = historyService.cachedHistory(sessionId, agent.memoryWindow());
 
         // 标题异步生成（与链路并行，不阻塞落库）
         titleService.submitAutoTitle(session, question, workspaceId);

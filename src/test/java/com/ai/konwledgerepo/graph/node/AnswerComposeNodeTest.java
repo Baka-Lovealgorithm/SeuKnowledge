@@ -32,6 +32,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import org.mockito.ArgumentCaptor;
 
 /**
  * 答案生成节点测试：有证据 → ANSWER 非空 + REFS 为 JSON 数组 + 写回合并证据；
@@ -137,5 +138,27 @@ class AnswerComposeNodeTest {
         String answer = (String) out.get(QaContextKey.ANSWER);
         assertFalse(answer.contains("[9]"), "越界引用 [9] 应被移除: " + answer);
         assertTrue(answer.contains("报销需填写申请表"), "正文应保留: " + answer);
+    }
+
+    @Test
+    void promptSplit_intoSystemRuleAndUserDataMessages() throws Exception {
+        stubLlm("根据[1]所述，报销需填写申请表。");
+        ChunkEvidence evidence = ev(11L, "报销制度.pdf", "报销流程");
+
+        node.apply(state(List.of(evidence)));
+
+        ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat).call(captor.capture());
+        List<org.springframework.ai.chat.messages.Message> messages = captor.getValue().getInstructions();
+        assertEquals(2, messages.size(), "应拆分为 SystemMessage(规则) + UserMessage(数据) 两条消息");
+        assertTrue(messages.get(0) instanceof org.springframework.ai.chat.messages.SystemMessage,
+                "第一条应为系统指令消息");
+        assertTrue(messages.get(1) instanceof org.springframework.ai.chat.messages.UserMessage,
+                "第二条应为用户数据消息");
+        String userText = messages.get(1).getText();
+        // 证据以 JSON 数组渲染，index 与引用编号对齐
+        assertTrue(userText.contains("\"index\":1"), "证据应为 JSON 结构且 index 从 1 开始: " + userText);
+        assertTrue(userText.contains("报销制度.pdf"), "证据应包含 docName: " + userText);
+        assertTrue(userText.contains("如何申请报销？"), "数据区应包含用户问题: " + userText);
     }
 }

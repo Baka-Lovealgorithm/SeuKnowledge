@@ -4,6 +4,8 @@ import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.context.Scope;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatModel;
@@ -16,6 +18,7 @@ import org.springframework.ai.embedding.EmbeddingResponse;
 
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 /**
  * 带链路追踪的 LLM / 向量 / 识图调用封装。
@@ -32,6 +35,8 @@ public final class LlmTrace {
 
     /** LLM I/O 调试日志专用 logger（字符串名，供 logback 精确匹配独立文件） */
     private static final Logger LLM_LOG = LoggerFactory.getLogger("com.ai.konwledgerepo.llm");
+
+    // ===== String 重载（保持兼容，委托给 List<Message> 版本） =====
 
     /** 同步文本调用：返回模型输出文本 */
     public static String call(QaTracing tracing, ChatModel chat, String prompt) {
@@ -54,37 +59,55 @@ public final class LlmTrace {
      * 供 judge 类调用按模型能力精细控制（如关闭 reasoning 以规避 max_tokens 被思考 token 占满）。
      */
     public static String call(QaTracing tracing, ChatModel chat, String prompt, ChatOptions options) {
+        return call(tracing, chat, List.of(new UserMessage(prompt)), options);
+    }
+
+    /** 流式文本调用：逐 token 回调 onDelta，末尾统计 usage（取最后一条携带 usage 的响应）。 */
+    public static String stream(QaTracing tracing, ChatModel chat, String prompt, Consumer<String> onDelta) {
+        return stream(tracing, chat, List.of(new UserMessage(prompt)), onDelta);
+    }
+
+    // ===== List<Message> 重载（结构化传参：消息角色化） =====
+
+    /** 同步调用（消息列表，无 options） */
+    public static String call(QaTracing tracing, ChatModel chat, List<Message> messages) {
+        return call(tracing, chat, messages, (ChatOptions) null);
+    }
+
+    /**
+     * 同步调用（消息列表 + 完整 options）。
+     * 消息角色化：SystemMessage 放指令，UserMessage 放数据，清晰分离注入面。
+     */
+    public static String call(QaTracing tracing, ChatModel chat, List<Message> messages, ChatOptions options) {
         Span span = tracing.beginGeneration(chat);
         long start = System.currentTimeMillis();
         try (Scope scope = span.makeCurrent()) {
-            Prompt p = options == null ? new Prompt(prompt) : new Prompt(prompt, options);
+            Prompt p = options == null ? new Prompt(messages) : new Prompt(messages, options);
             ChatResponse response = chat.call(p);
             Usage usage = usageOf(response);
             QaTracing.setUsage(span, usage);
             TokenAccumulator.accumulate(TokenAccumulator.TYPE_TEXT, usage);
             String text = response.getResult() == null || response.getResult().getOutput() == null
                     ? "" : response.getResult().getOutput().getText();
-            logDirect("text", QaTracing.modelName(chat), prompt, text, System.currentTimeMillis() - start, usage);
+            logDirect("text", QaTracing.modelName(chat), render(messages), text, System.currentTimeMillis() - start, usage);
             return text;
         } catch (Exception e) {
             span.recordException(e);
-            logDirectError("text", QaTracing.modelName(chat), prompt, e, System.currentTimeMillis() - start);
+            logDirectError("text", QaTracing.modelName(chat), render(messages), e, System.currentTimeMillis() - start);
             throw e;
         } finally {
             span.end();
         }
     }
 
-    /**
-     * 流式文本调用：逐 token 回调 onDelta，末尾统计 usage（取最后一条携带 usage 的响应）。
-     */
-    public static String stream(QaTracing tracing, ChatModel chat, String prompt, Consumer<String> onDelta) {
+    /** 流式调用（消息列表）：逐 token 回调 onDelta */
+    public static String stream(QaTracing tracing, ChatModel chat, List<Message> messages, Consumer<String> onDelta) {
         Span span = tracing.beginGeneration(chat);
         long start = System.currentTimeMillis();
         try (Scope scope = span.makeCurrent()) {
             Usage[] lastUsage = new Usage[1];
             StringBuilder sb = new StringBuilder();
-            chat.stream(new Prompt(prompt)).doOnNext(response -> {
+            chat.stream(new Prompt(messages)).doOnNext(response -> {
                 Usage usage = usageOf(response);
                 if (usage != null) {
                     lastUsage[0] = usage;
@@ -101,11 +124,11 @@ public final class LlmTrace {
             QaTracing.setUsage(span, lastUsage[0]);
             TokenAccumulator.accumulate(TokenAccumulator.TYPE_TEXT, lastUsage[0]);
             String text = sb.toString();
-            logDirect("stream", QaTracing.modelName(chat), prompt, text, System.currentTimeMillis() - start, lastUsage[0]);
+            logDirect("stream", QaTracing.modelName(chat), render(messages), text, System.currentTimeMillis() - start, lastUsage[0]);
             return text;
         } catch (Exception e) {
             span.recordException(e);
-            logDirectError("stream", QaTracing.modelName(chat), prompt, e, System.currentTimeMillis() - start);
+            logDirectError("stream", QaTracing.modelName(chat), render(messages), e, System.currentTimeMillis() - start);
             throw e;
         } finally {
             span.end();
@@ -187,6 +210,19 @@ public final class LlmTrace {
         LLM_LOG.debug("LLM {} call FAILED: model={} cost={}ms err={}",
                 category, model, costMs, e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
         LLM_LOG.debug("  prompt >>> {}", prompt);
+    }
+
+    private static String render(List<Message> messages) {
+        return messages.stream()
+                .map(m -> {
+                    if (m instanceof SystemMessage sm) {
+                        return "SYSTEM: " + sm.getText();
+                    } else if (m instanceof UserMessage um) {
+                        return "USER: " + um.getText();
+                    }
+                    return "?: " + m;
+                })
+                .collect(Collectors.joining("\n"));
     }
 
     private static String truncate(String s, int max) {

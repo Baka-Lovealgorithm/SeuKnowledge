@@ -377,4 +377,31 @@ class AnswerVerifyNodeTest {
         assertEquals(0.85, (Double) out.get(QaContextKey.VERIFY_SCORE));
         assertEquals("", out.get(QaContextKey.MISSING_INFO));
     }
+
+    @Test
+    void bothPhases_useSystemAndUserMessageSplitWithJsonEvidence() throws Exception {
+        // 消息角色化：阶段一/阶段二均为 SystemMessage(规则) + UserMessage(数据)，证据 JSON 渲染
+        stubLlm("{\"score\": 85, \"missing\": \"\"}",
+                "[{\"claim\":\"报销需填写申请表\",\"verdict\":\"SUPPORTED\",\"evidence\":1}]");
+        List<ChunkEvidence> evs = List.of(ev(1, "报销需填写申请表，附发票原件。"));
+        node.apply(state("报销需填写申请表。", evs));
+
+        ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat, times(2)).call(captor.capture());
+        List<Prompt> prompts = captor.getAllValues();
+        for (int i = 0; i < 2; i++) {
+            List<org.springframework.ai.chat.messages.Message> messages = prompts.get(i).getInstructions();
+            assertEquals(2, messages.size(), "阶段应拆分为系统+用户两条消息");
+            assertTrue(messages.get(0) instanceof org.springframework.ai.chat.messages.SystemMessage,
+                    "第一条应为系统规则消息");
+            assertTrue(messages.get(1) instanceof org.springframework.ai.chat.messages.UserMessage,
+                    "第二条应为用户数据消息");
+        }
+        String phase1User = prompts.get(0).getInstructions().get(1).getText();
+        assertTrue(phase1User.contains("\"index\":1"), "阶段一证据应为 JSON 数组: " + phase1User);
+        assertTrue(phase1User.contains("上一轮自检结果"), "阶段一数据区应含上一轮自检结果: " + phase1User);
+        String phase2User = prompts.get(1).getInstructions().get(1).getText();
+        assertTrue(phase2User.contains("\"index\":1"), "阶段二证据应为 JSON 数组: " + phase2User);
+        assertTrue(phase2User.contains("回答："), "阶段二数据区应含回答: " + phase2User);
+    }
 }

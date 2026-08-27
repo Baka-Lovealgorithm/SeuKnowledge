@@ -9,13 +9,18 @@ import com.ai.konwledgerepo.graph.QaContextKey;
 import com.ai.konwledgerepo.graph.QaState;
 import com.ai.konwledgerepo.model.ModelFactory;
 import com.ai.konwledgerepo.common.SseStreamContext;
+import com.ai.konwledgerepo.service.chat.HistoryEntry;
 import com.ai.konwledgerepo.tracing.LlmTrace;
 import com.ai.konwledgerepo.tracing.QaTracing;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.opentelemetry.api.trace.Span;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.stereotype.Component;
 
@@ -34,6 +39,8 @@ import java.util.Set;
 public class QueryRewriteNode implements NodeAction {
 
     private static final Logger log = LoggerFactory.getLogger(QueryRewriteNode.class);
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final ModelFactory modelFactory;
     private final QaTracing qaTracing;
@@ -54,9 +61,9 @@ public class QueryRewriteNode implements NodeAction {
         try {
             String rawQuestion = state.value(QaContextKey.RAW_QUESTION)
                     .map(String::valueOf).orElse("");
-            List<String> history = QaContext.stringList(state, QaContextKey.HISTORY);
+            List<HistoryEntry> history = QaContext.history(state);
 
-            String historyText = history.isEmpty() ? "（无）" : String.join("\n", history);
+            String historyJson = renderHistory(history);
             String retryHint = buildRetryHint(state, retry);
             AgentConfig agent = QaContext.agent(state);
             String agentPrompt = (agent == null || agent.systemPrompt() == null || agent.systemPrompt().isBlank())
@@ -65,9 +72,11 @@ public class QueryRewriteNode implements NodeAction {
 
             Long workspaceId = QaContext.longValue(state, QaContextKey.WORKSPACE_ID, -1L);
             ChatModel chat = modelFactory.getChatModelByUsage(ModelUsage.ROUTER.value(), workspaceId);
-            String prompt = promptCatalog.get("query-rewrite").formatted(agentPrompt, historyText, rawQuestion, retryHint);
+            String rules = promptCatalog.get("query-rewrite-rules").formatted(agentPrompt);
+            String input = promptCatalog.get("query-rewrite-input").formatted(historyJson, rawQuestion, retryHint);
+            List<Message> messages = List.of(new SystemMessage(rules), new UserMessage(input));
 
-            String response = LlmTrace.call(qaTracing, chat, prompt);
+            String response = LlmTrace.call(qaTracing, chat, messages);
             List<String> queries = parseQueries(response, rawQuestion);
             span.setAttribute("queries", queries.size());
             span.setAttribute("retry", retry);
@@ -117,6 +126,19 @@ public class QueryRewriteNode implements NodeAction {
         String covered = titles.isEmpty() ? "无" : String.join("；", titles);
         return "\n（上次检索已覆盖：" + covered + "；仍缺失：" + missing
                 + "。请针对缺失的信息定向改写查询，避免重复检索已覆盖内容）";
+    }
+
+    /** 将历史记录序列化为 JSON 数组字符串 [{role,content}]，空返回 "[]" */
+    private static String renderHistory(List<HistoryEntry> history) {
+        if (history == null || history.isEmpty()) {
+            return "[]";
+        }
+        try {
+            return MAPPER.writeValueAsString(history);
+        } catch (Exception e) {
+            log.warn("历史记录 JSON 序列化失败，回退空列表: {}", e.getMessage());
+            return "[]";
+        }
     }
 
     private static List<String> parseQueries(String response, String fallback) {

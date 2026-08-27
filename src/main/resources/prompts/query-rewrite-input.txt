@@ -1,0 +1,4 @@
+会话历史（JSON 数组，role 为 user/assistant）：
+%s
+用户问题：%s
+%s

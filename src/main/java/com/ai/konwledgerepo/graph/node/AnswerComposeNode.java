@@ -2,10 +2,10 @@ package com.ai.konwledgerepo.graph.node;
 
 import com.ai.konwledgerepo.common.Defaults;
 import com.ai.konwledgerepo.common.PromptCatalog;
-import com.ai.konwledgerepo.entity.SourceType;
 import com.ai.konwledgerepo.graph.AgentConfig;
 import com.ai.konwledgerepo.graph.ChunkEvidence;
 import com.ai.konwledgerepo.graph.CitationValidator;
+import com.ai.konwledgerepo.graph.EvidenceFormatter;
 import com.ai.konwledgerepo.graph.QaContext;
 import com.ai.konwledgerepo.graph.QaContextKey;
 import com.ai.konwledgerepo.graph.QaState;
@@ -19,8 +19,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.opentelemetry.api.trace.Span;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -73,25 +75,7 @@ public class AnswerComposeNode implements NodeAction {
                         QaContextKey.NEXT, QaState.ANSWER_VERIFY.name());
             }
 
-            StringBuilder evidence = new StringBuilder();
-            for (int i = 0; i < chunks.size(); i++) {
-                ChunkEvidence c = chunks.get(i);
-                String sourceType = SourceType.normalize(c.sourceType());
-                evidence.append("[").append(i + 1).append("] ");
-                switch (SourceType.of(sourceType)) {
-                    case BUSINESS -> evidence.append("业务知识：《")
-                            .append(c.title() == null || c.title().isBlank() ? c.docName() : c.title()).append("》");
-                    case QA -> evidence.append("问答对：《")
-                            .append(c.title() == null || c.title().isBlank() ? c.docName() : c.title()).append("》");
-                    default -> {
-                        evidence.append("来源《").append(c.docName()).append("》");
-                        if (c.pageNum() != null && c.pageNum() > 0) {
-                            evidence.append(" 第").append(c.pageNum()).append("页");
-                        }
-                    }
-                }
-                evidence.append("\n").append(c.content()).append("\n\n");
-            }
+            String evidenceJson = EvidenceFormatter.toEvidenceJson(chunks);
 
             AgentConfig agent = QaContext.agent(state);
             String agentPrompt = (agent == null || agent.systemPrompt() == null || agent.systemPrompt().isBlank())
@@ -100,9 +84,12 @@ public class AnswerComposeNode implements NodeAction {
 
             Long workspaceId = QaContext.longValue(state, QaContextKey.WORKSPACE_ID, -1L);
             ChatModel chat = modelFactory.getChatModelByUsage("GENERATE", workspaceId);
-            String prompt = promptCatalog.get("answer-compose").formatted(agentPrompt, evidence, question);
 
-            String answer = generateAnswer(state, chat, prompt);
+            String rules = promptCatalog.get("answer-compose-rules").formatted(agentPrompt);
+            String input = promptCatalog.get("answer-compose-input").formatted(evidenceJson, question);
+            List<Message> messages = List.of(new SystemMessage(rules), new UserMessage(input));
+
+            String answer = generateAnswer(state, chat, messages);
             // 引用编号程序化校验：移除越界 [n]（保证答案与 REFS 一致；流式 delta 已发出无法撤回，仅修正存储答案）
             if (CitationValidator.hasOutOfRange(answer, chunks.size())) {
                 span.setAttribute("citation_fixed", true);
@@ -129,15 +116,15 @@ public class AnswerComposeNode implements NodeAction {
     }
 
     /** 有 SSE 上下文且为首轮时流式输出答案 token；重试轮次或非流式一次性生成（避免重试重复输出） */
-    private String generateAnswer(OverAllState state, ChatModel chat, String prompt) {
+    private String generateAnswer(OverAllState state, ChatModel chat, List<Message> messages) {
         SseEmitter emitter = SseStreamContext.get();
         int retry = QaContext.intValue(state, QaContextKey.RETRY_COUNT, 0);
         if (emitter == null || retry > 0) {
-            return LlmTrace.call(qaTracing, chat, prompt);
+            return LlmTrace.call(qaTracing, chat, messages);
         }
         // 流式回调可能运行在模型供应商/Reactor 线程（ThreadLocal 不可见），
         // 必须使用捕获的 emitter 显式推送（见 SseStreamContext.send(emitter, ...)）
-        String answer = LlmTrace.stream(qaTracing, chat, prompt, text -> SseStreamContext.send(emitter, "delta", text));
+        String answer = LlmTrace.stream(qaTracing, chat, messages, text -> SseStreamContext.send(emitter, "delta", text));
         SseStreamContext.markDeltaSent();
         return answer;
     }

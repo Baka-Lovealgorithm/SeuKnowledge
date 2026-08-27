@@ -5,6 +5,7 @@ import com.ai.konwledgerepo.graph.ChunkEvidence;
 import com.ai.konwledgerepo.graph.QaContextKey;
 import com.ai.konwledgerepo.graph.QaState;
 import com.ai.konwledgerepo.model.ModelFactory;
+import com.ai.konwledgerepo.service.chat.HistoryEntry;
 import com.ai.konwledgerepo.tracing.QaTracing;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import org.junit.jupiter.api.BeforeEach;
@@ -120,5 +121,42 @@ class QueryRewriteNodeTest {
         assertFalse(queries(out).isEmpty());
         assertEquals(QaState.KNOWLEDGE_RECALL.name(), out.get(QaContextKey.NEXT));
         assertTrue(capturedPrompt().contains("更宽泛"), "无缺失信息时应回退通用宽泛提示");
+    }
+
+    @Test
+    void structuredHistory_renderedAsJsonInUserMessage() throws Exception {
+        stubLlm("报销流程是什么");
+        Map<String, Object> data = new HashMap<>();
+        data.put(QaContextKey.RAW_QUESTION, "它是什么？");
+        data.put(QaContextKey.RETRY_COUNT, 0);
+        data.put(QaContextKey.HISTORY, List.of(
+                new HistoryEntry("user", "如何申请报销？"),
+                new HistoryEntry("assistant", "需要填写报销单。")));
+
+        Map<String, Object> out = node.apply(new OverAllState(data));
+
+        assertFalse(queries(out).isEmpty());
+        assertEquals(QaState.KNOWLEDGE_RECALL.name(), out.get(QaContextKey.NEXT));
+        // 消息角色化：系统指令 + 用户数据两条消息
+        ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat).call(captor.capture());
+        Prompt prompt = captor.getValue();
+        org.springframework.ai.chat.messages.Message userMsg = prompt.getInstructions().get(1);
+        String userText = userMsg.getText();
+        assertTrue(userText.contains("\"role\":\"user\""), "历史应渲染为带 role 的 JSON: " + userText);
+        assertTrue(userText.contains("\"role\":\"assistant\""), "历史应包含 assistant 角色: " + userText);
+        assertTrue(userText.contains("如何申请报销？"), "历史内容应保留: " + userText);
+        assertTrue(userText.contains("它是什么？"), "用户问题应在数据区: " + userText);
+    }
+
+    @Test
+    void noHistory_rendersEmptyJsonArray() throws Exception {
+        stubLlm("报销 申请 流程");
+        Map<String, Object> out = node.apply(state("如何申请报销？", 0, null));
+        assertFalse(queries(out).isEmpty());
+        ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat).call(captor.capture());
+        String userText = captor.getValue().getInstructions().get(1).getText();
+        assertTrue(userText.contains("[]"), "无历史时应输出空 JSON 数组: " + userText);
     }
 }

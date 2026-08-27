@@ -5,6 +5,7 @@ import com.ai.konwledgerepo.entity.ModelConfig;
 import com.ai.konwledgerepo.entity.ModelUsage;
 import com.ai.konwledgerepo.graph.AgentConfig;
 import com.ai.konwledgerepo.graph.ChunkEvidence;
+import com.ai.konwledgerepo.graph.EvidenceFormatter;
 import com.ai.konwledgerepo.graph.JudgeOptions;
 import com.ai.konwledgerepo.graph.QaContext;
 import com.ai.konwledgerepo.graph.QaContextKey;
@@ -20,6 +21,9 @@ import com.alibaba.cloud.ai.graph.action.NodeAction;
 import io.opentelemetry.api.trace.Span;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.stereotype.Component;
 
@@ -116,8 +120,8 @@ public class AnswerVerifyNode implements NodeAction {
                     : "（无，首次评估）";
             Set<String> markKeys = earlyAbortActive ? deltaKeys : Set.of();
 
-            // 证据上下文：全部证据的标题 + 内容片段（让评估器知道覆盖了哪些主题，才能指出缺什么）
-            String evidence = chunks.isEmpty() ? "（无召回证据）" : buildEvidence(chunks, markKeys);
+            // 证据上下文：JSON 数组（与 AnswerCompose 统一渲染），new:true 标注本轮新增
+            String evidence = chunks.isEmpty() ? "（无召回证据）" : EvidenceFormatter.toEvidenceJson(chunks, markKeys);
 
             AgentConfig agent = QaContext.agent(state);
             String agentPrompt = (agent == null || agent.systemPrompt() == null || agent.systemPrompt().isBlank())
@@ -143,8 +147,10 @@ public class AnswerVerifyNode implements NodeAction {
                         ContextPropagator.wrapSupplier(() -> {
                             ChatModel phase1Chat = modelFactory.getChatModelByUsage(ModelUsage.VERIFY.value(), workspaceId);
                             ModelConfig phase1Cfg = modelFactory.resolveChatConfig(ModelUsage.VERIFY.value(), workspaceId);
-                            String phase1Prompt = promptCatalog.get("answer-verify").formatted(agentPrompt, prevContext, evidence, question, answer);
-                            String phase1Resp = LlmTrace.call(qaTracing, phase1Chat, phase1Prompt,
+                            String phase1Rules = promptCatalog.get("answer-verify-rules").formatted(agentPrompt);
+                            String phase1Input = promptCatalog.get("answer-verify-input").formatted(prevContext, evidence, question, answer);
+                            List<Message> phase1Messages = List.of(new SystemMessage(phase1Rules), new UserMessage(phase1Input));
+                            String phase1Resp = LlmTrace.call(qaTracing, phase1Chat, phase1Messages,
                                     JudgeOptions.of(phase1Chat, phase1Cfg, MAX_VERIFY_TOKENS, jsonMode));
                             return parseResult(phase1Resp);
                         }), qaExecutor);
@@ -206,8 +212,10 @@ public class AnswerVerifyNode implements NodeAction {
                 // 串行路径（parallel=false 或无需阶段二）
                 ChatModel chat = modelFactory.getChatModelByUsage(ModelUsage.VERIFY.value(), workspaceId);
                 ModelConfig cfg = modelFactory.resolveChatConfig(ModelUsage.VERIFY.value(), workspaceId);
-                String prompt = promptCatalog.get("answer-verify").formatted(agentPrompt, prevContext, evidence, question, answer);
-                String response = LlmTrace.call(qaTracing, chat, prompt, JudgeOptions.of(chat, cfg, MAX_VERIFY_TOKENS, jsonMode));
+                String rules = promptCatalog.get("answer-verify-rules").formatted(agentPrompt);
+                String input = promptCatalog.get("answer-verify-input").formatted(prevContext, evidence, question, answer);
+                List<Message> messages = List.of(new SystemMessage(rules), new UserMessage(input));
+                String response = LlmTrace.call(qaTracing, chat, messages, JudgeOptions.of(chat, cfg, MAX_VERIFY_TOKENS, jsonMode));
                 result = parseResult(response);
                 span.setAttribute("score", result.score());
                 span.setAttribute("missing_info", result.missingInfo());
@@ -291,9 +299,10 @@ public class AnswerVerifyNode implements NodeAction {
         try {
             ChatModel verifyChat = modelFactory.getChatModelByUsage(ModelUsage.VERIFY.value(), workspaceId);
             ModelConfig verifyCfg = modelFactory.resolveChatConfig(ModelUsage.VERIFY.value(), workspaceId);
-            String verifyPrompt = promptCatalog.get("answer-faithfulness")
-                    .formatted(agentPrompt, evidence, question, answer);
-            String verifyResponse = LlmTrace.call(qaTracing, verifyChat, verifyPrompt,
+            String verifyRules = promptCatalog.get("answer-faithfulness-rules").formatted(agentPrompt);
+            String verifyInput = promptCatalog.get("answer-faithfulness-input").formatted(evidence, question, answer);
+            List<Message> verifyMessages = List.of(new SystemMessage(verifyRules), new UserMessage(verifyInput));
+            String verifyResponse = LlmTrace.call(qaTracing, verifyChat, verifyMessages,
                     JudgeOptions.of(verifyChat, verifyCfg, MAX_FAITHFULNESS_TOKENS, jsonMode));
             List<Map<String, Object>> items = jsonParser.parseArray(verifyResponse);
             List<ClaimVerdict> verdicts = new ArrayList<>();
@@ -352,25 +361,6 @@ public class AnswerVerifyNode implements NodeAction {
         }
         String t = s.trim().replace('\n', ' ');
         return t.length() > MAX_CLAIM_LEN ? t.substring(0, MAX_CLAIM_LEN) + "…" : t;
-    }
-
-    /** 全部证据：来源/文档/标题 + 内容片段。newKeys 非空时标注【本轮新增】供 earlyAbort 判断。 */
-    private static String buildEvidence(List<ChunkEvidence> chunks, Set<String> newKeys) {
-        boolean mark = newKeys != null && !newKeys.isEmpty();
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < chunks.size(); i++) {
-            ChunkEvidence c = chunks.get(i);
-            String title = c.title() == null || c.title().isBlank() ? c.docName() : c.title();
-            String snippet = c.content() == null ? "" : c.content();
-            sb.append("[").append(i + 1).append("] ");
-            if (mark && newKeys.contains(SourceType.dedupKey(c.sourceType(), c.chunkId()))) {
-                sb.append("【本轮新增】");
-            }
-            sb.append(c.sourceType())
-                    .append("《").append(c.docName()).append("》 标题：").append(title)
-                    .append("\n").append(snippet).append("\n\n");
-        }
-        return sb.toString().trim();
     }
 
     /**

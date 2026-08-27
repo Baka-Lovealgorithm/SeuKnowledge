@@ -12,6 +12,7 @@ import com.ai.konwledgerepo.graph.QaContext;
 import com.ai.konwledgerepo.graph.QaContextKey;
 import com.ai.konwledgerepo.graph.QaGraphRunner;
 import com.ai.konwledgerepo.service.agent.AgentService;
+import com.ai.konwledgerepo.service.chat.HistoryEntry;
 import com.ai.konwledgerepo.service.knowledgebase.KnowledgeBaseService;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import org.springframework.scheduling.annotation.Async;
@@ -72,7 +73,7 @@ public class ChatStreamService {
             }
 
             AgentConfig agent = agentService.toAgentConfig(kb.getId(), kb.getName(), maxRetry, messageWindow);
-            List<String> history = historyService.recentHistory(sessionId, agent.memoryWindow());
+            List<HistoryEntry> history = historyService.cachedHistory(sessionId, agent.memoryWindow());
             QaContext.QaInput input = new QaContext.QaInput(
                     kb.getId(), kb.getName(), sessionId, question, history, agent.maxRetry(), agent, workspaceId);
 
