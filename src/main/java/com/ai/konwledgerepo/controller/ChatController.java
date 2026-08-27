@@ -4,6 +4,7 @@ import com.ai.konwledgerepo.common.ApiResponse;
 import com.ai.konwledgerepo.common.ErrorCodes;
 import com.ai.konwledgerepo.common.LogContext;
 import com.ai.konwledgerepo.common.SseStreamContext;
+import com.ai.konwledgerepo.config.props.SeuQaProperties;
 import com.ai.konwledgerepo.dto.AskRequest;
 import com.ai.konwledgerepo.dto.AskResponse;
 import com.ai.konwledgerepo.dto.ChatMessageResponse;
@@ -38,10 +39,13 @@ public class ChatController {
 
     private final ChatService chatService;
     private final AskGate askGate;
+    private final long sseTimeoutMs;
 
-    public ChatController(ChatService chatService, AskGate askGate) {
+    public ChatController(ChatService chatService, AskGate askGate, SeuQaProperties qaProps) {
         this.chatService = chatService;
         this.askGate = askGate;
+        // SSE 超时须大于链路超时，留 60s 余量（默认 260s）
+        this.sseTimeoutMs = (qaProps.qaTimeoutSeconds() + 60L) * 1000L;
     }
 
     @PostMapping("/session")
@@ -109,7 +113,7 @@ public class ChatController {
             if (rejection != null) {
                 return sseError(rejection);
             }
-            SseEmitter emitter = new SseEmitter(120_000L);
+            SseEmitter emitter = new SseEmitter(sseTimeoutMs);
             chatService.askStreamAsync(id, userId, request.question(), emitter, workspaceId);
             return emitter;
         });

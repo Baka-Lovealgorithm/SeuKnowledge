@@ -16,7 +16,15 @@ import org.springframework.ai.content.Media;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.embedding.EmbeddingResponse;
 
+import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
@@ -35,6 +43,22 @@ public final class LlmTrace {
 
     /** LLM I/O 调试日志专用 logger（字符串名，供 logback 精确匹配独立文件） */
     private static final Logger LLM_LOG = LoggerFactory.getLogger("com.ai.konwledgerepo.llm");
+
+    /** 单次 LLM/Embedding 调用超时（可由 {@link #configure(Duration)} 在启动时覆盖） */
+    private static volatile Duration llmTimeout = Duration.ofSeconds(60);
+
+    /** 超时包装专用虚拟线程执行器（per-task，阻塞让出载体线程，无池化泄漏） */
+    private static final ExecutorService LLM_EXECUTOR = Executors.newVirtualThreadPerTaskExecutor();
+
+    /**
+     * 运行时覆盖单次调用超时（由 {@link com.ai.konwledgerepo.config.LlmTimeoutConfig} 在启动时注入）。
+     * 防御：null / ≤0 时忽略，保持默认 60s。
+     */
+    public static void configure(Duration timeout) {
+        if (timeout != null && !timeout.isNegative() && !timeout.isZero()) {
+            llmTimeout = timeout;
+        }
+    }
 
     // ===== String 重载（保持兼容，委托给 List<Message> 版本） =====
 
@@ -83,7 +107,7 @@ public final class LlmTrace {
         long start = System.currentTimeMillis();
         try (Scope scope = span.makeCurrent()) {
             Prompt p = options == null ? new Prompt(messages) : new Prompt(messages, options);
-            ChatResponse response = chat.call(p);
+            ChatResponse response = awaitWithTimeout("text", () -> chat.call(p), llmTimeout);
             Usage usage = usageOf(response);
             QaTracing.setUsage(span, usage);
             TokenAccumulator.accumulate(TokenAccumulator.TYPE_TEXT, usage);
@@ -92,6 +116,9 @@ public final class LlmTrace {
             logDirect("text", QaTracing.modelName(chat), render(messages), text, System.currentTimeMillis() - start, usage);
             return text;
         } catch (Exception e) {
+            if (e instanceof LlmTimeoutException) {
+                span.setAttribute("llm.timeout", true);
+            }
             span.recordException(e);
             logDirectError("text", QaTracing.modelName(chat), render(messages), e, System.currentTimeMillis() - start);
             throw e;
@@ -107,26 +134,31 @@ public final class LlmTrace {
         try (Scope scope = span.makeCurrent()) {
             Usage[] lastUsage = new Usage[1];
             StringBuilder sb = new StringBuilder();
-            chat.stream(new Prompt(messages)).doOnNext(response -> {
-                Usage usage = usageOf(response);
-                if (usage != null) {
-                    lastUsage[0] = usage;
-                }
-                String text = response.getResult() == null || response.getResult().getOutput() == null
-                        ? null : response.getResult().getOutput().getText();
-                if (text != null && !text.isEmpty()) {
-                    sb.append(text);
-                    if (onDelta != null) {
-                        onDelta.accept(text);
+            String text = awaitWithTimeout("stream", () -> {
+                chat.stream(new Prompt(messages)).doOnNext(response -> {
+                    Usage usage = usageOf(response);
+                    if (usage != null) {
+                        lastUsage[0] = usage;
                     }
-                }
-            }).blockLast();
+                    String t = response.getResult() == null || response.getResult().getOutput() == null
+                            ? null : response.getResult().getOutput().getText();
+                    if (t != null && !t.isEmpty()) {
+                        sb.append(t);
+                        if (onDelta != null) {
+                            onDelta.accept(t);
+                        }
+                    }
+                }).blockLast();
+                return sb.toString();
+            }, llmTimeout);
             QaTracing.setUsage(span, lastUsage[0]);
             TokenAccumulator.accumulate(TokenAccumulator.TYPE_TEXT, lastUsage[0]);
-            String text = sb.toString();
             logDirect("stream", QaTracing.modelName(chat), render(messages), text, System.currentTimeMillis() - start, lastUsage[0]);
             return text;
         } catch (Exception e) {
+            if (e instanceof LlmTimeoutException) {
+                span.setAttribute("llm.timeout", true);
+            }
             span.recordException(e);
             logDirectError("stream", QaTracing.modelName(chat), render(messages), e, System.currentTimeMillis() - start);
             throw e;
@@ -141,7 +173,7 @@ public final class LlmTrace {
         long start = System.currentTimeMillis();
         try (Scope scope = span.makeCurrent()) {
             UserMessage message = UserMessage.builder().text(prompt).media(media).build();
-            ChatResponse response = chat.call(new Prompt(message));
+            ChatResponse response = awaitWithTimeout("vision", () -> chat.call(new Prompt(message)), llmTimeout);
             Usage usage = usageOf(response);
             QaTracing.setUsage(span, usage);
             TokenAccumulator.accumulate(TokenAccumulator.TYPE_VISION, usage);
@@ -150,6 +182,9 @@ public final class LlmTrace {
             logDirect("vision", QaTracing.modelName(chat), prompt, text, System.currentTimeMillis() - start, usage);
             return text;
         } catch (Exception e) {
+            if (e instanceof LlmTimeoutException) {
+                span.setAttribute("llm.timeout", true);
+            }
             span.recordException(e);
             logDirectError("vision", QaTracing.modelName(chat), prompt, e, System.currentTimeMillis() - start);
             throw e;
@@ -163,7 +198,8 @@ public final class LlmTrace {
         Span span = tracing.beginEmbedding(model);
         long start = System.currentTimeMillis();
         try (Scope scope = span.makeCurrent()) {
-            EmbeddingResponse response = model.embedForResponse(List.of(text));
+            EmbeddingResponse response = awaitWithTimeout("embedding",
+                    () -> model.embedForResponse(List.of(text)), llmTimeout);
             Usage usage = response.getMetadata() == null ? null : response.getMetadata().getUsage();
             QaTracing.setUsage(span, usage);
             TokenAccumulator.accumulate(TokenAccumulator.TYPE_EMBEDDING, usage);
@@ -178,6 +214,9 @@ public final class LlmTrace {
             }
             return vector;
         } catch (Exception e) {
+            if (e instanceof LlmTimeoutException) {
+                span.setAttribute("llm.timeout", true);
+            }
             span.recordException(e);
             throw e;
         } finally {
@@ -240,5 +279,29 @@ public final class LlmTrace {
     }
 
     private LlmTrace() {
+    }
+
+    /**
+     * 带超时的同步调用包装：将网络调用提交到虚拟线程执行，调用线程阻塞等待，
+     * 超时后 best-effort 中断并抛 {@link LlmTimeoutException}。
+     */
+    private static <T> T awaitWithTimeout(String category, Callable<T> task, Duration timeout) {
+        Future<T> future = LLM_EXECUTOR.submit(task);
+        try {
+            return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            future.cancel(true);
+            throw new LlmTimeoutException(category, timeout.toSeconds());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            future.cancel(true);
+            throw new LlmTimeoutException(category, timeout.toSeconds());
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException re) {
+                throw re;
+            }
+            throw new RuntimeException(cause);
+        }
     }
 }

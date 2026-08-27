@@ -1,8 +1,10 @@
 package com.ai.konwledgerepo.graph;
 
 import com.ai.konwledgerepo.common.BizException;
+import com.ai.konwledgerepo.common.ContextPropagator;
 import com.ai.konwledgerepo.common.QaConcurrencyGuard;
 import com.ai.konwledgerepo.common.Texts;
+import com.ai.konwledgerepo.config.props.SeuQaProperties;
 import com.ai.konwledgerepo.graph.node.AnswerComposeNode;
 import com.ai.konwledgerepo.graph.node.AnswerVerifyNode;
 import com.ai.konwledgerepo.graph.node.ChatOnlyNode;
@@ -27,9 +29,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static com.alibaba.cloud.ai.graph.StateGraph.END;
 import static com.alibaba.cloud.ai.graph.StateGraph.START;
@@ -52,6 +60,8 @@ public class QaGraphRunner {
     private final CompiledGraph compiledGraph;
     private final QaTracing qaTracing;
     private final QaConcurrencyGuard guard;
+    private final Executor qaExecutor;
+    private final Duration qaTimeout;
 
     public QaGraphRunner(IntentRouteNode intentRouteNode,
                          QueryRewriteNode queryRewriteNode,
@@ -63,9 +73,13 @@ public class QaGraphRunner {
                          ChatOnlyNode chatOnlyNode,
                          TerminalNode terminalNode,
                          QaTracing qaTracing,
-                         QaConcurrencyGuard guard) {
+                         QaConcurrencyGuard guard,
+                         @org.springframework.beans.factory.annotation.Qualifier("qaTaskExecutor") Executor qaExecutor,
+                         SeuQaProperties qaProps) {
         this.qaTracing = qaTracing;
         this.guard = guard;
+        this.qaExecutor = qaExecutor;
+        this.qaTimeout = Duration.ofSeconds(Math.max(1, qaProps.qaTimeoutSeconds()));
         try {
             this.compiledGraph = build(intentRouteNode, queryRewriteNode, knowledgeRecallNode,
                     rerankNode, answerComposeNode, answerVerifyNode, retryOrFallbackNode, chatOnlyNode, terminalNode);
@@ -148,7 +162,7 @@ public class QaGraphRunner {
             long start = System.currentTimeMillis();
             OverAllState result = null;
             try (Scope scope = root.makeCurrent()) {
-                result = doRun(input);
+                result = awaitChain(input);
                 return result;
             } catch (Exception e) {
                 root.recordException(e);
@@ -231,6 +245,38 @@ public class QaGraphRunner {
                 .build();
         return compiledGraph.invoke(initialState, config)
                 .orElseThrow(() -> new BizException("问答流程执行失败"));
+    }
+
+    /**
+     * 带整体超时的链路执行：将 {@link #doRun(QaContext.QaInput)} 提交到虚拟线程执行，
+     * 调用线程阻塞等待，超时后 best-effort 中断并释放并发许可。
+     * 上下文（MDC / SSE / Token / OTel）经 {@link ContextPropagator} 快照传递。
+     */
+    private OverAllState awaitChain(QaContext.QaInput input) {
+        CompletableFuture<OverAllState> future = null;
+        try {
+            future = CompletableFuture.supplyAsync(
+                    ContextPropagator.wrapSupplier(() -> doRun(input)), qaExecutor);
+            return future.get(qaTimeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            if (future != null) {
+                future.cancel(true);
+            }
+            log.warn("问答链路超时（{}s），中止执行", qaTimeout.toSeconds());
+            throw new BizException("问答处理超时，请稍后重试");
+        } catch (InterruptedException e) {
+            if (future != null) {
+                future.cancel(true);
+            }
+            Thread.currentThread().interrupt();
+            throw new BizException("问答处理超时，请稍后重试");
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException re) {
+                throw re;
+            }
+            throw new BizException("问答流程执行失败: " + (cause == null ? e.getMessage() : cause.getMessage()));
+        }
     }
 
     private static KeyStrategyFactory keyStrategyFactory() {

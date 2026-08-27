@@ -21,7 +21,7 @@ class QaConcurrencyGuardTest {
     @Test
     void concurrentAcquire_limitedByPermits() throws Exception {
         // limit=2：最多 2 个同时持锁，第 3 个等待（超时 5s 内不触发）
-        QaConcurrencyGuard guard = new QaConcurrencyGuard(new SeuQaProperties(20, 2, 2, 5, true, false, false, 0.4, false));
+        QaConcurrencyGuard guard = new QaConcurrencyGuard(new SeuQaProperties(20, 2, 2, 5, true, false, false, 0.4, false, 60, 200));
         AtomicInteger inFlight = new AtomicInteger(0);
         AtomicInteger maxInFlight = new AtomicInteger(0);
         int threads = 8;
@@ -59,7 +59,7 @@ class QaConcurrencyGuardTest {
     @Test
     void acquire_timeout_throwsBizException() {
         // limit=1、超时 1s：持锁后第二个 acquire 等待超时抛 BizException
-        QaConcurrencyGuard guard = new QaConcurrencyGuard(new SeuQaProperties(20, 2, 1, 1, true, false, false, 0.4, false));
+        QaConcurrencyGuard guard = new QaConcurrencyGuard(new SeuQaProperties(20, 2, 1, 1, true, false, false, 0.4, false, 60, 200));
         guard.acquire();
         try {
             assertThrows(BizException.class, guard::acquire, "超时应抛 BizException（系统繁忙）");
@@ -71,7 +71,7 @@ class QaConcurrencyGuardTest {
 
     @Test
     void release_restoresPermit() {
-        QaConcurrencyGuard guard = new QaConcurrencyGuard(new SeuQaProperties(20, 2, 1, 1, true, false, false, 0.4, false));
+        QaConcurrencyGuard guard = new QaConcurrencyGuard(new SeuQaProperties(20, 2, 1, 1, true, false, false, 0.4, false, 60, 200));
         assertEquals(1, guard.availablePermits());
         guard.acquire();
         assertEquals(0, guard.availablePermits());

@@ -98,6 +98,8 @@ seuknowledge:
     partial-answer: ${KB_QA_PARTIAL_ANSWER:false}               # 低分但无矛盾断言且分数≥下限时，输出部分回答+缺漏声明（灰度默认关）
     partial-floor: ${KB_QA_PARTIAL_FLOOR:0.4}                   # 部分回答最低分：低于此分仍按拒答处理（防输出几乎无证据支撑的答案）
     verify-json-mode: ${KB_QA_VERIFY_JSON_MODE:false}          # 自检节点启用 API 级 JSON 输出约束（DashScope/OpenAI 兼容 response_format json_object），默认关
+    llm-timeout-seconds: ${KB_LLM_TIMEOUT:60}                  # 单次 LLM/Embedding 调用超时（秒），LlmTrace 层兜底
+    qa-timeout-seconds: ${KB_QA_TIMEOUT:200}                   # 整条问答链路执行超时（秒），QaGraphRunner 兜底
   document:
     vision-parsing: ${KB_VISION_PARSING:true}    # PDF 解析是否启用识图模型 OCR/描述（需配置 VISION 类型模型）
     vision-auto: ${KB_VISION_AUTO:true}          # 按需识图：纯文字页跳过识图，仅图片页/扫描页调用识图模型（false=每页识图）

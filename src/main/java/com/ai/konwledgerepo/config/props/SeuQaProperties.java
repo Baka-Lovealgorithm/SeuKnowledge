@@ -16,5 +16,7 @@ public record SeuQaProperties(
         @DefaultValue("false") boolean earlyAbort,
         @DefaultValue("false") boolean partialAnswer,
         @DefaultValue("0.4") double partialFloor,
-        @DefaultValue("false") boolean verifyJsonMode) {
+        @DefaultValue("false") boolean verifyJsonMode,
+        @DefaultValue("60") int llmTimeoutSeconds,
+        @DefaultValue("200") int qaTimeoutSeconds) {
 }
