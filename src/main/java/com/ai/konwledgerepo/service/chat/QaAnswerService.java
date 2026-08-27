@@ -97,7 +97,7 @@ public class QaAnswerService {
             try {
                 result = qaGraphRunner.run(input);
             } catch (Exception e) {
-                throw new BizException("问答处理失败，请检查文本/向量模型配置是否可用: " + Texts.truncate(e.getMessage(), 200));
+                throw new BizException(Texts.friendlyError(e.getMessage()));
             }
 
             String answer = result.value(QaContextKey.CHAT_ONLY_ANSWER)

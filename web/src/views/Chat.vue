@@ -5,6 +5,10 @@
         <el-select v-model="kbId" placeholder="选择知识库" style="width: 100%" @change="onKbChange">
           <el-option v-for="kb in kbs" :key="kb.id" :label="kb.name" :value="kb.id" />
         </el-select>
+        <el-button type="primary" style="width: 100%; margin-top: 10px"
+                  :disabled="!kbId || sending" @click="createSession">
+          ＋ 新建对话
+        </el-button>
       </div>
       <div class="session-list">
         <div
@@ -128,6 +132,13 @@ function resetStage() {
 
 function fmt(t) { return t ? t.replace('T', ' ').slice(5, 16) : '' }
 
+/** 错误消息可读化：超时/网络异常等后端消息原样展示，空则兜底 */
+function friendlyError(raw) {
+  const msg = (raw || '').trim()
+  if (!msg) return '问答失败，请检查模型配置'
+  return msg
+}
+
 // ===== 上次使用状态恢复（知识库 + 会话，按工作空间隔离的 localStorage 持久化）=====
 const lastKbKey = () => `seuknowledge.lastKbId.${auth.workspaceId || 'default'}`
 const lastSessionKey = () => `seuknowledge.lastSessionId.${auth.workspaceId || 'default'}`
@@ -238,10 +249,15 @@ async function send() {
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ question: q })
     })
-    if (!resp.ok || !resp.body) throw new Error('请求失败')
+    if (!resp.ok || !resp.body) {
+      let msg = '请求失败（HTTP ' + resp.status + '）'
+      try { const body = await resp.json(); if (body && body.message) msg = body.message } catch {}
+      throw new Error(msg)
+    }
     const reader = resp.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    let receivedDone = false
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
@@ -261,11 +277,14 @@ async function send() {
           scrollBottom()
         } else if (data.type === 'refs') {
           refsList.value[idx] = parseRefs(data.content)
+        } else if (data.type === 'done') {
+          receivedDone = true
         } else if (data.type === 'error') {
           throw new Error(data.content || '问答失败')
         }
       }
     }
+    if (!receivedDone) throw new Error('连接中断，请稍后重试')
     // 流结束：显示完成态，短暂保留后消失；同时刷新会话列表（标题已由后端生成、按最后对话时间重排）
     currentStage.value = { id: 'DONE', text: '回答完成' }
     stageDone.value = true
@@ -276,8 +295,9 @@ async function send() {
     const s = sessions.value.find((x) => x.id === sessionId.value)
     if (s) s.messageCount += 2
   } catch (e) {
-    if (!messages.value[idx].content) messages.value[idx].content = '问答失败，请检查模型配置'
-    ElMessage.error('问答失败，请检查模型配置')
+    const msg = friendlyError((e && e.message) || '')
+    if (!messages.value[idx].content) messages.value[idx].content = msg
+    ElMessage.error(msg)
   } finally {
     sending.value = false
     scrollBottom()

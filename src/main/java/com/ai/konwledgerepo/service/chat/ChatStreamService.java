@@ -121,7 +121,7 @@ public class ChatStreamService {
             emitter.complete();
         } catch (Exception e) {
             try {
-                sendSseEvent(emitter, "error", Texts.truncate(e.getMessage(), 200));
+                sendSseEvent(emitter, "error", Texts.truncate(Texts.friendlyError(e.getMessage()), 200));
                 emitter.completeWithError(e);
             } catch (Exception ignored) {
                 // 连接已断开
