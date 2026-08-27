@@ -4,6 +4,7 @@ import com.ai.konwledgerepo.common.BizException;
 import com.ai.konwledgerepo.common.RedisCacheService;
 import com.ai.konwledgerepo.common.RedisKeys;
 import com.ai.konwledgerepo.common.SseStreamContext;
+import com.ai.konwledgerepo.common.TaskLock;
 import com.ai.konwledgerepo.config.props.SeuCacheProperties;
 import com.ai.konwledgerepo.config.props.SeuQaProperties;
 import com.ai.konwledgerepo.dto.AskResponse;
@@ -108,10 +109,10 @@ class ChatServiceTest {
                 messageRepository, sessionRepository, redisCacheService, historyService, sessionService);
         QaAnswerService answerService = new QaAnswerService(
                 sessionService, historyService, messageStore, kbService, agentService, qaGraphRunner,
-                titleService, qaProps);
+                titleService, mock(TaskLock.class), qaProps);
         ChatStreamService streamService = new ChatStreamService(
                 sessionService, historyService, messageStore, kbService, agentService, qaGraphRunner,
-                titleService, qaProps);
+                titleService, mock(TaskLock.class), qaProps);
         service = new ChatService(sessionService, answerService, streamService);
         when(sessionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(messageRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));

@@ -2,6 +2,9 @@ package com.ai.konwledgerepo.service.chat;
 
 import com.ai.konwledgerepo.common.BizException;
 import com.ai.konwledgerepo.common.Defaults;
+import com.ai.konwledgerepo.common.ErrorCodes;
+import com.ai.konwledgerepo.common.RedisKeys;
+import com.ai.konwledgerepo.common.TaskLock;
 import com.ai.konwledgerepo.common.Texts;
 import com.ai.konwledgerepo.config.props.SeuQaProperties;
 import com.ai.konwledgerepo.dto.AskResponse;
@@ -17,6 +20,7 @@ import com.ai.konwledgerepo.service.knowledgebase.KnowledgeBaseService;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.util.List;
 
 /**
@@ -34,6 +38,8 @@ public class QaAnswerService {
     private final AgentService agentService;
     private final QaGraphRunner qaGraphRunner;
     private final SessionTitleService titleService;
+    private final TaskLock taskLock;
+    private final Duration lockTtl;
     private final int maxRetry;
     private final int messageWindow;
 
@@ -44,6 +50,7 @@ public class QaAnswerService {
                            AgentService agentService,
                            QaGraphRunner qaGraphRunner,
                            SessionTitleService titleService,
+                           TaskLock taskLock,
                            SeuQaProperties qaProps) {
         this.sessionService = sessionService;
         this.historyService = historyService;
@@ -52,6 +59,8 @@ public class QaAnswerService {
         this.agentService = agentService;
         this.qaGraphRunner = qaGraphRunner;
         this.titleService = titleService;
+        this.taskLock = taskLock;
+        this.lockTtl = Duration.ofSeconds(Math.max(60, qaProps.qaTimeoutSeconds() + 60));
         this.maxRetry = qaProps.maxRetry();
         this.messageWindow = qaProps.messageWindow();
     }
@@ -60,37 +69,48 @@ public class QaAnswerService {
      * 提问：执行问答状态图，持久化用户消息与助手消息，返回答案与证据。
      * 每次均以实时上下文（会话历史）完整执行链路，不做相同问题缓存——同一问题在不同
      * 上下文下答案不同，缓存会引入上下文串扰。
+     * <p>
+     * 会话级互斥：同一会话并发提问时，第二个请求快速失败，避免历史/落库竞态。
      */
     public AskResponse ask(Long sessionId, Long userId, String question, Long workspaceId) {
-        ChatSession session = sessionService.getSession(sessionId, userId, workspaceId);
-        KnowledgeBase kb = kbService.getEntityCached(session.getKbId());
-        if (!kb.isActive()) {
-            throw new BizException("知识库已停用，无法问答");
+        // 会话级互斥锁（SETNX + TTL，Redis 故障时 fail-open 放行）
+        boolean acquired = taskLock.tryAcquire(RedisKeys.askLock(sessionId), lockTtl);
+        if (!acquired) {
+            throw new BizException(ErrorCodes.TOO_MANY_REQUESTS, "该会话正在处理中，请稍后再试");
         }
-
-        AgentConfig agent = agentService.toAgentConfig(kb.getId(), kb.getName(), maxRetry, messageWindow);
-        List<HistoryEntry> history = historyService.cachedHistory(sessionId, agent.memoryWindow());
-
-        // 标题异步生成（与链路并行，不阻塞落库）
-        titleService.submitAutoTitle(session, question, workspaceId);
-
-        QaContext.QaInput input = new QaContext.QaInput(
-                kb.getId(), kb.getName(), sessionId, question, history, agent.maxRetry(), agent, workspaceId);
-        OverAllState result;
         try {
-            result = qaGraphRunner.run(input);
-        } catch (Exception e) {
-            throw new BizException("问答处理失败，请检查文本/向量模型配置是否可用: " + Texts.truncate(e.getMessage(), 200));
+            ChatSession session = sessionService.getSession(sessionId, userId, workspaceId);
+            KnowledgeBase kb = kbService.getEntityCached(session.getKbId());
+            if (!kb.isActive()) {
+                throw new BizException("知识库已停用，无法问答");
+            }
+
+            AgentConfig agent = agentService.toAgentConfig(kb.getId(), kb.getName(), maxRetry, messageWindow);
+            List<HistoryEntry> history = historyService.cachedHistory(sessionId, agent.memoryWindow());
+
+            // 标题异步生成（与链路并行，不阻塞落库）
+            titleService.submitAutoTitle(session, question, workspaceId);
+
+            QaContext.QaInput input = new QaContext.QaInput(
+                    kb.getId(), kb.getName(), sessionId, question, history, agent.maxRetry(), agent, workspaceId);
+            OverAllState result;
+            try {
+                result = qaGraphRunner.run(input);
+            } catch (Exception e) {
+                throw new BizException("问答处理失败，请检查文本/向量模型配置是否可用: " + Texts.truncate(e.getMessage(), 200));
+            }
+
+            String answer = result.value(QaContextKey.CHAT_ONLY_ANSWER)
+                    .map(String::valueOf)
+                    .or(() -> result.value(QaContextKey.ANSWER).map(String::valueOf))
+                    .orElse(Defaults.QA_FALLBACK_ANSWER);
+            String refs = result.value(QaContextKey.REFS).map(String::valueOf).orElse("[]");
+            String intent = result.value(QaContextKey.INTENT).map(String::valueOf).orElse(null);
+
+            messageStore.persistAnswer(session, userId, question, answer, refs, workspaceId);
+            return new AskResponse(answer, refs, intent);
+        } finally {
+            taskLock.release(RedisKeys.askLock(sessionId));
         }
-
-        String answer = result.value(QaContextKey.CHAT_ONLY_ANSWER)
-                .map(String::valueOf)
-                .or(() -> result.value(QaContextKey.ANSWER).map(String::valueOf))
-                .orElse(Defaults.QA_FALLBACK_ANSWER);
-        String refs = result.value(QaContextKey.REFS).map(String::valueOf).orElse("[]");
-        String intent = result.value(QaContextKey.INTENT).map(String::valueOf).orElse(null);
-
-        messageStore.persistAnswer(session, userId, question, answer, refs, workspaceId);
-        return new AskResponse(answer, refs, intent);
     }
 }

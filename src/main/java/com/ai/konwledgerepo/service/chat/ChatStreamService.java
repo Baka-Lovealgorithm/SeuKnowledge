@@ -2,7 +2,10 @@ package com.ai.konwledgerepo.service.chat;
 
 import com.ai.konwledgerepo.common.BizException;
 import com.ai.konwledgerepo.common.Defaults;
+import com.ai.konwledgerepo.common.ErrorCodes;
+import com.ai.konwledgerepo.common.RedisKeys;
 import com.ai.konwledgerepo.common.SseStreamContext;
+import com.ai.konwledgerepo.common.TaskLock;
 import com.ai.konwledgerepo.common.Texts;
 import com.ai.konwledgerepo.config.props.SeuQaProperties;
 import com.ai.konwledgerepo.entity.ChatSession;
@@ -20,11 +23,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.List;
 
 /**
  * 流式问答域（SSE）：链路执行期间答案逐 token 推送，末尾推送 refs 与 done。
- * 由 Controller 经 {@link ChatService} 门面调用，本类 {@code @Async} 异步执行避免阻塞 Servlet 线程；
+ * 由 Controller 经 {@link ChatService} 门面调用，本类 {@code @Async("streamVirtualExecutor")} 走独立虚拟线程池，
+ * 避免阻塞 Servlet 线程（Tomcat 已虚拟线程化）且不与文档解析/抽取竞争平台线程池；
  * 持久化统一委托 {@link ChatMessageStore}（消息与会话状态原子落库）。
  */
 @Service
@@ -37,6 +42,8 @@ public class ChatStreamService {
     private final AgentService agentService;
     private final QaGraphRunner qaGraphRunner;
     private final SessionTitleService titleService;
+    private final TaskLock taskLock;
+    private final Duration lockTtl;
     private final int maxRetry;
     private final int messageWindow;
 
@@ -47,6 +54,7 @@ public class ChatStreamService {
                              AgentService agentService,
                              QaGraphRunner qaGraphRunner,
                              SessionTitleService titleService,
+                             TaskLock taskLock,
                              SeuQaProperties qaProps) {
         this.sessionService = sessionService;
         this.historyService = historyService;
@@ -55,16 +63,27 @@ public class ChatStreamService {
         this.agentService = agentService;
         this.qaGraphRunner = qaGraphRunner;
         this.titleService = titleService;
+        this.taskLock = taskLock;
+        this.lockTtl = Duration.ofSeconds(Math.max(60, qaProps.qaTimeoutSeconds() + 60));
         this.maxRetry = qaProps.maxRetry();
         this.messageWindow = qaProps.messageWindow();
     }
 
     /**
      * 流式问答（SSE）：链路执行期间答案逐 token 推送，末尾推送 refs 与 done。
-     * 由 Controller 经 {@code @Async} 提交，避免阻塞 Servlet 线程。
+     * 由 Controller 经 {@code @Async("streamVirtualExecutor")} 提交，避免阻塞 Servlet 线程。
+     * <p>
+     * 会话级互斥：同一会话并发提问时，第二个请求快速失败，避免历史/落库竞态。
      */
-    @Async
+    @Async("streamVirtualExecutor")
     public void askStreamAsync(Long sessionId, Long userId, String question, SseEmitter emitter, Long workspaceId) {
+        // 会话级互斥锁（SETNX + TTL，Redis 故障时 fail-open 放行）
+        boolean acquired = taskLock.tryAcquire(RedisKeys.askLock(sessionId), lockTtl);
+        if (!acquired) {
+            sendSseEvent(emitter, "error", "该会话正在处理中，请稍后再试");
+            emitter.complete();
+            return;
+        }
         try {
             ChatSession session = sessionService.getSession(sessionId, userId, workspaceId);
             KnowledgeBase kb = kbService.getEntityCached(session.getKbId());
@@ -109,6 +128,7 @@ public class ChatStreamService {
             }
         } finally {
             SseStreamContext.clear();
+            taskLock.release(RedisKeys.askLock(sessionId));
         }
     }
 

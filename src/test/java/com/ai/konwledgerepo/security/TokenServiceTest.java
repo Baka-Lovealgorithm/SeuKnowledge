@@ -33,7 +33,7 @@ class TokenServiceTest {
         redis = mock(StringRedisTemplate.class);
         valueOps = mock(ValueOperations.class);
         when(redis.opsForValue()).thenReturn(valueOps);
-        service = new TokenService(redis, new SeuSecurityProperties(604800, "admin", "admin123", List.of("*")));
+        service = new TokenService(redis, new SeuSecurityProperties(604800, "admin", "admin123", List.of("*"), 5, 900, 900));
     }
 
     @Test

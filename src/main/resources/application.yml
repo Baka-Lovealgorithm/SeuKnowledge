@@ -72,6 +72,9 @@ springdoc:
 seuknowledge:
   security:
     token-ttl-seconds: ${KB_TOKEN_TTL:604800}   # 登录 token 有效期（秒），默认 7 天
+    login-fail-max: ${KB_LOGIN_FAIL_MAX:5}      # 连续登录失败达此数触发临时锁定
+    login-fail-window-seconds: ${KB_LOGIN_FAIL_WINDOW:900} # 登录失败计数窗口（秒，默认 15 分钟）
+    login-lock-seconds: ${KB_LOGIN_LOCK:900}     # 登录锁定时长（秒，默认 15 分钟）
   cache:
     member-ttl-seconds: ${KB_CACHE_MEMBER_TTL:300}     # 用户→工作空间角色缓存
     model-ttl-seconds: ${KB_CACHE_MODEL_TTL:600}       # 模型配置解析缓存
@@ -83,7 +86,7 @@ seuknowledge:
     history-ttl-seconds: ${KB_CACHE_HISTORY_TTL:600}   # 会话记忆窗口缓存
     task-ttl-seconds: ${KB_CACHE_TASK_TTL:86400}       # 抽取任务进度缓存
   rate-limit:
-    enabled: ${KB_RATE_LIMIT_ENABLED:false}            # /ask 限流总开关（默认关闭）
+    enabled: ${KB_RATE_LIMIT_ENABLED:true}             # /ask 限流总开关（默认开启，Redis 不可用时 fail-open 放行）
     ask-per-minute: ${KB_RATE_LIMIT_ASK_PER_MINUTE:30} # 每用户每分钟最大问答次数
   file:
     storage-path: ${KB_FILE_STORAGE_PATH:./data/files}

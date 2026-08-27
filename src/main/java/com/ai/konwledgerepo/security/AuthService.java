@@ -32,29 +32,45 @@ public class AuthService {
     private final WorkspaceMemberRepository memberRepository;
     private final WorkspaceRepository workspaceRepository;
     private final PasswordEncoder passwordEncoder;
+    private final LoginAttemptService loginAttemptService;
 
     public AuthService(SysUserRepository userRepository,
                        TokenService tokenService,
                        WorkspaceMemberRepository memberRepository,
                        WorkspaceRepository workspaceRepository,
-                       PasswordEncoder passwordEncoder) {
+                       PasswordEncoder passwordEncoder,
+                       LoginAttemptService loginAttemptService) {
         this.userRepository = userRepository;
         this.tokenService = tokenService;
         this.memberRepository = memberRepository;
         this.workspaceRepository = workspaceRepository;
         this.passwordEncoder = passwordEncoder;
+        this.loginAttemptService = loginAttemptService;
     }
 
     /** 登录：校验用户名/密码/启停状态，签发 token，返回默认工作空间上下文 */
     public LoginResponse login(LoginRequest request) {
-        SysUser user = userRepository.findByUsername(request.username())
-                .orElseThrow(() -> new BizException("用户名或密码错误"));
-        if (!Boolean.TRUE.equals(user.getEnabled())) {
-            throw new BizException("账号已停用");
-        }
-        if (!passwordEncoder.matches(request.password(), user.getPassword())) {
+        String username = request.username();
+
+        // 登录防爆破：被锁定则统一返回用户名密码错误（防用户名枚举）
+        if (loginAttemptService.isLocked(username)) {
             throw new BizException("用户名或密码错误");
         }
+
+        SysUser user = userRepository.findByUsername(username)
+                .orElse(null);
+        if (user == null || !Boolean.TRUE.equals(user.getEnabled())) {
+            loginAttemptService.recordFailure(username);
+            throw new BizException("用户名或密码错误");
+        }
+        if (!passwordEncoder.matches(request.password(), user.getPassword())) {
+            loginAttemptService.recordFailure(username);
+            throw new BizException("用户名或密码错误");
+        }
+
+        // 登录成功，清除失败计数与锁定
+        loginAttemptService.clear(username);
+
         List<WorkspaceMember> members = memberRepository.findByUserIdOrderByIdAsc(user.getId());
         if (members.isEmpty()) {
             throw new BizException(Defaults.NO_WORKSPACE_MESSAGE);

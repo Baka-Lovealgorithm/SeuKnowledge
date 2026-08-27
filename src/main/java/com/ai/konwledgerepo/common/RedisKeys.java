@@ -109,6 +109,23 @@ public final class RedisKeys {
         return PREFIX + "task:extract:" + docId;
     }
 
+    /** 登录失败计数（String，INCR + EXPIRE） */
+    public static String loginFail(String username) {
+        return PREFIX + "login:fail:" + username;
+    }
+
+    /** 登录锁定标记（SETNX，TTL 等于锁定窗口） */
+    public static String loginLock(String username) {
+        return PREFIX + "login:lock:" + username;
+    }
+
+    // ===== 会话互斥（问答） =====
+
+    /** 会话级问答互斥锁（SETNX，TTL ≥ 链路超时，防同一会话并发提问） */
+    public static String askLock(Long sessionId) {
+        return PREFIX + "ask:lock:" + sessionId;
+    }
+
     private RedisKeys() {
     }
 }

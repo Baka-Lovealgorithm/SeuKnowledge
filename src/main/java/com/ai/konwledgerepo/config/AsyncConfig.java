@@ -5,6 +5,7 @@ import com.ai.konwledgerepo.config.props.SeuAsyncProperties;
 import com.ai.konwledgerepo.config.props.SeuDocumentProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.util.concurrent.ThreadPoolExecutor;
@@ -60,6 +61,16 @@ public class AsyncConfig {
         // 队列满时由提交线程（主线程）执行，避免任务丢失
         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
         executor.initialize();
+        return executor;
+    }
+
+    /** 流式问答专用池：per-task 虚拟线程，SSE 长会话不占平台线程池（解析/抽取），保留 MDC 传递 */
+    @Bean("streamVirtualExecutor")
+    public SimpleAsyncTaskExecutor streamVirtualExecutor() {
+        SimpleAsyncTaskExecutor executor = new SimpleAsyncTaskExecutor();
+        executor.setVirtualThreads(true);          // Spring 6.1+，每任务一虚拟线程，阻塞自动让出载体
+        executor.setTaskDecorator(new MdcTaskDecorator()); // requestId/sessionId 跨线程复用现有装饰器
+        executor.setThreadNamePrefix("stream-");
         return executor;
     }
 }
