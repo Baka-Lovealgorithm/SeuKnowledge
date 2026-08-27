@@ -6,16 +6,26 @@
           <el-option v-for="kb in kbs" :key="kb.id" :label="kb.name" :value="kb.id" />
         </el-select>
         <el-button type="primary" style="width: 100%; margin-top: 10px"
-                  :disabled="!kbId || sending" @click="createSession">
+                  :disabled="!kbId || isSendingCurrent" @click="newChat">
           ＋ 新建对话
+        </el-button>
+      </div>
+      <div v-if="sessions.length" class="manage-bar">
+        <el-button text size="small" @click="toggleManage">
+          {{ manageMode ? '完成' : '管理' }}
+        </el-button>
+        <el-button v-if="manageMode" type="danger" size="small"
+                  :disabled="selectedIds.size === 0" @click="deleteSelected">
+          删除所选({{ selectedIds.size }})
         </el-button>
       </div>
       <div class="session-list">
         <div
           v-for="s in sessions" :key="s.id"
           class="session-item" :class="{ active: s.id === sessionId }"
-          @click="selectSession(s)"
+          @click="manageMode ? toggleSelect(s) : selectSession(s)"
         >
+          <el-checkbox v-if="manageMode" :model-value="selectedIds.has(s.id)" class="session-check" @click.stop @change="toggleSelect(s)" />
           <div class="session-title">
             {{ s.title && s.title !== '新会话' ? s.title : '会话 #' + s.id }}
             <span class="session-ops" @click.stop>
@@ -33,7 +43,7 @@
         <div v-for="(m, i) in messages" :key="i" class="msg-row" :class="m.role.toLowerCase()">
           <div class="msg-bubble">
             <div class="msg-role">{{ m.role === 'USER' ? '我' : '助手' }}</div>
-            <div class="msg-content">{{ m.content }}</div>
+            <div class="msg-content"><MdContent :content="m.content" /></div>
             <div v-if="m.role === 'ASSISTANT' && refsList[i]" class="msg-refs">
               <div v-for="(r, j) in refsList[i]" :key="j" class="ref-item">
                 <span class="ref-index">[{{ j + 1 }}]</span>
@@ -64,11 +74,11 @@
         </div>
         <el-input
           v-model="input" placeholder="输入问题，回车发送"
-          :disabled="!sessionId || sending"
+          :disabled="(!sessionId && !draft) || isSendingCurrent"
           @keyup.enter="send"
         >
           <template #append>
-            <el-button :loading="sending" @click="send">发送</el-button>
+            <el-button :loading="isSendingCurrent" @click="send">发送</el-button>
           </template>
         </el-input>
       </el-footer>
@@ -85,11 +95,12 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Edit, Delete } from '@element-plus/icons-vue'
 import { chatApi, kbApi } from '../api'
 import { useAuthStore } from '../stores/auth'
+import MdContent from '../components/MdContent.vue'
 
 const auth = useAuthStore()
 
@@ -100,7 +111,11 @@ const sessionId = ref(null)
 const messages = ref([])
 const refsList = ref([])
 const input = ref('')
-const sending = ref(false)
+const draft = ref(false)
+const stageStore = reactive(new Map())
+const sendingSessions = reactive(new Set())
+const manageMode = ref(false)
+const selectedIds = reactive(new Set())
 const mainRef = ref(null)
 const renameVisible = ref(false)
 const renameTitle = ref('')
@@ -117,8 +132,9 @@ const STAGES = [
   { id: 'DONE', label: '完成' }
 ]
 const STAGE_INDEX = Object.fromEntries(STAGES.map((s, i) => [s.id, i]))
-const currentStage = ref(null) // { id, text }
-const stageDone = ref(false)
+const currentStage = computed(() => sessionId.value ? (stageStore.get(sessionId.value) || null) : null)
+const stageDone = computed(() => currentStage.value?.done ?? false)
+const isSendingCurrent = computed(() => sessionId.value ? sendingSessions.has(sessionId.value) : false)
 const stageIdx = computed(() => {
   if (!currentStage.value) return -1
   return STAGE_INDEX[currentStage.value.id] ?? -1
@@ -126,8 +142,7 @@ const stageIdx = computed(() => {
 const stageText = computed(() => (currentStage.value ? currentStage.value.text : ''))
 
 function resetStage() {
-  currentStage.value = null
-  stageDone.value = false
+  if (sessionId.value) stageStore.delete(sessionId.value)
 }
 
 function fmt(t) { return t ? t.replace('T', ' ').slice(5, 16) : '' }
@@ -168,7 +183,9 @@ async function restoreLastState() {
 }
 
 async function onKbChange() {
-  // 手动切换知识库：记录新知识库、作废旧会话记录
+  draft.value = false
+  manageMode.value = false
+  selectedIds.clear()
   localStorage.setItem(lastKbKey(), String(kbId.value))
   localStorage.removeItem(lastSessionKey())
   sessions.value = await chatApi.listSessions()
@@ -179,25 +196,33 @@ async function onKbChange() {
   refsList.value = []
   resetStage()
   if (matched.length === 0) {
-    await createSession()
+    draft.value = true
   } else {
     selectSession(matched[0])
   }
 }
 
-async function createSession() {
-  if (!kbId.value) return
-  const s = await chatApi.createSession(kbId.value)
-  sessions.value.unshift(s)
-  selectSession(s)
+function newChat() {
+  if (isSendingCurrent.value) return
+  draft.value = true
+  sessionId.value = null
+  messages.value = []
+  refsList.value = []
+  resetStage()
+  localStorage.removeItem(lastSessionKey())
+  scrollBottom()
 }
 
 async function selectSession(s) {
+  if (manageMode.value) return
+  draft.value = false
   sessionId.value = s.id
-  // 记录上次使用的知识库与会话（按工作空间）
   localStorage.setItem(lastKbKey(), String(kbId.value))
   localStorage.setItem(lastSessionKey(), String(s.id))
-  resetStage()
+  if (sendingSessions.has(s.id)) {
+    // 正在处理中：保留当前视图，不重载消息
+    return
+  }
   const msgs = await chatApi.messages(s.id)
   messages.value = msgs
   refsList.value = msgs.map((m) => parseRefs(m.refs))
@@ -230,21 +255,33 @@ function refTitle(r) {
 
 async function send() {
   const q = input.value.trim()
-  if (!q || !sessionId.value || sending.value) return
+  if (!q || isSendingCurrent.value) return
   input.value = ''
-  sending.value = true
-  const sentSessionId = sessionId.value
+  // 惰性创建：首条消息才落库
+  let sid = sessionId.value
+  if (draft.value) {
+    if (!kbId.value) return
+    const s = await chatApi.createSession(kbId.value)
+    sessions.value.unshift(s)
+    sid = s.id
+    sessionId.value = s.id
+    draft.value = false
+    localStorage.setItem(lastKbKey(), String(kbId.value))
+    localStorage.setItem(lastSessionKey(), String(s.id))
+  }
+  sendingSessions.add(sid)
+  const sentSessionId = sid
+  const cur = () => sessionId.value === sentSessionId
   resetStage()
   messages.value.push({ role: 'USER', content: q })
   refsList.value.push([])
-  // 预置 assistant 气泡，流式填充
   const idx = messages.value.length
   messages.value.push({ role: 'ASSISTANT', content: '' })
   refsList.value.push([])
   scrollBottom()
   try {
     const token = localStorage.getItem('token')
-    const resp = await fetch(`/api/chat/session/${sessionId.value}/ask/stream`, {
+    const resp = await fetch(`/api/chat/session/${sentSessionId}/ask/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ question: q })
@@ -269,37 +306,36 @@ async function send() {
         if (!line.startsWith('data:')) continue
         const data = JSON.parse(line.slice(5).trim())
         if (data.type === 'stage') {
-          // 问答阶段状态：更新流程条
-          currentStage.value = { id: data.stage, text: data.content || '' }
-          stageDone.value = false
+          stageStore.set(sentSessionId, { id: data.stage, text: data.content || '', done: false })
         } else if (data.type === 'delta') {
-          messages.value[idx].content += data.content
-          scrollBottom()
+          if (cur()) { messages.value[idx].content += data.content; scrollBottom() }
         } else if (data.type === 'refs') {
-          refsList.value[idx] = parseRefs(data.content)
+          if (cur()) { refsList.value[idx] = parseRefs(data.content) }
         } else if (data.type === 'done') {
           receivedDone = true
+          stageStore.set(sentSessionId, { id: 'DONE', text: '回答完成', done: true })
         } else if (data.type === 'error') {
           throw new Error(data.content || '问答失败')
         }
       }
     }
     if (!receivedDone) throw new Error('连接中断，请稍后重试')
-    // 流结束：显示完成态，短暂保留后消失；同时刷新会话列表（标题已由后端生成、按最后对话时间重排）
-    currentStage.value = { id: 'DONE', text: '回答完成' }
-    stageDone.value = true
+    stageStore.set(sentSessionId, { id: 'DONE', text: '回答完成', done: true })
     setTimeout(async () => {
-      resetStage()
-      if (sessionId.value === sentSessionId) await refreshSessions()
+      stageStore.delete(sentSessionId)
+      if (cur()) await refreshSessions()
     }, 1600)
-    const s = sessions.value.find((x) => x.id === sessionId.value)
+    const s = sessions.value.find((x) => x.id === sentSessionId)
     if (s) s.messageCount += 2
   } catch (e) {
+    stageStore.delete(sentSessionId)
     const msg = friendlyError((e && e.message) || '')
-    if (!messages.value[idx].content) messages.value[idx].content = msg
-    ElMessage.error(msg)
+    if (cur()) {
+      if (!messages.value[idx].content) messages.value[idx].content = msg
+      ElMessage.error(msg)
+    }
   } finally {
-    sending.value = false
+    sendingSessions.delete(sentSessionId)
     scrollBottom()
   }
 }
@@ -336,6 +372,7 @@ async function confirmRename() {
 }
 
 async function removeSession(s) {
+  if (manageMode.value) return
   await ElMessageBox.confirm(`确定删除会话 #${s.id}？会话中的消息将一并删除。`, '提示', { type: 'warning' })
   await chatApi.remove(s.id)
   sessions.value = sessions.value.filter((x) => x.id !== s.id)
@@ -344,12 +381,49 @@ async function removeSession(s) {
     sessionId.value = null
     messages.value = []
     refsList.value = []
-    // 删除当前会话后：仍有会话则自动选中第一个，否则保持空
     if (sessions.value.length) {
       await selectSession(sessions.value[0])
+    } else {
+      draft.value = true
     }
   }
   ElMessage.success('已删除')
+}
+
+function toggleManage() {
+  manageMode.value = !manageMode.value
+  selectedIds.clear()
+}
+
+function toggleSelect(s) {
+  if (selectedIds.has(s.id)) {
+    selectedIds.delete(s.id)
+  } else {
+    selectedIds.add(s.id)
+  }
+}
+
+async function deleteSelected() {
+  if (selectedIds.size === 0) return
+  await ElMessageBox.confirm(`确定删除选中的 ${selectedIds.size} 个会话？`, '提示', { type: 'warning' })
+  for (const id of selectedIds) {
+    await chatApi.remove(id).catch(() => {})
+  }
+  selectedIds.clear()
+  manageMode.value = false
+  const all = await chatApi.listSessions()
+  sessions.value = all.filter((s) => s.kbId === kbId.value)
+  if (sessionId.value && !sessions.value.find((s) => s.id === sessionId.value)) {
+    localStorage.removeItem(lastSessionKey())
+    sessionId.value = null
+    messages.value = []
+    refsList.value = []
+    if (sessions.value.length) {
+      await selectSession(sessions.value[0])
+    } else {
+      draft.value = true
+    }
+  }
 }
 
 onMounted(loadKbs)
@@ -359,10 +433,12 @@ onMounted(loadKbs)
 .chat-page { height: calc(100vh - 110px); border: 1px solid #e6e6e6; background: #fff; }
 .chat-aside { border-right: 1px solid #e6e6e6; display: flex; flex-direction: column; }
 .aside-top { padding: 12px; border-bottom: 1px solid #f0f0f0; }
+.manage-bar { padding: 6px 14px; border-bottom: 1px solid #f0f0f0; display: flex; align-items: center; gap: 8px; }
 .session-list { flex: 1; overflow: auto; }
-.session-item { padding: 10px 14px; cursor: pointer; border-bottom: 1px solid #f5f5f5; }
+.session-item { padding: 10px 14px; cursor: pointer; border-bottom: 1px solid #f5f5f5; display: flex; align-items: flex-start; gap: 8px; }
 .session-item:hover { background: #f5f7fa; }
 .session-item.active { background: #ecf5ff; }
+.session-check { flex-shrink: 0; margin-top: 2px; }
 .session-title { display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 14px; }
 .session-ops { display: inline-flex; gap: 6px; opacity: 0; transition: opacity 0.2s; }
 .session-item:hover .session-ops { opacity: 1; }
