@@ -221,7 +221,7 @@ class ExtractTaskExecutorTest {
     @Test
     void runRetry_onlyProcessesRetryDocsAndSoftDeletesOldDrafts() {
         ExtractTask task = task(4L, "[1,2,3]", "BOTH");
-        task.setStatus("PARTIAL_FAILED");
+        task.setStatus("PENDING"); // retry 入口已在 ExtractTaskService.retry() 中置为 PENDING
         task.setFailedDocIds("[2]");
         when(taskRepository.findById(4L)).thenReturn(Optional.of(task));
         // 只 stub 重抽文档 2：若实现误处理 1/3，会因“文档不存在”失败并破坏下方断言

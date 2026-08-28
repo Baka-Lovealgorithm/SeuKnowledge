@@ -1,6 +1,7 @@
 package com.ai.konwledgerepo.common;
 
 import com.ai.konwledgerepo.config.props.SeuQaProperties;
+import com.ai.konwledgerepo.graph.QaConcurrencyGuard;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;

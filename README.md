@@ -47,7 +47,7 @@
 ### 2. 克隆代码并准备配置
 
 ```bash
-git clone <你的仓库地址> seuknowledge
+git clone git@github.com:Baka-Lovealgorithm/SeuKnowledge.git seuknowledge
 cd seuknowledge
 ```
 
@@ -203,4 +203,4 @@ npm run dev
 mvn test
 ```
 
-当前 **39 个测试类、306 个用例全绿**（分块器、文档解析、模型解析、模型配置、知识库、会话、抽取任务、多工作空间成员管理、重排客户端/节点、标题生成等）。
+当前 **45 个测试类、390 个用例**（分块器、文档解析、模型解析、模型配置、知识库、会话、抽取任务、多工作空间成员管理、重排客户端/节点、标题生成等）。其中 5 个 `@SpringBootTest` 集成测试需 MySQL/Redis 环境，纯单元测试 385 个全绿。

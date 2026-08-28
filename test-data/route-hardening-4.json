@@ -1,6 +1,0 @@
-[
-  {"n": 1, "cat": "概念·域参与者", "q": "ZRDDS 中 DomainParticipant 是什么？有哪些创建方式？"},
-  {"n": 6, "cat": "边界·证据不足", "q": "ZRDDS 的商业授权与定价政策是什么？"},
-  {"n": 7, "cat": "闲聊", "q": "你好，今天天气怎么样？"},
-  {"n": 9, "cat": "机制·WaitSet", "q": "ZRDDS 的 Condition 与 WaitSet 机制是什么？如何阻塞等待并处理触发的 Condition？"}
-]
