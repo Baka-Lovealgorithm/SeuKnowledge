@@ -10,7 +10,6 @@ import com.ai.konwledgerepo.graph.QaState;
 import com.ai.konwledgerepo.common.SseStreamContext;
 import com.ai.konwledgerepo.tracing.QaTracing;
 import com.alibaba.cloud.ai.graph.OverAllState;
-import com.alibaba.cloud.ai.graph.action.NodeAction;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.opentelemetry.api.trace.Span;
 import org.springframework.stereotype.Component;
@@ -19,36 +18,31 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 重试与兜底节点：
- * - 无召回证据 → 诚实兜底（Defaults.INSUFFICIENT_EVIDENCE_ANSWER）
- * - 置信度低于阈值且未达重试上限 → 回 QUERY_REWRITE 扩大召回重试
- * - 置信度低于阈值且重试已用尽（或提前终止）→ 三级出口：
- *   部分回答（partialAnswer 开启、无矛盾断言、分数≥partialFloor）→ 合成答案 + 缺漏声明 + REFS，
- *   否则显式拒答（Defaults.INSUFFICIENT_EVIDENCE_REFUSAL）+ REFS 供用户自查
- * - 置信度达标 → 给出当前答案
+ * 重试与兜底节点。
  */
 @Component
-public class RetryOrFallbackNode implements NodeAction {
+public class RetryOrFallbackNode extends QaNodeSupport {
 
     private static final double THRESHOLD = 0.7;
 
-    private final QaTracing qaTracing;
     private final ObjectMapper objectMapper;
     private final boolean partialAnswer;
     private final double partialFloor;
 
     public RetryOrFallbackNode(QaTracing qaTracing, ObjectMapper objectMapper, SeuQaProperties qaProps) {
-        this.qaTracing = qaTracing;
+        super(qaTracing);
         this.objectMapper = objectMapper;
         this.partialAnswer = qaProps.partialAnswer();
         this.partialFloor = qaProps.partialFloor();
     }
 
     @Override
-    public Map<String, Object> apply(OverAllState state) throws Exception {
-        SseStreamContext.throwIfCancelled();
-        Span span = qaTracing.begin("node/retry_fallback");
-        try {
+    protected String spanName() {
+        return "node/retry_fallback";
+    }
+
+    @Override
+    protected Map<String, Object> applyInternal(OverAllState state, Span span) throws Exception {
             List<ChunkEvidence> chunks = QaContext.chunks(state.value(QaContextKey.CHUNKS).orElse(List.of()));
             // 无召回证据：无法回答，诚实说明
             if (chunks.isEmpty()) {
@@ -112,12 +106,6 @@ public class RetryOrFallbackNode implements NodeAction {
             span.setAttribute("score", score);
             span.setAttribute("retry_count", retry);
             return Map.of(QaContextKey.NEXT, QaState.TERMINAL.name());
-        } catch (Exception e) {
-            span.recordException(e);
-            throw e;
-        } finally {
-            span.end();
-        }
     }
 
     /**

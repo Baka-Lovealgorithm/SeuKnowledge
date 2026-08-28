@@ -110,12 +110,14 @@ class ChatServiceTest {
                 messageRepository, sessionRepository, redisCacheService, historyService, sessionService);
         ChatSummaryService summaryService = mock(ChatSummaryService.class);
         when(summaryService.readSummary(anyLong())).thenReturn(Optional.empty());
-        QaAnswerService answerService = new QaAnswerService(
+        TaskLock taskLock = mock(TaskLock.class);
+        when(taskLock.tryAcquire(anyString(), any())).thenReturn(true);
+        QaExecutionService executionService = new QaExecutionService(
                 sessionService, historyService, summaryService, messageStore, kbService, agentService, qaGraphRunner,
-                titleService, mock(TaskLock.class), qaProps);
+                titleService, taskLock, qaProps);
+        QaAnswerService answerService = new QaAnswerService(executionService);
         ChatStreamService streamService = new ChatStreamService(
-                sessionService, historyService, summaryService, messageStore, kbService, agentService, qaGraphRunner,
-                titleService, mock(TaskLock.class), qaProps);
+                executionService, sessionService, messageStore, summaryService);
         service = new ChatService(sessionService, answerService, streamService);
         when(sessionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(messageRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
@@ -420,7 +422,7 @@ class ChatServiceTest {
         when(qaGraphRunner.run(any())).thenThrow(new RuntimeException("模型不可用"));
 
         BizException ex = assertThrows(BizException.class, () -> service.ask(SESSION_ID, USER_ID, "你好", WS_ID));
-        assertTrue(ex.getMessage().contains("问答处理失败"));
+        assertTrue(ex.getMessage().contains("模型不可用"), "异常消息应包含原始错误信息");
         verify(messageRepository, never()).save(any());
     }
 

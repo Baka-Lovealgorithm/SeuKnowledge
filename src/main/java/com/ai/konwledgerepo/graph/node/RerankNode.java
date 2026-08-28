@@ -11,7 +11,6 @@ import com.ai.konwledgerepo.graph.QaState;
 import com.ai.konwledgerepo.model.ModelFactory;
 import com.ai.konwledgerepo.tracing.QaTracing;
 import com.alibaba.cloud.ai.graph.OverAllState;
-import com.alibaba.cloud.ai.graph.action.NodeAction;
 import io.opentelemetry.api.trace.Span;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,101 +30,92 @@ import java.util.Optional;
  * 自引入交叉编码器后不再使用 agent.topN 全局截断与来源权重（权重机制已废弃）。
  */
 @Component
-public class RerankNode implements NodeAction {
+public class RerankNode extends QaNodeSupport {
 
     private static final Logger log = LoggerFactory.getLogger(RerankNode.class);
 
     private final ModelFactory modelFactory;
-    private final QaTracing qaTracing;
     private final int chunkTop;
     private final int otherTop;
 
     public RerankNode(ModelFactory modelFactory,
                       QaTracing qaTracing,
                       SeuRerankProperties rerankProps) {
+        super(qaTracing);
         this.modelFactory = modelFactory;
-        this.qaTracing = qaTracing;
         this.chunkTop = Math.max(0, rerankProps.chunkTop());
         this.otherTop = Math.max(0, rerankProps.otherTop());
     }
 
     @Override
-    public Map<String, Object> apply(OverAllState state) throws Exception {
-        SseStreamContext.throwIfCancelled();
+    protected String spanName() {
+        return "node/rerank";
+    }
+
+    @Override
+    protected Map<String, Object> applyInternal(OverAllState state, Span span) throws Exception {
         SseStreamContext.sendStage("RERANK", "证据精排（交叉编码器：文档 " + chunkTop
                 + " / 业务知识+问答对 " + otherTop + "）");
-        Span span = qaTracing.begin("node/rerank");
-        try {
-            List<ChunkEvidence> chunks = QaContext.chunks(state.value(QaContextKey.CHUNKS).orElse(List.of()));
-            if (chunks.isEmpty()) {
-                span.setAttribute("reranked_count", 0);
-                return Map.of(
-                        QaContextKey.CHUNKS, List.of(),
-                        QaContextKey.NEXT, QaState.ANSWER_COMPOSE.name());
-            }
-            String question = state.value(QaContextKey.RAW_QUESTION).map(String::valueOf).orElse("");
-            List<ChunkEvidence> chunkGroup = chunks.stream()
-                    .filter(c -> SourceType.CHUNK.is(c.sourceType()))
-                    .toList();
-            List<ChunkEvidence> otherGroup = chunks.stream()
-                    .filter(c -> !SourceType.CHUNK.is(c.sourceType()))
-                    .toList();
+        List<ChunkEvidence> chunks = QaContext.chunks(state.value(QaContextKey.CHUNKS).orElse(List.of()));
+        if (chunks.isEmpty()) {
+            span.setAttribute("reranked_count", 0);
+            return Map.of(
+                    QaContextKey.CHUNKS, List.of(),
+                    QaContextKey.NEXT, QaState.ANSWER_COMPOSE.name());
+        }
+        String question = state.value(QaContextKey.RAW_QUESTION).map(String::valueOf).orElse("");
+        List<ChunkEvidence> chunkGroup = chunks.stream()
+                .filter(c -> SourceType.CHUNK.is(c.sourceType()))
+                .toList();
+        List<ChunkEvidence> otherGroup = chunks.stream()
+                .filter(c -> !SourceType.CHUNK.is(c.sourceType()))
+                .toList();
 
-            // 重排模型按当前工作空间动态解析（可选：未配置 → 降级 ES 分）
-            long workspaceId = QaContext.longValue(state, QaContextKey.WORKSPACE_ID, 0L);
-            Optional<EvidenceReranker> rerankerOpt = modelFactory.getReranker(workspaceId);
-            boolean reranked = rerankerOpt.filter(EvidenceReranker::isConfigured).isPresent();
-            List<ChunkEvidence> rerankedChunks;
-            List<ChunkEvidence> rerankedOthers;
-            if (reranked) {
-                try {
-                    EvidenceReranker reranker = rerankerOpt.get();
-                    rerankedChunks = rerankAndCut(chunkGroup, question, chunkTop, reranker);
-                    rerankedOthers = rerankAndCut(otherGroup, question, otherTop, reranker);
-                    log.info("交叉编码器精排成功: query={} 配额(chunk={} other={}) 实际(chunk={} other={})",
-                            question.length() > 60 ? question.substring(0, 60) + "..." : question,
-                            chunkTop, otherTop, rerankedChunks.size(), rerankedOthers.size());
-                    SseStreamContext.sendStage("RERANK", "证据精排完成：文档 " + rerankedChunks.size()
-                            + " · 业务知识+问答对 " + rerankedOthers.size());
-                } catch (Exception e) {
-                    log.warn("交叉编码器精排失败，降级按 ES 分排序: {}", e.getMessage());
-                    span.setAttribute("rerank_degraded", true);
-                    span.setAttribute("rerank_error", e.getMessage());
-                    rerankedChunks = cutByEsScore(chunkGroup, chunkTop);
-                    rerankedOthers = cutByEsScore(otherGroup, otherTop);
-                    reranked = false;
-                }
-            } else {
+        long workspaceId = QaContext.longValue(state, QaContextKey.WORKSPACE_ID, 0L);
+        Optional<EvidenceReranker> rerankerOpt = modelFactory.getReranker(workspaceId);
+        boolean reranked = rerankerOpt.filter(EvidenceReranker::isConfigured).isPresent();
+        List<ChunkEvidence> rerankedChunks;
+        List<ChunkEvidence> rerankedOthers;
+        if (reranked) {
+            try {
+                EvidenceReranker reranker = rerankerOpt.get();
+                rerankedChunks = rerankAndCut(chunkGroup, question, chunkTop, reranker);
+                rerankedOthers = rerankAndCut(otherGroup, question, otherTop, reranker);
+                log.info("交叉编码器精排成功: query={} 配额(chunk={} other={}) 实际(chunk={} other={})",
+                        question.length() > 60 ? question.substring(0, 60) + "..." : question,
+                        chunkTop, otherTop, rerankedChunks.size(), rerankedOthers.size());
+                SseStreamContext.sendStage("RERANK", "证据精排完成：文档 " + rerankedChunks.size()
+                        + " · 业务知识+问答对 " + rerankedOthers.size());
+            } catch (Exception e) {
+                log.warn("交叉编码器精排失败，降级按 ES 分排序: {}", e.getMessage());
+                span.setAttribute("rerank_degraded", true);
+                span.setAttribute("rerank_error", e.getMessage());
                 rerankedChunks = cutByEsScore(chunkGroup, chunkTop);
                 rerankedOthers = cutByEsScore(otherGroup, otherTop);
+                reranked = false;
             }
-
-            List<ChunkEvidence> result = new ArrayList<>(rerankedChunks);
-            result.addAll(rerankedOthers);
-            span.setAttribute("rerank_used", reranked);
-            span.setAttribute("chunk_count", rerankedChunks.size());
-            span.setAttribute("other_count", rerankedOthers.size());
-            span.setAttribute("reranked_count", result.size());
-            // 累计证据池：本轮精选并入历轮保留（按 sourceType:chunkId 去重）。
-            // 已保留知识跨轮保留但不再参与后续 rerank（KnowledgeRecall 排除集合来自累计池），
-            // 最终由 AnswerCompose 将累计池 ∪ 本轮新选中一并交 AI。
-            List<ChunkEvidence> accumulated = QaContext.chunks(
-                    state.value(QaContextKey.ACCUMULATED_CHUNKS).orElse(List.of()));
-            List<ChunkEvidence> mergedAccumulated = QaContext.mergeEvidence(accumulated, result);
-            if (mergedAccumulated.size() > accumulated.size()) {
-                log.info("累计证据池：本轮新增 {} 条，累计 {} 条", mergedAccumulated.size() - accumulated.size(),
-                        mergedAccumulated.size());
-            }
-            return Map.of(
-                    QaContextKey.CHUNKS, result,
-                    QaContextKey.ACCUMULATED_CHUNKS, mergedAccumulated,
-                    QaContextKey.NEXT, QaState.ANSWER_COMPOSE.name());
-        } catch (Exception e) {
-            span.recordException(e);
-            throw e;
-        } finally {
-            span.end();
+        } else {
+            rerankedChunks = cutByEsScore(chunkGroup, chunkTop);
+            rerankedOthers = cutByEsScore(otherGroup, otherTop);
         }
+
+        List<ChunkEvidence> result = new ArrayList<>(rerankedChunks);
+        result.addAll(rerankedOthers);
+        span.setAttribute("rerank_used", reranked);
+        span.setAttribute("chunk_count", rerankedChunks.size());
+        span.setAttribute("other_count", rerankedOthers.size());
+        span.setAttribute("reranked_count", result.size());
+        List<ChunkEvidence> accumulated = QaContext.chunks(
+                state.value(QaContextKey.ACCUMULATED_CHUNKS).orElse(List.of()));
+        List<ChunkEvidence> mergedAccumulated = QaContext.mergeEvidence(accumulated, result);
+        if (mergedAccumulated.size() > accumulated.size()) {
+            log.info("累计证据池：本轮新增 {} 条，累计 {} 条", mergedAccumulated.size() - accumulated.size(),
+                    mergedAccumulated.size());
+        }
+        return Map.of(
+                QaContextKey.CHUNKS, result,
+                QaContextKey.ACCUMULATED_CHUNKS, mergedAccumulated,
+                QaContextKey.NEXT, QaState.ANSWER_COMPOSE.name());
     }
 
     /** 调交叉编码器打分并按分排序取前 quota（候选超 max-docs 时按 ES 分粗筛截断，防单次输入超 30K token） */

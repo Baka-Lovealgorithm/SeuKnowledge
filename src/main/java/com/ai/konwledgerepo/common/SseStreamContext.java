@@ -48,6 +48,16 @@ public final class SseStreamContext {
         DELTA_SENT.set(false);
     }
 
+    /** 设置外部创建的 SseFlow（供调用方提前持有引用，如取消端点注册） */
+    public static void setFlow(SseFlow flow) {
+        if (flow == null) {
+            FLOW.remove();
+        } else {
+            FLOW.set(flow);
+        }
+        DELTA_SENT.set(false);
+    }
+
     public static SseEmitter get() {
         SseFlow flow = FLOW.get();
         return flow == null ? null : flow.emitter;

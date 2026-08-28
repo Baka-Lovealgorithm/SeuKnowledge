@@ -120,6 +120,18 @@ public final class QaContext {
     }
 
     /**
+     * 统一构造 Agent 系统提示词前缀（供各节点共用）。
+     * 无 Agent 或 systemPrompt 为空时返回空字符串。
+     */
+    public static String agentPrompt(OverAllState state) {
+        AgentConfig agent = agent(state);
+        if (agent == null || agent.systemPrompt() == null || agent.systemPrompt().isBlank()) {
+            return "";
+        }
+        return "Agent 设定：" + agent.systemPrompt() + "\n";
+    }
+
+    /**
      * 取最近 maxRounds 轮对话（以 user 消息计数）序列化为 JSON 数组字符串；空返回 "[]"。
      * 供意图路由 / 问题改写节点注入最近对话上下文（省略、指代消歧）。
      */

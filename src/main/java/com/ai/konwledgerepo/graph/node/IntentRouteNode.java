@@ -4,7 +4,6 @@ import com.ai.konwledgerepo.common.PromptCatalog;
 import com.ai.konwledgerepo.entity.Intent;
 import com.ai.konwledgerepo.entity.ModelConfig;
 import com.ai.konwledgerepo.entity.ModelUsage;
-import com.ai.konwledgerepo.graph.AgentConfig;
 import com.ai.konwledgerepo.graph.JudgeOptions;
 import com.ai.konwledgerepo.graph.QaContext;
 import com.ai.konwledgerepo.graph.QaContextKey;
@@ -15,7 +14,6 @@ import com.ai.konwledgerepo.service.chat.HistoryEntry;
 import com.ai.konwledgerepo.tracing.LlmTrace;
 import com.ai.konwledgerepo.tracing.QaTracing;
 import com.alibaba.cloud.ai.graph.OverAllState;
-import com.alibaba.cloud.ai.graph.action.NodeAction;
 import io.opentelemetry.api.trace.Span;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,98 +27,73 @@ import java.util.Map;
 /**
  * 意图路由节点：判定用户问题是业务咨询还是闲聊。
  * 业务 → QUERY_REWRITE；闲聊 → CHAT_ONLY 兜底，不进检索链路。
- * <p>注入最近 {@link #ROUTER_RECENT_ROUNDS} 轮对话供省略/指代消歧（如"那 DataReader 呢？"），
- * 避免省略句因缺乏上下文被误判为闲聊。
- * <p>任务硬约束：温度 0 + maxTokens 32，消除抽样方差（同一问题多次判为不同意图）；
- * 失败反转：输出无法解析为 BUSINESS/CHITCHAT 时重试一次，仍不明则默认 BUSINESS，
- * 避免"判为闲聊却静默丢失答案"的非对称失败。
+ * 注入最近 2 轮对话供省略/指代消歧。
  */
 @Component
-public class IntentRouteNode implements NodeAction {
+public class IntentRouteNode extends QaNodeSupport {
 
     private static final Logger log = LoggerFactory.getLogger(IntentRouteNode.class);
     private static final int ROUTER_MAX_ATTEMPTS = 2;
-    /** 注入路由判定的最近对话轮数（以 user 消息计数） */
     private static final int ROUTER_RECENT_ROUNDS = 2;
 
     private final ModelFactory modelFactory;
-    private final QaTracing qaTracing;
     private final PromptCatalog promptCatalog;
 
     public IntentRouteNode(ModelFactory modelFactory, QaTracing qaTracing, PromptCatalog promptCatalog) {
+        super(qaTracing);
         this.modelFactory = modelFactory;
-        this.qaTracing = qaTracing;
         this.promptCatalog = promptCatalog;
     }
 
     @Override
-    public Map<String, Object> apply(OverAllState state) throws Exception {
-        SseStreamContext.throwIfCancelled();
-        SseStreamContext.sendStage("INTENT_ROUTE", "意图分析");
-        Span span = qaTracing.begin("node/intent_route");
-        try {
-            String question = state.value(QaContextKey.RAW_QUESTION)
-                    .map(String::valueOf).orElse("");
-            String kbName = state.value(QaContextKey.KB_NAME)
-                    .map(String::valueOf).orElse("本知识库");
-            AgentConfig agent = QaContext.agent(state);
-            String agentPrompt = (agent == null || agent.systemPrompt() == null || agent.systemPrompt().isBlank())
-                    ? ""
-                    : "Agent 设定：" + agent.systemPrompt() + "\n";
-
-            Long workspaceId = QaContext.longValue(state, QaContextKey.WORKSPACE_ID, -1L);
-            ChatModel chat = modelFactory.getChatModelByUsage(ModelUsage.ROUTER.value(), workspaceId);
-            ModelConfig cfg = modelFactory.resolveChatConfig(ModelUsage.ROUTER.value(), workspaceId);
-            ChatOptions opts = JudgeOptions.router(chat, cfg);
-            // 注入最近对话供省略/指代消歧（如"那 DataReader 呢？"），无历史时置占位
-            List<HistoryEntry> history = QaContext.history(state);
-            String recentJson = QaContext.renderRecentJson(history, ROUTER_RECENT_ROUNDS);
-            if (recentJson.isBlank() || "[]".equals(recentJson)) {
-                recentJson = "（无）";
-            }
-            String prompt = promptCatalog.get("intent-route").formatted(kbName, agentPrompt, recentJson, question);
-
-            // 温度 0 + maxTokens 32 硬约束，最多 2 次尝试；失败反转默认 BUSINESS
-            Intent intent = null;
-            String response = null;
-            for (int attempt = 1; attempt <= ROUTER_MAX_ATTEMPTS; attempt++) {
-                response = LlmTrace.call(qaTracing, chat, prompt, opts);
-                intent = parseIntent(response);
-                if (intent != null) {
-                    break;
-                }
-                if (attempt < ROUTER_MAX_ATTEMPTS) {
-                    log.warn("意图路由输出无法解析（第 {} 次），重试: response={}", attempt,
-                            response == null ? "<null>" : response.length() > 100 ? response.substring(0, 100) + "…" : response);
-                }
-            }
-            if (intent == null) {
-                intent = Intent.BUSINESS; // 失败反转：默认业务
-                span.setAttribute("router_fallback", true);
-                log.warn("意图路由 {} 次输出均无法解析，失败反转默认 BUSINESS: response={}",
-                        ROUTER_MAX_ATTEMPTS,
-                        response == null ? "<null>" : response.length() > 100 ? response.substring(0, 100) + "…" : response);
-            }
-
-            String next = intent == Intent.BUSINESS ? QaState.QUERY_REWRITE.name() : QaState.CHAT_ONLY.name();
-            span.setAttribute("intent", intent.value());
-            return Map.of(
-                    QaContextKey.INTENT, intent.value(),
-                    QaContextKey.NEXT, next);
-        } catch (Exception e) {
-            span.recordException(e);
-            throw e;
-        } finally {
-            span.end();
-        }
+    protected String spanName() {
+        return "node/intent_route";
     }
 
-    /**
-     * 解析路由输出标签。温度 0 + maxTokens 32 下应输出单一单词；
-     * 兼容历史含上下文文本（如 "该问题属于 BUSINESS 业务咨询"）。
-     *
-     * @return 解析到的意图，无法识别时返回 null
-     */
+    @Override
+    protected Map<String, Object> applyInternal(OverAllState state, Span span) throws Exception {
+        SseStreamContext.sendStage("INTENT_ROUTE", "意图分析");
+        String question = state.value(QaContextKey.RAW_QUESTION).map(String::valueOf).orElse("");
+        String kbName = state.value(QaContextKey.KB_NAME).map(String::valueOf).orElse("本知识库");
+        String agentPrompt = QaContext.agentPrompt(state);
+
+        Long workspaceId = QaContext.longValue(state, QaContextKey.WORKSPACE_ID, -1L);
+        ChatModel chat = modelFactory.getChatModelByUsage(ModelUsage.ROUTER.value(), workspaceId);
+        ModelConfig cfg = modelFactory.resolveChatConfig(ModelUsage.ROUTER.value(), workspaceId);
+        ChatOptions opts = JudgeOptions.router(chat, cfg);
+        List<HistoryEntry> history = QaContext.history(state);
+        String recentJson = QaContext.renderRecentJson(history, ROUTER_RECENT_ROUNDS);
+        if (recentJson.isBlank() || "[]".equals(recentJson)) {
+            recentJson = "（无）";
+        }
+        String prompt = promptCatalog.get("intent-route").formatted(kbName, agentPrompt, recentJson, question);
+
+        Intent intent = null;
+        String response = null;
+        for (int attempt = 1; attempt <= ROUTER_MAX_ATTEMPTS; attempt++) {
+            response = LlmTrace.call(qaTracing, chat, prompt, opts);
+            intent = parseIntent(response);
+            if (intent != null) {
+                break;
+            }
+            if (attempt < ROUTER_MAX_ATTEMPTS) {
+                log.warn("意图路由输出无法解析（第 {} 次），重试: response={}", attempt,
+                        response == null ? "<null>" : response.length() > 100 ? response.substring(0, 100) + "…" : response);
+            }
+        }
+        if (intent == null) {
+            intent = Intent.BUSINESS;
+            span.setAttribute("router_fallback", true);
+            log.warn("意图路由 {} 次输出均无法解析，失败反转默认 BUSINESS: response={}",
+                    ROUTER_MAX_ATTEMPTS,
+                    response == null ? "<null>" : response.length() > 100 ? response.substring(0, 100) + "…" : response);
+        }
+
+        String next = intent == Intent.BUSINESS ? QaState.QUERY_REWRITE.name() : QaState.CHAT_ONLY.name();
+        span.setAttribute("intent", intent.value());
+        return Map.of(QaContextKey.INTENT, intent.value(), QaContextKey.NEXT, next);
+    }
+
     static Intent parseIntent(String response) {
         if (response == null || response.isBlank()) {
             return null;

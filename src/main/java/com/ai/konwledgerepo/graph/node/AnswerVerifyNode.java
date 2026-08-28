@@ -3,7 +3,6 @@ package com.ai.konwledgerepo.graph.node;
 import com.ai.konwledgerepo.common.PromptCatalog;
 import com.ai.konwledgerepo.entity.ModelConfig;
 import com.ai.konwledgerepo.entity.ModelUsage;
-import com.ai.konwledgerepo.graph.AgentConfig;
 import com.ai.konwledgerepo.graph.ChunkEvidence;
 import com.ai.konwledgerepo.graph.EvidenceFormatter;
 import com.ai.konwledgerepo.graph.JudgeOptions;
@@ -17,7 +16,6 @@ import com.ai.konwledgerepo.service.extract.ExtractJsonParser;
 import com.ai.konwledgerepo.tracing.LlmTrace;
 import com.ai.konwledgerepo.tracing.QaTracing;
 import com.alibaba.cloud.ai.graph.OverAllState;
-import com.alibaba.cloud.ai.graph.action.NodeAction;
 import io.opentelemetry.api.trace.Span;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,16 +39,10 @@ import java.util.regex.Pattern;
 import com.ai.konwledgerepo.entity.SourceType;
 
 /**
- * 答案自检节点（两阶段）：
- * 阶段一：基于召回证据评估回答的相关性与充分性，打分 0~1，输出"缺失信息"反馈（MISSING_INFO），
- *         供重试轮 QueryRewrite 定向改写检索；参照证据打分可避免「答案正确却因未见证据而被判低分」的误判。
- * 阶段二（事实一致性校验，claim-level faithfulness）：用 VERIFY 模型把答案拆成原子断言，
- *         逐条对照证据判 SUPPORTED / CONTRADICTED / UNSUPPORTED，
- *         faithfulness = SUPPORTED 数 / 断言总数；最终 VERIFY_SCORE = min(阶段一, faithfulness)，
- *         矛盾/无支撑断言并入 MISSING_INFO 供重试定向改写。解析失败按 fail-open（faithfulness=1.0）不阻断链路。
+ * 答案自检节点（两阶段）：阶段一评估相关性/完整性，阶段二事实一致性校验。
  */
 @Component
-public class AnswerVerifyNode implements NodeAction {
+public class AnswerVerifyNode extends QaNodeSupport {
 
     private static final Logger log = LoggerFactory.getLogger(AnswerVerifyNode.class);
 
@@ -72,7 +64,6 @@ public class AnswerVerifyNode implements NodeAction {
     }
 
     private final ModelFactory modelFactory;
-    private final QaTracing qaTracing;
     private final PromptCatalog promptCatalog;
     private final ExtractJsonParser jsonParser;
     private final Executor qaExecutor;
@@ -84,8 +75,8 @@ public class AnswerVerifyNode implements NodeAction {
                             ExtractJsonParser jsonParser,
                             @org.springframework.beans.factory.annotation.Qualifier("qaTaskExecutor") Executor qaExecutor,
                             com.ai.konwledgerepo.config.props.SeuQaProperties qaProps) {
+        super(qaTracing);
         this.modelFactory = modelFactory;
-        this.qaTracing = qaTracing;
         this.promptCatalog = promptCatalog;
         this.jsonParser = jsonParser;
         this.qaExecutor = qaExecutor;
@@ -95,11 +86,13 @@ public class AnswerVerifyNode implements NodeAction {
     }
 
     @Override
-    public Map<String, Object> apply(OverAllState state) throws Exception {
-        SseStreamContext.throwIfCancelled();
+    protected String spanName() {
+        return "node/answer_verify";
+    }
+
+    @Override
+    protected Map<String, Object> applyInternal(OverAllState state, Span span) throws Exception {
         SseStreamContext.sendStage("ANSWER_VERIFY", "答案自检");
-        Span span = qaTracing.begin("node/answer_verify");
-        try {
             String question = state.value(QaContextKey.RAW_QUESTION).map(String::valueOf).orElse("");
             String answer = state.value(QaContextKey.ANSWER).map(String::valueOf).orElse("");
             String prevAnswer = state.value(QaContextKey.PREV_ANSWER).map(String::valueOf).orElse("");
@@ -126,10 +119,7 @@ public class AnswerVerifyNode implements NodeAction {
             // 证据上下文：JSON 数组（与 AnswerCompose 统一渲染），new:true 标注本轮新增
             String evidence = chunks.isEmpty() ? "（无召回证据）" : EvidenceFormatter.toEvidenceJson(chunks, markKeys);
 
-            AgentConfig agent = QaContext.agent(state);
-            String agentPrompt = (agent == null || agent.systemPrompt() == null || agent.systemPrompt().isBlank())
-                    ? ""
-                    : "Agent 场景：" + agent.systemPrompt() + "\n";
+            String agentPrompt = QaContext.agentPrompt(state);
 
             Long workspaceId = QaContext.longValue(state, QaContextKey.WORKSPACE_ID, -1L);
 
@@ -288,12 +278,6 @@ public class AnswerVerifyNode implements NodeAction {
                     QaContextKey.NO_IMPROVEMENT, noImprovement,
                     QaContextKey.PREV_CHUNK_IDS, currentKeys,
                     QaContextKey.NEXT, QaState.RETRY_FALLBACK.name());
-        } catch (Exception e) {
-            span.recordException(e);
-            throw e;
-        } finally {
-            span.end();
-        }
     }
 
     /** 阶段二：调 VERIFY 模型拆断言并逐条判定；解析失败返回空列表（调用方按 fail-open 处理） */
