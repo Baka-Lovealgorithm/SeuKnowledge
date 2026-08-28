@@ -41,7 +41,7 @@ public class ExtractTaskTx {
             log.debug("startRun 跳过：任务 {} 已在执行中", taskId);
             return null;
         }
-        task.setStatus(TaskStatus.RUNNING.value());
+        task.transition(TaskStatus.RUNNING);
         taskRepository.save(task);
         log.info("startRun 成功：任务 {} 进入 RUNNING", taskId);
         return task;

@@ -104,6 +104,26 @@ public class ExtractTask extends BaseEntity {
         this.status = status;
     }
 
+    /** 状态转换（校验合法性）：PENDING→RUNNING、RUNNING→终态、终态→PENDING(重试)。 */
+    public void transition(TaskStatus target) {
+        if (status == null || target == null) {
+            throw new IllegalStateException("状态为空");
+        }
+        TaskStatus current = TaskStatus.of(status);
+        if (current == null) {
+            throw new IllegalStateException("未知状态: " + status);
+        }
+        boolean allowed = switch (current) {
+            case PENDING -> target == TaskStatus.RUNNING;
+            case RUNNING -> target == TaskStatus.SUCCESS || target == TaskStatus.FAILED || target == TaskStatus.PARTIAL_FAILED;
+            case SUCCESS, FAILED, PARTIAL_FAILED -> target == TaskStatus.PENDING;
+        };
+        if (!allowed) {
+            throw new IllegalStateException("不允许的状态转换: " + current + " → " + target);
+        }
+        this.status = target.value();
+    }
+
     public Integer getTotalDocs() {
         return totalDocs;
     }
