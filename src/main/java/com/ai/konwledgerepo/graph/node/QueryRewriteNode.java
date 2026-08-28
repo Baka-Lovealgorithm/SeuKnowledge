@@ -63,8 +63,10 @@ public class QueryRewriteNode implements NodeAction {
             String rawQuestion = state.value(QaContextKey.RAW_QUESTION)
                     .map(String::valueOf).orElse("");
             List<HistoryEntry> history = QaContext.history(state);
+            String memorySummary = state.value(QaContextKey.MEMORY_SUMMARY)
+                    .map(String::valueOf).orElse("");
 
-            String historyJson = renderHistory(history);
+            String recentJson = renderRecent(history, 3);
             String retryHint = buildRetryHint(state, retry);
             AgentConfig agent = QaContext.agent(state);
             String agentPrompt = (agent == null || agent.systemPrompt() == null || agent.systemPrompt().isBlank())
@@ -74,7 +76,8 @@ public class QueryRewriteNode implements NodeAction {
             Long workspaceId = QaContext.longValue(state, QaContextKey.WORKSPACE_ID, -1L);
             ChatModel chat = modelFactory.getChatModelByUsage(ModelUsage.ROUTER.value(), workspaceId);
             String rules = promptCatalog.get("query-rewrite-rules").formatted(agentPrompt);
-            String input = promptCatalog.get("query-rewrite-input").formatted(historyJson, rawQuestion, retryHint);
+            String summaryText = memorySummary.isBlank() ? "（无）" : memorySummary;
+            String input = promptCatalog.get("query-rewrite-input").formatted(summaryText, recentJson, rawQuestion, retryHint);
             List<Message> messages = List.of(new SystemMessage(rules), new UserMessage(input));
 
             String response = LlmTrace.call(qaTracing, chat, messages);
@@ -129,15 +132,28 @@ public class QueryRewriteNode implements NodeAction {
                 + "。请针对缺失的信息定向改写查询，避免重复检索已覆盖内容）";
     }
 
-    /** 将历史记录序列化为 JSON 数组字符串 [{role,content}]，空返回 "[]" */
-    private static String renderHistory(List<HistoryEntry> history) {
+    /** 取最近 maxRounds 轮（以 user 消息计数），序列化为 JSON 数组字符串；空返回 "[]" */
+    private static String renderRecent(List<HistoryEntry> history, int maxRounds) {
         if (history == null || history.isEmpty()) {
             return "[]";
         }
+        // 从尾部取到包含 maxRounds 条 user 消息
+        int userCount = 0;
+        int start = history.size();
+        for (int i = history.size() - 1; i >= 0; i--) {
+            if ("user".equals(history.get(i).role())) {
+                userCount++;
+            }
+            start = i;
+            if (userCount >= maxRounds) {
+                break;
+            }
+        }
+        List<HistoryEntry> recent = history.subList(start, history.size());
         try {
-            return MAPPER.writeValueAsString(history);
+            return MAPPER.writeValueAsString(recent);
         } catch (Exception e) {
-            log.warn("历史记录 JSON 序列化失败，回退空列表: {}", e.getMessage());
+            log.warn("最近对话 JSON 序列化失败，回退空列表: {}", e.getMessage());
             return "[]";
         }
     }

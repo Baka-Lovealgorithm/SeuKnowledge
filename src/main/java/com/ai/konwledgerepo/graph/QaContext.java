@@ -20,7 +20,8 @@ public final class QaContext {
 
     /** 单次问答的入参（不进状态图存储） */
     public record QaInput(Long kbId, String kbName, Long sessionId, String question,
-                          List<HistoryEntry> history, int maxRetry, AgentConfig agent, Long workspaceId) {
+                          List<HistoryEntry> history, int maxRetry, AgentConfig agent, Long workspaceId,
+                          String memorySummary) {
     }
 
     /** 读取 Agent 配置快照；未注入时返回 null，节点自行回退默认行为 */

@@ -159,4 +159,67 @@ class QueryRewriteNodeTest {
         String userText = captor.getValue().getInstructions().get(1).getText();
         assertTrue(userText.contains("[]"), "无历史时应输出空 JSON 数组: " + userText);
     }
+
+    @Test
+    void memorySummary_includedInPrompt() throws Exception {
+        stubLlm("报销流程是什么");
+        Map<String, Object> data = new HashMap<>();
+        data.put(QaContextKey.RAW_QUESTION, "它是什么？");
+        data.put(QaContextKey.RETRY_COUNT, 0);
+        data.put(QaContextKey.MEMORY_SUMMARY, "用户之前询问了报销流程并确认了提交方式。");
+        data.put(QaContextKey.HISTORY, List.of(
+                new HistoryEntry("user", "如何申请报销？"),
+                new HistoryEntry("assistant", "需要填写报销单。")));
+
+        Map<String, Object> out = node.apply(new OverAllState(data));
+        assertFalse(queries(out).isEmpty());
+        String prompt = capturedPrompt();
+        assertTrue(prompt.contains("用户之前询问了报销流程并确认了提交方式。"),
+                "摘要应出现在 prompt 中: " + prompt);
+    }
+
+    @Test
+    void memorySummary_absent_rendersNoSummary() throws Exception {
+        stubLlm("报销流程是什么");
+        Map<String, Object> data = new HashMap<>();
+        data.put(QaContextKey.RAW_QUESTION, "它是什么？");
+        data.put(QaContextKey.RETRY_COUNT, 0);
+        data.put(QaContextKey.HISTORY, List.of(
+                new HistoryEntry("user", "如何申请报销？"),
+                new HistoryEntry("assistant", "需要填写报销单。")));
+
+        Map<String, Object> out = node.apply(new OverAllState(data));
+        assertFalse(queries(out).isEmpty());
+        assertTrue(capturedPrompt().contains("（无）"), "无摘要时摘要段应显示（无）");
+    }
+
+    @Test
+    void recentRounds_limitedToLastThree() throws Exception {
+        stubLlm("最新问题改写");
+        Map<String, Object> data = new HashMap<>();
+        data.put(QaContextKey.RAW_QUESTION, "那它怎么用？");
+        data.put(QaContextKey.RETRY_COUNT, 0);
+        // 5 轮（10 条消息），只取最近 3 轮（后 6 条）
+        data.put(QaContextKey.HISTORY, List.of(
+                new HistoryEntry("user", "第1轮问题"),
+                new HistoryEntry("assistant", "第1轮答案"),
+                new HistoryEntry("user", "第2轮问题"),
+                new HistoryEntry("assistant", "第2轮答案"),
+                new HistoryEntry("user", "第3轮问题"),
+                new HistoryEntry("assistant", "第3轮答案"),
+                new HistoryEntry("user", "第4轮问题"),
+                new HistoryEntry("assistant", "第4轮答案"),
+                new HistoryEntry("user", "第5轮问题"),
+                new HistoryEntry("assistant", "第5轮答案")));
+
+        Map<String, Object> out = node.apply(new OverAllState(data));
+        assertFalse(queries(out).isEmpty());
+        String prompt = capturedPrompt();
+        // 最近 3 轮（第 3-5 轮）应出现
+        assertTrue(prompt.contains("第3轮问题"), "最近 3 轮应包含第 3 轮: " + prompt);
+        assertTrue(prompt.contains("第5轮答案"), "最近 3 轮应包含第 5 轮: " + prompt);
+        // 第 1-2 轮不在最近 3 轮中，不应出现
+        assertFalse(prompt.contains("第1轮"), "第 1 轮不应出现在最近 3 轮中: " + prompt);
+        assertFalse(prompt.contains("第2轮"), "第 2 轮不应出现在最近 3 轮中: " + prompt);
+    }
 }

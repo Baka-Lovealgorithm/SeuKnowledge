@@ -43,7 +43,7 @@ public enum ModelType {
         }
         return switch (this) {
             case CHAT -> ModelUsage.EXTRACT.is(usage) || ModelUsage.GENERATE.is(usage) || ModelUsage.VERIFY.is(usage)
-                    || ModelUsage.ROUTER.is(usage);
+                    || ModelUsage.ROUTER.is(usage) || ModelUsage.MEMORY.is(usage);
             case EMBEDDING -> ModelUsage.RETRIEVE.is(usage);
             case VISION -> ModelUsage.VISION.is(usage);
             case RERANK -> ModelUsage.RERANK.is(usage);

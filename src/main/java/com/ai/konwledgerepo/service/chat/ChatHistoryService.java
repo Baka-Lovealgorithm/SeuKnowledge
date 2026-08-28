@@ -80,7 +80,7 @@ public class ChatHistoryService {
     }
 
     /** 丢弃被中断的 assistant 消息；保留其前面的 user 问题（后续多轮仍在同一会话中操作） */
-    private static List<HistoryEntry> filterInterrupted(List<HistoryEntry> entries) {
+    static List<HistoryEntry> filterInterrupted(List<HistoryEntry> entries) {
         return entries.stream()
                 .filter(e -> !(MessageRole.ASSISTANT.value().equals(e.role()) && Boolean.TRUE.equals(e.interrupted())))
                 .toList();

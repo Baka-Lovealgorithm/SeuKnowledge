@@ -40,6 +40,7 @@ public class ChatStreamService {
 
     private final ChatSessionService sessionService;
     private final ChatHistoryService historyService;
+    private final ChatSummaryService summaryService;
     private final ChatMessageStore messageStore;
     private final KnowledgeBaseService kbService;
     private final AgentService agentService;
@@ -55,6 +56,7 @@ public class ChatStreamService {
 
     public ChatStreamService(ChatSessionService sessionService,
                              ChatHistoryService historyService,
+                             ChatSummaryService summaryService,
                              ChatMessageStore messageStore,
                              KnowledgeBaseService kbService,
                              AgentService agentService,
@@ -64,6 +66,7 @@ public class ChatStreamService {
                              SeuQaProperties qaProps) {
         this.sessionService = sessionService;
         this.historyService = historyService;
+        this.summaryService = summaryService;
         this.messageStore = messageStore;
         this.kbService = kbService;
         this.agentService = agentService;
@@ -99,8 +102,11 @@ public class ChatStreamService {
 
             AgentConfig agent = agentService.toAgentConfig(kb.getId(), kb.getName(), maxRetry, messageWindow);
             List<HistoryEntry> history = historyService.cachedHistory(sessionId, agent.memoryWindow());
+            String memorySummary = summaryService.readSummary(sessionId)
+                    .map(ChatSummaryService.SummaryRecord::text).orElse("");
             QaContext.QaInput input = new QaContext.QaInput(
-                    kb.getId(), kb.getName(), sessionId, question, history, agent.maxRetry(), agent, workspaceId);
+                    kb.getId(), kb.getName(), sessionId, question, history, agent.maxRetry(), agent, workspaceId,
+                    memorySummary);
 
             // 标题异步生成（与链路并行，不阻塞）
             titleService.submitAutoTitle(session, question, workspaceId);
@@ -127,6 +133,7 @@ public class ChatStreamService {
 
             // 先持久化消息与会话状态（标题已异步提交，落库不再等待），再收尾流，保证前端结束时数据已落库
             messageStore.persistAnswer(session, userId, question, answer, refs, workspaceId);
+            summaryService.maybeUpdate(sessionId, workspaceId);
 
             sendSseEvent(emitter, "done", null);
             emitter.complete();
@@ -135,6 +142,7 @@ public class ChatStreamService {
             try {
                 ChatSession session = sessionService.getSession(sessionId, userId, workspaceId);
                 messageStore.persistInterruptedAnswer(session, userId, question, e.getPartial(), workspaceId);
+                summaryService.maybeUpdate(sessionId, workspaceId);
             } catch (Exception ex) {
                 // 落库失败不影响停止语义
             }

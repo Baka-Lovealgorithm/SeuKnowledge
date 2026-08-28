@@ -74,6 +74,16 @@ public final class RedisKeys {
         return PREFIX + "history:v2:" + sessionId;
     }
 
+    /** 会话滚动摘要（SummaryRecord JSON，v2：摘要文本 + 生成时的消息计数） */
+    public static String summary(Long sessionId) {
+        return PREFIX + "summary:v2:" + sessionId;
+    }
+
+    /** 摘要生成防重锁（SETNX，TTL 120s，防并发摘要生成） */
+    public static String summaryGen(Long sessionId) {
+        return PREFIX + "summaryGen:" + sessionId;
+    }
+
     /** 抽取任务进度 Hash（ExtractTaskExecutor 写入，ExtractTaskService 读取） */
     public static String task(Long taskId) {
         return PREFIX + "task:" + taskId;

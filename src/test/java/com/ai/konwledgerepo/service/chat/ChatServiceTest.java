@@ -48,6 +48,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
@@ -107,11 +108,13 @@ class ChatServiceTest {
         ChatHistoryService historyService = new ChatHistoryService(messageRepository, redisCacheService, qaProps, cacheProps);
         ChatMessageStore messageStore = new ChatMessageStore(
                 messageRepository, sessionRepository, redisCacheService, historyService, sessionService);
+        ChatSummaryService summaryService = mock(ChatSummaryService.class);
+        when(summaryService.readSummary(anyLong())).thenReturn(Optional.empty());
         QaAnswerService answerService = new QaAnswerService(
-                sessionService, historyService, messageStore, kbService, agentService, qaGraphRunner,
+                sessionService, historyService, summaryService, messageStore, kbService, agentService, qaGraphRunner,
                 titleService, mock(TaskLock.class), qaProps);
         ChatStreamService streamService = new ChatStreamService(
-                sessionService, historyService, messageStore, kbService, agentService, qaGraphRunner,
+                sessionService, historyService, summaryService, messageStore, kbService, agentService, qaGraphRunner,
                 titleService, mock(TaskLock.class), qaProps);
         service = new ChatService(sessionService, answerService, streamService);
         when(sessionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));

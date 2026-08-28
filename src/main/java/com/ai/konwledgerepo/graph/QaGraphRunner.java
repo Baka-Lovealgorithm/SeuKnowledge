@@ -235,6 +235,7 @@ public class QaGraphRunner {
         initialState.put(QaContextKey.RETRY_COUNT, 0);
         initialState.put(QaContextKey.MAX_RETRY, input.maxRetry());
         initialState.put(QaContextKey.AGENT, input.agent());
+        initialState.put(QaContextKey.MEMORY_SUMMARY, input.memorySummary() == null ? "" : input.memorySummary());
         initialState.put(QaContextKey.NEXT, QaState.QUERY_REWRITE.name());
         initialState.put(QaContextKey.PREV_CHUNK_IDS, List.of());
         initialState.put(QaContextKey.NO_IMPROVEMENT, false);
@@ -293,7 +294,7 @@ public class QaGraphRunner {
                     QaContextKey.PREV_CHUNK_IDS, QaContextKey.NO_IMPROVEMENT,
                     QaContextKey.RETRY_COUNT, QaContextKey.MAX_RETRY,
                     QaContextKey.NEXT, QaContextKey.HISTORY, QaContextKey.CHAT_ONLY_ANSWER,
-                    QaContextKey.AGENT)) {
+                    QaContextKey.MEMORY_SUMMARY, QaContextKey.AGENT)) {
                 strategies.put(key, new ReplaceStrategy());
             }
             return strategies;

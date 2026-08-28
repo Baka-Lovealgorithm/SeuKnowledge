@@ -40,6 +40,8 @@ public final class QaContextKey {
     public static final String CHAT_ONLY_ANSWER = "chatOnlyAnswer";
     /** Agent 配置快照（AgentConfig 记录） */
     public static final String AGENT = "agent";
+    /** 会话滚动摘要文本（供 QueryRewrite 注入；无摘要时为空字符串） */
+    public static final String MEMORY_SUMMARY = "memorySummary";
 
     private QaContextKey() {
     }

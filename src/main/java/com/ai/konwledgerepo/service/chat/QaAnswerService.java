@@ -33,6 +33,7 @@ public class QaAnswerService {
 
     private final ChatSessionService sessionService;
     private final ChatHistoryService historyService;
+    private final ChatSummaryService summaryService;
     private final ChatMessageStore messageStore;
     private final KnowledgeBaseService kbService;
     private final AgentService agentService;
@@ -45,6 +46,7 @@ public class QaAnswerService {
 
     public QaAnswerService(ChatSessionService sessionService,
                            ChatHistoryService historyService,
+                           ChatSummaryService summaryService,
                            ChatMessageStore messageStore,
                            KnowledgeBaseService kbService,
                            AgentService agentService,
@@ -54,6 +56,7 @@ public class QaAnswerService {
                            SeuQaProperties qaProps) {
         this.sessionService = sessionService;
         this.historyService = historyService;
+        this.summaryService = summaryService;
         this.messageStore = messageStore;
         this.kbService = kbService;
         this.agentService = agentService;
@@ -87,12 +90,15 @@ public class QaAnswerService {
 
             AgentConfig agent = agentService.toAgentConfig(kb.getId(), kb.getName(), maxRetry, messageWindow);
             List<HistoryEntry> history = historyService.cachedHistory(sessionId, agent.memoryWindow());
+            String memorySummary = summaryService.readSummary(sessionId)
+                    .map(ChatSummaryService.SummaryRecord::text).orElse("");
 
             // 标题异步生成（与链路并行，不阻塞落库）
             titleService.submitAutoTitle(session, question, workspaceId);
 
             QaContext.QaInput input = new QaContext.QaInput(
-                    kb.getId(), kb.getName(), sessionId, question, history, agent.maxRetry(), agent, workspaceId);
+                    kb.getId(), kb.getName(), sessionId, question, history, agent.maxRetry(), agent, workspaceId,
+                    memorySummary);
             OverAllState result;
             try {
                 result = qaGraphRunner.run(input);
@@ -108,6 +114,7 @@ public class QaAnswerService {
             String intent = result.value(QaContextKey.INTENT).map(String::valueOf).orElse(null);
 
             messageStore.persistAnswer(session, userId, question, answer, refs, workspaceId);
+            summaryService.maybeUpdate(sessionId, workspaceId);
             return new AskResponse(answer, refs, intent);
         } finally {
             taskLock.release(RedisKeys.askLock(sessionId));

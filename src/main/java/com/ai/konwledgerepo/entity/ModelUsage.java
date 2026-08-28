@@ -16,7 +16,9 @@ public enum ModelUsage {
     /** 标题生成（会话标题概括/提炼，可单独配置标题专用模型；未配置时回退 CHAT GENERATE） */
     TITLE,
     /** 意图路由/问题改写（可单独配置更小的路由模型；未配置时回退通用/默认 chat） */
-    ROUTER;
+    ROUTER,
+    /** 会话记忆摘要/压缩（滚动摘要专用，可配置更便宜的小模型；未配置时回退 ROUTER 模型配置） */
+    MEMORY;
 
     public String value() {
         return name();

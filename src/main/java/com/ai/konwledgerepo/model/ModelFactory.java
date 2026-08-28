@@ -183,6 +183,19 @@ public class ModelFactory {
     }
 
     /**
+     * 会话记忆摘要模型（限当前工作空间）：优先「CHAT + usage=MEMORY」专用配置
+     * （用途匹配 → 通用 → 同类型默认），未配置时直接复用 ROUTER 模型的配置（意图路由/改写档，
+     * 便宜且已常见配置）；ROUTER 自身未配置时继续回退通用/默认 chat。
+     */
+    public ChatModel getMemoryChatModel(Long workspaceId) {
+        Optional<Long> memoryId = tryResolveConfigId(workspaceId, ModelType.CHAT.value(), ModelUsage.MEMORY.value());
+        if (memoryId.isPresent()) {
+            return getChatModel(memoryId.get());
+        }
+        return getChatModel(resolveConfigId(workspaceId, ModelType.CHAT.value(), ModelUsage.ROUTER.value()));
+    }
+
+    /**
      * 解析标题模型配置 id：TITLE 类型优先 → 未命中回退 CHAT GENERATE（缓存仅命中时回填）。
      * TITLE 类型链：usage=TITLE → 通用 → 同类型默认。
      */
