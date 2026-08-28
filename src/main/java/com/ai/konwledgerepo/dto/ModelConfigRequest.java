@@ -22,8 +22,8 @@ public record ModelConfigRequest(
         @Pattern(regexp = "CHAT|EMBEDDING|VISION|RERANK|TITLE", message = "模型类型仅支持 CHAT / EMBEDDING / VISION / RERANK / TITLE")
         String modelType,
 
-        /** 按用途绑定：EXTRACT / GENERATE / RETRIEVE / VISION / RERANK / VERIFY / TITLE / ROUTER；为空表示通用 */
-        @Pattern(regexp = "EXTRACT|GENERATE|RETRIEVE|VISION|RERANK|VERIFY|TITLE|ROUTER", message = "用途仅支持 EXTRACT / GENERATE / RETRIEVE / VISION / RERANK / VERIFY / TITLE / ROUTER")
+        /** 按用途绑定：EXTRACT / GENERATE / RETRIEVE / VISION / RERANK / VERIFY / TITLE / ROUTER / MEMORY；为空表示通用 */
+        @Pattern(regexp = "EXTRACT|GENERATE|RETRIEVE|VISION|RERANK|VERIFY|TITLE|ROUTER|MEMORY", message = "用途仅支持 EXTRACT / GENERATE / RETRIEVE / VISION / RERANK / VERIFY / TITLE / ROUTER / MEMORY")
         String usage,
 
         @NotBlank(message = "模型名不能为空")

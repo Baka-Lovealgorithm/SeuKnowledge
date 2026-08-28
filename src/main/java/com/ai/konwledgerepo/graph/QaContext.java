@@ -5,6 +5,8 @@ import com.ai.konwledgerepo.service.chat.HistoryEntry;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -17,6 +19,9 @@ import java.util.Set;
  * 问答链路上下文辅助：状态键常量见 {@link QaContextKey}，此处提供入参与类型安全读取。
  */
 public final class QaContext {
+
+    private static final Logger log = LoggerFactory.getLogger(QaContext.class);
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     /** 单次问答的入参（不进状态图存储） */
     public record QaInput(Long kbId, String kbName, Long sessionId, String question,
@@ -112,6 +117,35 @@ public final class QaContext {
     public static List<HistoryEntry> history(OverAllState state) {
         Object value = state.value(QaContextKey.HISTORY).orElse(List.of());
         return value instanceof List<?> list ? (List<HistoryEntry>) list : List.of();
+    }
+
+    /**
+     * 取最近 maxRounds 轮对话（以 user 消息计数）序列化为 JSON 数组字符串；空返回 "[]"。
+     * 供意图路由 / 问题改写节点注入最近对话上下文（省略、指代消歧）。
+     */
+    public static String renderRecentJson(List<HistoryEntry> history, int maxRounds) {
+        if (history == null || history.isEmpty()) {
+            return "[]";
+        }
+        // 从尾部取到包含 maxRounds 条 user 消息
+        int userCount = 0;
+        int start = history.size();
+        for (int i = history.size() - 1; i >= 0; i--) {
+            if ("user".equals(history.get(i).role())) {
+                userCount++;
+            }
+            start = i;
+            if (userCount >= maxRounds) {
+                break;
+            }
+        }
+        List<HistoryEntry> recent = history.subList(start, history.size());
+        try {
+            return MAPPER.writeValueAsString(recent);
+        } catch (Exception e) {
+            log.warn("最近对话 JSON 序列化失败，回退空列表: {}", e.getMessage());
+            return "[]";
+        }
     }
 
     private QaContext() {

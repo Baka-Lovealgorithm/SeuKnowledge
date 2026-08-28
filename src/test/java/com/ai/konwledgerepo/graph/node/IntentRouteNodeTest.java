@@ -6,6 +6,7 @@ import com.ai.konwledgerepo.entity.ModelConfig;
 import com.ai.konwledgerepo.graph.QaContextKey;
 import com.ai.konwledgerepo.graph.QaState;
 import com.ai.konwledgerepo.model.ModelFactory;
+import com.ai.konwledgerepo.service.chat.HistoryEntry;
 import com.ai.konwledgerepo.tracing.QaTracing;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import org.junit.jupiter.api.BeforeEach;
@@ -144,6 +145,39 @@ class IntentRouteNodeTest {
         assertNotNull(opts.getTemperature(), "温度应设为 0");
         assertEquals(0.0, opts.getTemperature(), 0.001);
         assertEquals(32, (int) opts.getMaxTokens(), "路由调用应限制 maxTokens=32");
+    }
+
+    @Test
+    void ellipticalQuestion_withRecentHistory_promptContainsHistoryAndRoutesBusiness() throws Exception {
+        // S02 场景：省略句"那 DataReader 呢？"带上一轮业务历史 → prompt 应含最近对话，路由 BUSINESS
+        stubLlm("BUSINESS");
+        List<HistoryEntry> history = List.of(
+                new HistoryEntry("user", "ZRDDS 中 Topic 是什么？它与 DataWriter 的关系？"),
+                new HistoryEntry("assistant", "Topic 是发布订阅的主题，DataWriter 负责发布数据。"));
+        Map<String, Object> stateMap = new HashMap<>(Map.of(
+                QaContextKey.RAW_QUESTION, "那 DataReader 呢？",
+                QaContextKey.HISTORY, history));
+        Map<String, Object> out = node.apply(new OverAllState(stateMap));
+        assertEquals(Intent.BUSINESS.value(), out.get(QaContextKey.INTENT));
+        assertEquals(QaState.QUERY_REWRITE.name(), out.get(QaContextKey.NEXT));
+        ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat, times(1)).call(captor.capture());
+        String promptText = captor.getValue().getInstructions().get(0).getText();
+        assertTrue(promptText.contains("DataWriter"), "路由 prompt 应包含最近对话中的业务词");
+        assertTrue(promptText.contains("那 DataReader 呢？"), "路由 prompt 应包含当前问题");
+    }
+
+    @Test
+    void noHistory_promptUsesPlaceholder() throws Exception {
+        // 无历史时最近对话占位为"（无）"，路由不受影响
+        stubLlm("CHITCHAT");
+        Map<String, Object> out = node.apply(state("你好呀"));
+        assertEquals(Intent.CHITCHAT.value(), out.get(QaContextKey.INTENT));
+        assertEquals(QaState.CHAT_ONLY.name(), out.get(QaContextKey.NEXT));
+        ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat, times(1)).call(captor.capture());
+        String promptText = captor.getValue().getInstructions().get(0).getText();
+        assertTrue(promptText.contains("（无）"), "无历史时最近对话应为占位（无）");
     }
 
     // ===== parseIntent 单元测试 =====

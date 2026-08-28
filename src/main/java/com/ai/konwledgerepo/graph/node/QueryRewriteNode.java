@@ -14,7 +14,6 @@ import com.ai.konwledgerepo.tracing.LlmTrace;
 import com.ai.konwledgerepo.tracing.QaTracing;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.opentelemetry.api.trace.Span;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,8 +39,6 @@ public class QueryRewriteNode implements NodeAction {
 
     private static final Logger log = LoggerFactory.getLogger(QueryRewriteNode.class);
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-
     private final ModelFactory modelFactory;
     private final QaTracing qaTracing;
     private final PromptCatalog promptCatalog;
@@ -66,7 +63,7 @@ public class QueryRewriteNode implements NodeAction {
             String memorySummary = state.value(QaContextKey.MEMORY_SUMMARY)
                     .map(String::valueOf).orElse("");
 
-            String recentJson = renderRecent(history, 3);
+            String recentJson = QaContext.renderRecentJson(history, 3);
             String retryHint = buildRetryHint(state, retry);
             AgentConfig agent = QaContext.agent(state);
             String agentPrompt = (agent == null || agent.systemPrompt() == null || agent.systemPrompt().isBlank())
@@ -133,31 +130,6 @@ public class QueryRewriteNode implements NodeAction {
     }
 
     /** 取最近 maxRounds 轮（以 user 消息计数），序列化为 JSON 数组字符串；空返回 "[]" */
-    private static String renderRecent(List<HistoryEntry> history, int maxRounds) {
-        if (history == null || history.isEmpty()) {
-            return "[]";
-        }
-        // 从尾部取到包含 maxRounds 条 user 消息
-        int userCount = 0;
-        int start = history.size();
-        for (int i = history.size() - 1; i >= 0; i--) {
-            if ("user".equals(history.get(i).role())) {
-                userCount++;
-            }
-            start = i;
-            if (userCount >= maxRounds) {
-                break;
-            }
-        }
-        List<HistoryEntry> recent = history.subList(start, history.size());
-        try {
-            return MAPPER.writeValueAsString(recent);
-        } catch (Exception e) {
-            log.warn("最近对话 JSON 序列化失败，回退空列表: {}", e.getMessage());
-            return "[]";
-        }
-    }
-
     private static List<String> parseQueries(String response, String fallback) {
         Set<String> result = new LinkedHashSet<>();
         if (response != null) {

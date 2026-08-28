@@ -11,6 +11,7 @@ import com.ai.konwledgerepo.graph.QaContextKey;
 import com.ai.konwledgerepo.graph.QaState;
 import com.ai.konwledgerepo.model.ModelFactory;
 import com.ai.konwledgerepo.common.SseStreamContext;
+import com.ai.konwledgerepo.service.chat.HistoryEntry;
 import com.ai.konwledgerepo.tracing.LlmTrace;
 import com.ai.konwledgerepo.tracing.QaTracing;
 import com.alibaba.cloud.ai.graph.OverAllState;
@@ -22,11 +23,14 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
 import java.util.Map;
 
 /**
  * 意图路由节点：判定用户问题是业务咨询还是闲聊。
  * 业务 → QUERY_REWRITE；闲聊 → CHAT_ONLY 兜底，不进检索链路。
+ * <p>注入最近 {@link #ROUTER_RECENT_ROUNDS} 轮对话供省略/指代消歧（如"那 DataReader 呢？"），
+ * 避免省略句因缺乏上下文被误判为闲聊。
  * <p>任务硬约束：温度 0 + maxTokens 32，消除抽样方差（同一问题多次判为不同意图）；
  * 失败反转：输出无法解析为 BUSINESS/CHITCHAT 时重试一次，仍不明则默认 BUSINESS，
  * 避免"判为闲聊却静默丢失答案"的非对称失败。
@@ -36,6 +40,8 @@ public class IntentRouteNode implements NodeAction {
 
     private static final Logger log = LoggerFactory.getLogger(IntentRouteNode.class);
     private static final int ROUTER_MAX_ATTEMPTS = 2;
+    /** 注入路由判定的最近对话轮数（以 user 消息计数） */
+    private static final int ROUTER_RECENT_ROUNDS = 2;
 
     private final ModelFactory modelFactory;
     private final QaTracing qaTracing;
@@ -66,7 +72,13 @@ public class IntentRouteNode implements NodeAction {
             ChatModel chat = modelFactory.getChatModelByUsage(ModelUsage.ROUTER.value(), workspaceId);
             ModelConfig cfg = modelFactory.resolveChatConfig(ModelUsage.ROUTER.value(), workspaceId);
             ChatOptions opts = JudgeOptions.router(chat, cfg);
-            String prompt = promptCatalog.get("intent-route").formatted(kbName, agentPrompt, question);
+            // 注入最近对话供省略/指代消歧（如"那 DataReader 呢？"），无历史时置占位
+            List<HistoryEntry> history = QaContext.history(state);
+            String recentJson = QaContext.renderRecentJson(history, ROUTER_RECENT_ROUNDS);
+            if (recentJson.isBlank() || "[]".equals(recentJson)) {
+                recentJson = "（无）";
+            }
+            String prompt = promptCatalog.get("intent-route").formatted(kbName, agentPrompt, recentJson, question);
 
             // 温度 0 + maxTokens 32 硬约束，最多 2 次尝试；失败反转默认 BUSINESS
             Intent intent = null;
