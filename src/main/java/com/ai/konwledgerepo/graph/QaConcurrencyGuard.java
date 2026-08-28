@@ -1,5 +1,6 @@
-package com.ai.konwledgerepo.common;
+package com.ai.konwledgerepo.graph;
 
+import com.ai.konwledgerepo.common.BizException;
 import com.ai.konwledgerepo.config.props.SeuQaProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

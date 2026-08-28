@@ -1,5 +1,7 @@
 package com.ai.konwledgerepo.graph;
 
+import java.util.List;
+
 /**
  * OverAllState 状态键常量（单一来源）。
  */
@@ -40,8 +42,16 @@ public final class QaContextKey {
     public static final String CHAT_ONLY_ANSWER = "chatOnlyAnswer";
     /** Agent 配置快照（AgentConfig 记录） */
     public static final String AGENT = "agent";
-    /** 会话滚动摘要文本（供 QueryRewrite 注入；无摘要时为空字符串） */
+    /** 会话滚动摘要文本 */
     public static final String MEMORY_SUMMARY = "memorySummary";
+
+    /** ReplaceStrategy 覆盖的键列表（QaGraphRunner 组装图时使用） */
+    public static final List<String> REPLACE_KEYS = List.of(
+            RAW_QUESTION, KB_ID, KB_NAME, WORKSPACE_ID, SESSION_ID, INTENT, QUERIES,
+            CHUNKS, ACCUMULATED_CHUNKS, ANSWER, REFS, PREV_ANSWER,
+            VERIFY_SCORE, FAITHFULNESS_SCORE, UNSUPPORTED_CLAIMS, CONTRADICTED_CLAIMS,
+            MISSING_INFO, PREV_CHUNK_IDS, NO_IMPROVEMENT, RETRY_COUNT, MAX_RETRY,
+            NEXT, HISTORY, CHAT_ONLY_ANSWER, MEMORY_SUMMARY, AGENT);
 
     private QaContextKey() {
     }

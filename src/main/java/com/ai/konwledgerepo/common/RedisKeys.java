@@ -8,133 +8,31 @@ public final class RedisKeys {
 
     public static final String PREFIX = "seuknowledge:";
 
-    /** 登录 token → userId（String） */
-    public static String token(String token) {
-        return PREFIX + "token:" + token;
-    }
-
-    /** 用户 → 工作空间成员列表快照（List&lt;MemberContext&gt; JSON） */
-    public static String memberList(Long userId) {
-        return PREFIX + "member:list:" + userId;
-    }
-
-    /** 用户成员缓存失效 pattern（角色/归属变更后按模式删除全部空间条目） */
-    public static String memberListPattern(Long userId) {
-        return PREFIX + "member:list:" + userId + "*";
-    }
-
-    /** 工作空间+模型类型+用途 → 解析出的 configId（String） */
-    public static String modelResolve(Long workspaceId, String modelType, String usage) {
-        return PREFIX + "model:resolve:" + workspaceId + ":" + modelType + ":"
-                + (usage == null || usage.isBlank() ? "none" : usage);
-    }
-
-    /** 工作空间+模型类型 → 默认 configId（String） */
-    public static String modelDefault(Long workspaceId, String modelType) {
-        return PREFIX + "model:default:" + workspaceId + ":" + modelType;
-    }
-
-    /** 模型配置快照（ModelConfigSnapshot JSON） */
-    public static String modelConfig(Long id) {
-        return PREFIX + "model:cfg:" + id;
-    }
-
-    /** Agent 配置快照（AgentConfig JSON） */
-    public static String agent(Long kbId) {
-        return PREFIX + "agent:" + kbId;
-    }
-
-    /** 知识库快照（KbSnapshot JSON，仅问答热路径字段） */
-    public static String kb(Long id) {
-        return PREFIX + "kb:" + id;
-    }
-
-    /** 工作空间知识库列表（List&lt;KbResponse&gt; JSON） */
-    public static String kbList(Long workspaceId) {
-        return PREFIX + "kb:list:" + workspaceId;
-    }
-
-    /** 知识库文档计数（String） */
-    public static String kbCount(Long kbId) {
-        return PREFIX + "kb:count:" + kbId;
-    }
-
-    /** 用户+工作空间会话列表（List&lt;ChatSessionResponse&gt; JSON） */
-    public static String sessionList(Long userId, Long workspaceId) {
-        return PREFIX + "sessionlist:" + userId + ":" + workspaceId;
-    }
-
-    /** 会话消息列表（List&lt;ChatMessageResponse&gt; JSON） */
-    public static String messages(Long sessionId) {
-        return PREFIX + "msgs:" + sessionId;
-    }
-
-    /** 会话记忆窗口（List&lt;HistoryEntry&gt; JSON，v2 含 interrupted 字段） */
-    public static String history(Long sessionId) {
-        return PREFIX + "history:v2:" + sessionId;
-    }
-
-    /** 会话滚动摘要（SummaryRecord JSON，v2：摘要文本 + 生成时的消息计数） */
-    public static String summary(Long sessionId) {
-        return PREFIX + "summary:v2:" + sessionId;
-    }
-
-    /** 摘要生成防重锁（SETNX，TTL 120s，防并发摘要生成） */
-    public static String summaryGen(Long sessionId) {
-        return PREFIX + "summaryGen:" + sessionId;
-    }
-
-    /** 抽取任务进度 Hash（ExtractTaskExecutor 写入，ExtractTaskService 读取） */
-    public static String task(Long taskId) {
-        return PREFIX + "task:" + taskId;
-    }
-
-    /** 问答限流计数（String，INCR + EXPIRE） */
-    public static String rateLimit(Long userId) {
-        return PREFIX + "rl:" + userId;
-    }
-
-    /** 防重复提交锁（SETNX） */
-    public static String dup(Long userId, String hash) {
-        return PREFIX + "dup:" + userId + ":" + hash;
-    }
-
-    /** 标题生成防重锁（SETNX，TTL 120s，防同一会话并发首问重复生成标题） */
-    public static String titleGen(Long sessionId) {
-        return PREFIX + "titleGen:" + sessionId;
-    }
-
-    /** 文档解析 in-flight guard（文档级互斥；TTL 30min，解析超时后自动失效） */
-    public static String docParse(Long docId) {
-        return PREFIX + "doc:parse:" + docId;
-    }
-
-    /** 抽取任务执行互斥（任务级；TTL 8h，任务最长执行时间） */
-    public static String taskRun(Long taskId) {
-        return PREFIX + "task:run:" + taskId;
-    }
-
-    /** 抽取文档级互斥（同一文档同时仅一个抽取任务处理；TTL 8h） */
-    public static String taskExtract(Long docId) {
-        return PREFIX + "task:extract:" + docId;
-    }
-
-    /** 登录失败计数（String，INCR + EXPIRE） */
-    public static String loginFail(String username) {
-        return PREFIX + "login:fail:" + username;
-    }
-
-    /** 登录锁定标记（SETNX，TTL 等于锁定窗口） */
-    public static String loginLock(String username) {
-        return PREFIX + "login:lock:" + username;
-    }
-
-    // ===== 会话互斥（问答） =====
-
-    /** 会话级问答互斥锁（SETNX，TTL ≥ 链路超时，防同一会话并发提问） */
-    public static String askLock(Long sessionId) {
-        return PREFIX + "ask:lock:" + sessionId;
-    }
+    public static String token(String token) { return SecurityRedisKeys.token(token); }
+    public static String memberList(Long userId) { return SecurityRedisKeys.memberList(userId); }
+    public static String memberListPattern(Long userId) { return SecurityRedisKeys.memberListPattern(userId); }
+    public static String modelResolve(Long workspaceId, String modelType, String usage) { return ModelRedisKeys.resolve(workspaceId, modelType, usage); }
+    public static String modelDefault(Long workspaceId, String modelType) { return ModelRedisKeys.defaultConfig(workspaceId, modelType); }
+    public static String modelConfig(Long id) { return ModelRedisKeys.config(id); }
+    public static String agent(Long kbId) { return AgentRedisKeys.agent(kbId); }
+    public static String kb(Long id) { return KbRedisKeys.kb(id); }
+    public static String kbList(Long workspaceId) { return KbRedisKeys.kbList(workspaceId); }
+    public static String kbCount(Long kbId) { return KbRedisKeys.kbCount(kbId); }
+    public static String sessionList(Long userId, Long workspaceId) { return QaRedisKeys.sessionList(userId, workspaceId); }
+    public static String messages(Long sessionId) { return QaRedisKeys.messages(sessionId); }
+    public static String history(Long sessionId) { return QaRedisKeys.history(sessionId); }
+    public static String summary(Long sessionId) { return QaRedisKeys.summary(sessionId); }
+    public static String summaryGen(Long sessionId) { return QaRedisKeys.summaryGen(sessionId); }
+    public static String task(Long taskId) { return TaskRedisKeys.task(taskId); }
+    public static String rateLimit(Long userId) { return QaRedisKeys.rateLimit(userId); }
+    public static String dup(Long userId, String hash) { return QaRedisKeys.dup(userId, hash); }
+    public static String titleGen(Long sessionId) { return QaRedisKeys.titleGen(sessionId); }
+    public static String docParse(Long docId) { return DocRedisKeys.docParse(docId); }
+    public static String taskRun(Long taskId) { return TaskRedisKeys.taskRun(taskId); }
+    public static String taskExtract(Long docId) { return TaskRedisKeys.taskExtract(docId); }
+    public static String loginFail(String username) { return SecurityRedisKeys.loginFail(username); }
+    public static String loginLock(String username) { return SecurityRedisKeys.loginLock(username); }
+    public static String askLock(Long sessionId) { return QaRedisKeys.askLock(sessionId); }
 
     private RedisKeys() {
     }

@@ -2,7 +2,6 @@ package com.ai.konwledgerepo.graph;
 
 import com.ai.konwledgerepo.common.BizException;
 import com.ai.konwledgerepo.common.ContextPropagator;
-import com.ai.konwledgerepo.common.QaConcurrencyGuard;
 import com.ai.konwledgerepo.common.Texts;
 import com.ai.konwledgerepo.config.props.SeuQaProperties;
 import com.ai.konwledgerepo.graph.node.AnswerComposeNode;
@@ -283,18 +282,7 @@ public class QaGraphRunner {
     private static KeyStrategyFactory keyStrategyFactory() {
         return () -> {
             Map<String, KeyStrategy> strategies = new HashMap<>();
-            for (String key : List.of(
-                    QaContextKey.RAW_QUESTION, QaContextKey.KB_ID, QaContextKey.KB_NAME,
-                    QaContextKey.SESSION_ID, QaContextKey.INTENT, QaContextKey.QUERIES,
-                    QaContextKey.CHUNKS, QaContextKey.ACCUMULATED_CHUNKS,
-                    QaContextKey.ANSWER, QaContextKey.REFS, QaContextKey.PREV_ANSWER,
-                    QaContextKey.VERIFY_SCORE, QaContextKey.FAITHFULNESS_SCORE,
-                    QaContextKey.UNSUPPORTED_CLAIMS, QaContextKey.CONTRADICTED_CLAIMS,
-                    QaContextKey.MISSING_INFO,
-                    QaContextKey.PREV_CHUNK_IDS, QaContextKey.NO_IMPROVEMENT,
-                    QaContextKey.RETRY_COUNT, QaContextKey.MAX_RETRY,
-                    QaContextKey.NEXT, QaContextKey.HISTORY, QaContextKey.CHAT_ONLY_ANSWER,
-                    QaContextKey.MEMORY_SUMMARY, QaContextKey.AGENT)) {
+            for (String key : QaContextKey.REPLACE_KEYS) {
                 strategies.put(key, new ReplaceStrategy());
             }
             return strategies;
