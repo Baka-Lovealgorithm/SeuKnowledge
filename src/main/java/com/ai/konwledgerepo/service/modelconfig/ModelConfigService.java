@@ -116,7 +116,7 @@ public class ModelConfigService {
         ModelType type = ModelType.of(modelType);
         if (type == null || !type.validUsage(usage)) {
             throw new BizException("模型类型 " + modelType + " 不支持用途绑定 " + usage
-                    + "（CHAT→EXTRACT/GENERATE/VERIFY/ROUTER，EMBEDDING→RETRIEVE，VISION→VISION，RERANK→RERANK，TITLE→TITLE）");
+                    + "（CHAT→EXTRACT/GENERATE/VERIFY/ROUTER/MEMORY，EMBEDDING→RETRIEVE，VISION→VISION，RERANK→RERANK，TITLE→TITLE）");
         }
     }
 
