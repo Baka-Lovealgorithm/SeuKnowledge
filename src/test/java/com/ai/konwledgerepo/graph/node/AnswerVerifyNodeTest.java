@@ -86,6 +86,15 @@ class AnswerVerifyNodeTest {
                 "报销流程", content, 0.9);
     }
 
+    private OverAllState stateWithPrevAnswer(String answer, List<ChunkEvidence> chunks, String prevAnswer) {
+        Map<String, Object> data = new HashMap<>();
+        data.put(QaContextKey.RAW_QUESTION, "如何申请报销？");
+        data.put(QaContextKey.ANSWER, answer);
+        data.put(QaContextKey.CHUNKS, chunks);
+        data.put(QaContextKey.PREV_ANSWER, prevAnswer);
+        return new OverAllState(data);
+    }
+
     // ===== 阶段一（原有行为保持不变） =====
 
     @Test
@@ -400,8 +409,37 @@ class AnswerVerifyNodeTest {
         String phase1User = prompts.get(0).getInstructions().get(1).getText();
         assertTrue(phase1User.contains("\"index\":1"), "阶段一证据应为 JSON 数组: " + phase1User);
         assertTrue(phase1User.contains("上一轮自检结果"), "阶段一数据区应含上一轮自检结果: " + phase1User);
+        assertTrue(phase1User.contains("上一轮回答"), "阶段一数据区应含上一轮回答: " + phase1User);
         String phase2User = prompts.get(1).getInstructions().get(1).getText();
         assertTrue(phase2User.contains("\"index\":1"), "阶段二证据应为 JSON 数组: " + phase2User);
         assertTrue(phase2User.contains("回答："), "阶段二数据区应含回答: " + phase2User);
+    }
+
+    @Test
+    void prevAnswer_includedInPhase1Prompt() throws Exception {
+        stubLlm("{\"score\": 85, \"missing\": \"\"}",
+                "[{\"claim\":\"报销需填写申请表\",\"verdict\":\"SUPPORTED\",\"evidence\":1}]");
+        List<ChunkEvidence> evs = List.of(ev(1, "报销需填写申请表，附发票原件。"));
+        node.apply(stateWithPrevAnswer("报销需填写申请表。", evs, "上一轮答案内容XYZ"));
+
+        ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat, times(2)).call(captor.capture());
+        String phase1User = captor.getAllValues().get(0).getInstructions().get(1).getText();
+        assertTrue(phase1User.contains("上一轮答案内容XYZ"),
+                "阶段一数据区应包含 PREV_ANSWER 内容: " + phase1User);
+    }
+
+    @Test
+    void prevAnswer_absent_rendersNoFirstEval() throws Exception {
+        stubLlm("{\"score\": 85, \"missing\": \"\"}",
+                "[{\"claim\":\"报销需填写申请表\",\"verdict\":\"SUPPORTED\",\"evidence\":1}]");
+        List<ChunkEvidence> evs = List.of(ev(1, "报销需填写申请表，附发票原件。"));
+        node.apply(state("报销需填写申请表。", evs));
+
+        ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat, times(2)).call(captor.capture());
+        String phase1User = captor.getAllValues().get(0).getInstructions().get(1).getText();
+        assertTrue(phase1User.contains("（无，首次评估）"),
+                "无 PREV_ANSWER 时应渲染默认占位符: " + phase1User);
     }
 }

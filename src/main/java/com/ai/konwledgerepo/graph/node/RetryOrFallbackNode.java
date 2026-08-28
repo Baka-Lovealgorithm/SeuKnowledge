@@ -77,6 +77,7 @@ public class RetryOrFallbackNode implements NodeAction {
                 span.setAttribute("score", score);
                 span.setAttribute("retry_count", retry + 1);
                 return Map.of(
+                        QaContextKey.PREV_ANSWER, state.value(QaContextKey.ANSWER).map(String::valueOf).orElse(""),
                         QaContextKey.RETRY_COUNT, retry + 1,
                         QaContextKey.NEXT, QaState.QUERY_REWRITE.name());
             }

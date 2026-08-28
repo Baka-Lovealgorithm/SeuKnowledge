@@ -102,6 +102,8 @@ public class AnswerVerifyNode implements NodeAction {
         try {
             String question = state.value(QaContextKey.RAW_QUESTION).map(String::valueOf).orElse("");
             String answer = state.value(QaContextKey.ANSWER).map(String::valueOf).orElse("");
+            String prevAnswer = state.value(QaContextKey.PREV_ANSWER).map(String::valueOf).orElse("");
+            String prevAnswerText = prevAnswer.isBlank() ? "（无，首次评估）" : prevAnswer;
             List<ChunkEvidence> chunks = QaContext.chunks(state.value(QaContextKey.CHUNKS).orElse(List.of()));
 
             // ===== 提前终止判定：计算本轮新增证据（delta），供阶段一判断"新增证据是否明显帮助" =====
@@ -149,7 +151,7 @@ public class AnswerVerifyNode implements NodeAction {
                             ChatModel phase1Chat = modelFactory.getChatModelByUsage(ModelUsage.VERIFY.value(), workspaceId);
                             ModelConfig phase1Cfg = modelFactory.resolveChatConfig(ModelUsage.VERIFY.value(), workspaceId);
                             String phase1Rules = promptCatalog.get("answer-verify-rules").formatted(agentPrompt);
-                            String phase1Input = promptCatalog.get("answer-verify-input").formatted(prevContext, evidence, question, answer);
+                            String phase1Input = promptCatalog.get("answer-verify-input").formatted(prevContext, prevAnswerText, evidence, question, answer);
                             List<Message> phase1Messages = List.of(new SystemMessage(phase1Rules), new UserMessage(phase1Input));
                             String phase1Resp = LlmTrace.call(qaTracing, phase1Chat, phase1Messages,
                                     JudgeOptions.of(phase1Chat, phase1Cfg, MAX_VERIFY_TOKENS, jsonMode));
@@ -214,7 +216,7 @@ public class AnswerVerifyNode implements NodeAction {
                 ChatModel chat = modelFactory.getChatModelByUsage(ModelUsage.VERIFY.value(), workspaceId);
                 ModelConfig cfg = modelFactory.resolveChatConfig(ModelUsage.VERIFY.value(), workspaceId);
                 String rules = promptCatalog.get("answer-verify-rules").formatted(agentPrompt);
-                String input = promptCatalog.get("answer-verify-input").formatted(prevContext, evidence, question, answer);
+                String input = promptCatalog.get("answer-verify-input").formatted(prevContext, prevAnswerText, evidence, question, answer);
                 List<Message> messages = List.of(new SystemMessage(rules), new UserMessage(input));
                 String response = LlmTrace.call(qaTracing, chat, messages, JudgeOptions.of(chat, cfg, MAX_VERIFY_TOKENS, jsonMode));
                 result = parseResult(response);

@@ -302,4 +302,21 @@ class RetryOrFallbackNodeTest {
         assertEquals(Defaults.INSUFFICIENT_EVIDENCE_REFUSAL, out.get(QaContextKey.ANSWER));
         assertEquals("TERMINAL", out.get(QaContextKey.NEXT));
     }
+
+    @Test
+    void retryBranch_preservesCurrentAnswerAsPrevAnswer() throws Exception {
+        Map<String, Object> data = new HashMap<>();
+        data.put(QaContextKey.CHUNKS, List.of(ev()));
+        data.put(QaContextKey.VERIFY_SCORE, 0.5);
+        data.put(QaContextKey.RETRY_COUNT, 0);
+        data.put(QaContextKey.MAX_RETRY, 2);
+        data.put(QaContextKey.ANSWER, "这是上一轮答案");
+
+        Map<String, Object> out = node.apply(new OverAllState(data));
+
+        assertEquals(1, out.get(QaContextKey.RETRY_COUNT));
+        assertEquals(QaState.QUERY_REWRITE.name(), out.get(QaContextKey.NEXT));
+        assertEquals("这是上一轮答案", out.get(QaContextKey.PREV_ANSWER),
+                "重试分支应把当前 ANSWER 写入 PREV_ANSWER");
+    }
 }

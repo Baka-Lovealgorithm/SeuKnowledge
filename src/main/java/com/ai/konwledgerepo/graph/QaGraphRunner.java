@@ -286,7 +286,7 @@ public class QaGraphRunner {
                     QaContextKey.RAW_QUESTION, QaContextKey.KB_ID, QaContextKey.KB_NAME,
                     QaContextKey.SESSION_ID, QaContextKey.INTENT, QaContextKey.QUERIES,
                     QaContextKey.CHUNKS, QaContextKey.ACCUMULATED_CHUNKS,
-                    QaContextKey.ANSWER, QaContextKey.REFS,
+                    QaContextKey.ANSWER, QaContextKey.REFS, QaContextKey.PREV_ANSWER,
                     QaContextKey.VERIFY_SCORE, QaContextKey.FAITHFULNESS_SCORE,
                     QaContextKey.UNSUPPORTED_CLAIMS, QaContextKey.CONTRADICTED_CLAIMS,
                     QaContextKey.MISSING_INFO,

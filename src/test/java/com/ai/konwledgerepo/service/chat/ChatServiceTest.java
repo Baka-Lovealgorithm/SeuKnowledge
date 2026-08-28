@@ -296,8 +296,8 @@ class ChatServiceTest {
         LocalDateTime ts = LocalDateTime.of(2025, 1, 1, 10, 0);
         when(redisCacheService.getList(eq(RedisKeys.messages(SESSION_ID)), eq(ChatMessageResponse.class)))
                 .thenReturn(Optional.of(List.of(
-                        new ChatMessageResponse(1L, "USER", "你好", null, ts),
-                        new ChatMessageResponse(2L, "ASSISTANT", "答案", "[{\"chunkId\":1}]", ts))));
+                        new ChatMessageResponse(1L, "USER", "你好", null, ts, false),
+                        new ChatMessageResponse(2L, "ASSISTANT", "答案", "[{\"chunkId\":1}]", ts, false))));
 
         List<ChatMessage> msgs = service.messages(SESSION_ID, USER_ID, WS_ID);
 

@@ -29,6 +29,8 @@ public final class QaContextKey {
     public static final String MISSING_INFO = "missingInfo";
     /** 上一轮 CHUNKS 的 dedupKey 集合（累计算法本轮的 delta 即新增证据） */
     public static final String PREV_CHUNK_IDS = "prevChunkIds";
+    /** 上一轮重试的答案（供 verify 阶段一前后对比；首次评估无值） */
+    public static final String PREV_ANSWER = "prevAnswer";
     /** 新增证据未改善（verify 判定本轮新增证据未明显帮助回答问题，提前终止重试） */
     public static final String NO_IMPROVEMENT = "noImprovement";
     public static final String RETRY_COUNT = "retryCount";

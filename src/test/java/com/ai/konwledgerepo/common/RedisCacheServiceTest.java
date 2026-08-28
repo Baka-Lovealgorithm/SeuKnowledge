@@ -51,7 +51,7 @@ class RedisCacheServiceTest {
     @Test
     void setAndGet_roundTripsRecordWithLocalDateTime() {
         ChatMessageResponse msg = new ChatMessageResponse(1L, "USER", "你好", "[]",
-                LocalDateTime.of(2025, 1, 1, 10, 30));
+                LocalDateTime.of(2025, 1, 1, 10, 30), false);
 
         service.set("k", msg, Duration.ofSeconds(60));
 
@@ -68,7 +68,7 @@ class RedisCacheServiceTest {
     @Test
     void setAndGet_roundTripsGenericList() {
         List<ChatMessageResponse> list = List.of(
-                new ChatMessageResponse(1L, "USER", "q1", null, LocalDateTime.now()));
+                new ChatMessageResponse(1L, "USER", "q1", null, LocalDateTime.now(), false));
 
         service.set("k", list, Duration.ofSeconds(60));
         ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
