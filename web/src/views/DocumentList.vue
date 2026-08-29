@@ -84,10 +84,24 @@ async function load() {
 
 async function doUpload({ file }) {
   try {
-    await docApi.upload(kbId, [file])
+    // 同名文件检测（大小写不敏感）→ 询问是否覆盖
+    const dup = list.value.find((d) => d.fileName && d.fileName.toLowerCase() === file.name.toLowerCase())
+    if (dup) {
+      await ElMessageBox.confirm(
+        `文件「${file.name}」已存在（${dup.fileName}），是否覆盖？覆盖将删除旧文档及其向量后重新上传。`,
+        '文件已存在',
+        { type: 'warning', confirmButtonText: '覆盖', cancelButtonText: '取消' }
+      )
+      await docApi.upload(kbId, [file], true)
+    } else {
+      await docApi.upload(kbId, [file])
+    }
     ElMessage.success(`上传 ${file.name} 成功`)
     load()
-  } catch (e) { /* 拦截器已提示 */ }
+  } catch (e) {
+    // 拦截器已提示；用户取消覆盖询问时静默跳过
+    if (e === 'cancel' || e === 'close') return
+  }
 }
 
 async function viewChunks(row) {
