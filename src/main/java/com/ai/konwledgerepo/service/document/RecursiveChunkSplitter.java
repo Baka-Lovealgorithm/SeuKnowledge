@@ -8,8 +8,9 @@ import java.util.regex.Pattern;
 /**
  * 递归分词器（仿 LlamaIndex RecursiveCharacterTextSplitter，面向 LlamaParse 输出的 Markdown）。
  *
- * <p>策略：按分隔符优先级逐层切分——Markdown 二级标题 → 三级标题 → … → 一级标题 → 空行（段落）
- * → 换行 → 中文/英文句子标点 → 空格 → 字符兜底；片段仍超限时用更低优先级分隔符递归切分。
+ * <p>策略：先由 {@link TableExtractor} 把文本切成"正文段 + 表格段"——正文段按分隔符优先级逐层切分
+ * （Markdown 二级标题 → 三级标题 → … → 一级标题 → 空行（段落）→ 换行 → 句子标点 → 空格 → 字符兜底）；
+ * 表格段经 forward-fill 规整化后按 A+B 混合产出：小表整表原子块、大表行组+表头（见 {@link #tablePieces}）。
  * 输出块携带标题祖先链路径（ChunkPiece.title，见 {@link Headings}），供引用展示与向量/重排感知结构。
  *
  * <p>参数沿用既有分块配置（chunk-size / chunk-overlap）；跨页 carry 语义与 {@link ChunkSplitter#splitWithCarry}
@@ -38,7 +39,7 @@ public final class RecursiveChunkSplitter {
     /**
      * 跨页分块结果：块列表 + 页尾重叠文本（供下一页作为 carry 延续）+ 页内最后标题栈（供下一页继承）。
      */
-    public record SplitResult(List<ChunkPiece> pieces, String carryOut, List<String> lastStack) {
+    public record SplitResult(List<ChunkPiece> pieces, String carryOut, List<Headings.StackEntry> lastStack) {
         public SplitResult(List<ChunkPiece> pieces, String carryOut) {
             this(pieces, carryOut, null);
         }
@@ -66,7 +67,7 @@ public final class RecursiveChunkSplitter {
      * 返回本页最后一个块的尾部重叠文本（carryOut）与页内最后标题栈（lastStack）。
      */
     public static SplitResult splitWithCarry(String text, int pageNum, int chunkSize, int overlap,
-                                             String carryIn, List<String> inheritStack) {
+                                             String carryIn, List<Headings.StackEntry> inheritStack) {
         if (text == null || text.isBlank()) {
             // 空页：carry 与标题栈透传，不打断上下文流
             return new SplitResult(new ArrayList<>(), carryIn == null ? "" : carryIn, inheritStack);
@@ -83,22 +84,64 @@ public final class RecursiveChunkSplitter {
             carry = "";
         }
 
-        // 1) 递归切分为不超过 max 的片段（保留换行结构，尾部 trim）
-        List<String> segs = new ArrayList<>();
-        splitRecursive(carry.isEmpty() ? text : carry + "\n" + text, SEPARATORS, 0, max, segs);
+        // 1) 表格段分类：pipe 表格（含 forward-fill 规整化）作为原子段直接产出，正文段递归切分
+        String full = carry.isEmpty() ? text : carry + "\n" + text;
+        List<TableExtractor.Segment> segments = TableExtractor.extract(full);
 
-        // 2) 逐片段进窗口：超限输出块并保留 overlap 前缀；标题栈跟踪（块 title 为块内标题的完整路径）
+        // 2) 逐段处理：正文段进窗口（标题栈跟踪），表格段直接产出原子块/行组
         List<ChunkPiece> pieces = new ArrayList<>();
         StringBuilder window = new StringBuilder();
-        List<String> prevStack = inheritStack == null ? new ArrayList<>() : new ArrayList<>(inheritStack);
-        for (String seg : segs) {
-            if (window.length() > 0 && window.length() + seg.length() > max) {
+        List<Headings.StackEntry> prevStack = inheritStack == null ? new ArrayList<>() : new ArrayList<>(inheritStack);
+        for (TableExtractor.Segment seg : segments) {
+            if (seg instanceof TableExtractor.TextBlock tb) {
+                List<String> segs = new ArrayList<>();
+                splitRecursive(tb.text(), SEPARATORS, 0, max, segs);
+                for (String s : segs) {
+                    if (window.length() > 0 && window.length() + s.length() > max) {
+                        prevStack = flush(pieces, window, ov, prevStack, pageNum);
+                    }
+                    window.append(s).append('\n');
+                }
+            } else if (seg instanceof TableExtractor.TableBlock tbl) {
                 prevStack = flush(pieces, window, ov, prevStack, pageNum);
+                pieces.addAll(tablePieces(tbl.table(), max, prevStack, pageNum));
             }
-            window.append(seg).append('\n');
         }
         prevStack = flush(pieces, window, ov, prevStack, pageNum);
         return new SplitResult(pieces, window.toString().trim(), prevStack);
+    }
+
+    /**
+     * 表格块产出（A+B 混合）：
+     * 小表（回填后 ≤ chunk-size）整表一个原子块；大表按行组分块（每组带表头+分隔行，组间无 overlap）。
+     * 表格块 title = 祖先链路径；不更新标题栈（表格不产生新章节）。
+     */
+    static List<ChunkPiece> tablePieces(TableExtractor.Table table, int chunkSize,
+                                        List<Headings.StackEntry> stack, int pageNum) {
+        String title = Headings.path(stack);
+        String headBlock = "| " + String.join(" | ", table.header()) + " |\n"
+                + "| " + String.join(" | ", table.header().stream().map(h -> "---").toList()) + " |\n";
+        List<ChunkPiece> out = new ArrayList<>();
+        if (table.toMarkdown().length() <= chunkSize) {
+            // A：整表原子块
+            out.add(new ChunkPiece(table.toMarkdown(), pageNum, title));
+            return out;
+        }
+        // B：大表行组
+        StringBuilder group = new StringBuilder(headBlock);
+        for (List<String> row : table.rows()) {
+            String rowLine = "| " + String.join(" | ", row) + " |";
+            if (group.length() > headBlock.length() && group.length() + rowLine.length() + 1 > chunkSize) {
+                out.add(new ChunkPiece(group.toString().trim(), pageNum, title));
+                group.setLength(0);
+                group.append(headBlock);
+            }
+            group.append(rowLine).append('\n');
+        }
+        if (group.length() > headBlock.length()) {
+            out.add(new ChunkPiece(group.toString().trim(), pageNum, title));
+        }
+        return out;
     }
 
     /** 递归切分：选当前文本中优先级最高的分隔符切分，超长片段用更低优先级分隔符继续递归 */
@@ -180,13 +223,13 @@ public final class RecursiveChunkSplitter {
      *
      * @return 供后续块继承的标题栈
      */
-    private static List<String> flush(List<ChunkPiece> result, StringBuilder window, int overlap,
-                                      List<String> prevStack, int pageNum) {
+    private static List<Headings.StackEntry> flush(List<ChunkPiece> result, StringBuilder window, int overlap,
+                                                   List<Headings.StackEntry> prevStack, int pageNum) {
         if (window.length() == 0) {
             return prevStack;
         }
         String block = window.toString().trim();
-        List<String> stack = prevStack == null ? new ArrayList<>() : new ArrayList<>(prevStack);
+        List<Headings.StackEntry> stack = prevStack == null ? new ArrayList<>() : new ArrayList<>(prevStack);
         if (!block.isEmpty()) {
             for (String line : block.split("\\r?\\n")) {
                 String t = line.trim();

@@ -60,70 +60,105 @@ class HeadingsTest {
 
     @Test
     void apply_nestedHeadings_buildStack() {
-        List<String> stack = new ArrayList<>();
+        List<Headings.StackEntry> stack = new ArrayList<>();
         stack = Headings.apply(stack, Headings.parse("# A"));
         stack = Headings.apply(stack, Headings.parse("## B"));
         stack = Headings.apply(stack, Headings.parse("### C"));
-        assertEquals(List.of("A", "B", "C"), stack);
+        assertEquals(List.of(
+                        new Headings.StackEntry(1, "A"),
+                        new Headings.StackEntry(2, "B"),
+                        new Headings.StackEntry(3, "C")),
+                stack);
     }
 
     @Test
     void apply_siblingHeading_replacesSubLevel() {
-        List<String> stack = new ArrayList<>();
+        List<Headings.StackEntry> stack = new ArrayList<>();
         stack = Headings.apply(stack, Headings.parse("# A"));
         stack = Headings.apply(stack, Headings.parse("## B1"));
         stack = Headings.apply(stack, Headings.parse("## B2"));
-        assertEquals(List.of("A", "B2"), stack);
+        assertEquals(List.of(new Headings.StackEntry(1, "A"), new Headings.StackEntry(2, "B2")), stack);
+    }
+
+    @Test
+    void apply_siblingWithoutRoot_replacesStack() {
+        // 无根文档（全 ## 同级）：同级标题应替换，而非错误嵌套为父子
+        List<Headings.StackEntry> stack = new ArrayList<>();
+        stack = Headings.apply(stack, Headings.parse("## 3.1 设备清单"));
+        stack = Headings.apply(stack, Headings.parse("## 3.2 部署"));
+        assertEquals(List.of(new Headings.StackEntry(2, "3.2 部署")), stack);
+        assertEquals("3.2 部署", Headings.path(stack));
     }
 
     @Test
     void apply_jumpUp_resetsFromNewRoot() {
-        List<String> stack = new ArrayList<>();
+        List<Headings.StackEntry> stack = new ArrayList<>();
         stack = Headings.apply(stack, Headings.parse("## B")); // 无祖先时从空栈建（路径退化为单级）
         stack = Headings.apply(stack, Headings.parse("# C"));  // 更高级标题 → 清空重建
-        assertEquals(List.of("C"), stack);
+        assertEquals(List.of(new Headings.StackEntry(1, "C")), stack);
+    }
+
+    @Test
+    void apply_skipLevel_keepsShallowerAncestors() {
+        // # A 后直接 ### C：跳级时保留更浅的 A 作祖先（C 挂 A 下）
+        List<Headings.StackEntry> stack = new ArrayList<>();
+        stack = Headings.apply(stack, Headings.parse("# A"));
+        stack = Headings.apply(stack, Headings.parse("### C"));
+        assertEquals(List.of(new Headings.StackEntry(1, "A"), new Headings.StackEntry(3, "C")), stack);
     }
 
     @Test
     void apply_mixedStyles_sharedStack() {
-        List<String> stack = new ArrayList<>();
+        List<Headings.StackEntry> stack = new ArrayList<>();
         stack = Headings.apply(stack, Headings.parse("# 员工手册"));
         stack = Headings.apply(stack, Headings.parse("一、考勤"));   // level 2
         stack = Headings.apply(stack, Headings.parse("1.1 打卡规则")); // level 2 → 同级替换
-        assertEquals(List.of("员工手册", "1.1 打卡规则"), stack);
+        assertEquals(List.of(
+                        new Headings.StackEntry(1, "员工手册"),
+                        new Headings.StackEntry(2, "1.1 打卡规则")),
+                stack);
     }
 
     @Test
     void apply_levelCap_stackDepth() {
-        List<String> stack = new ArrayList<>();
+        List<Headings.StackEntry> stack = new ArrayList<>();
         for (int i = 1; i <= 8; i++) {
             stack = Headings.apply(stack, new Headings.Heading(i, "L" + i));
         }
         assertTrue(stack.size() <= Headings.MAX_STACK, "栈深不应超过 " + Headings.MAX_STACK);
-        assertEquals("L8", stack.get(stack.size() - 1));
+        assertEquals("L8", stack.get(stack.size() - 1).text());
     }
 
     @Test
     void apply_overLengthText_truncated() {
         String longText = "很长的标题".repeat(30); // 150 字符
-        List<String> stack = Headings.apply(new ArrayList<>(), new Headings.Heading(1, longText));
-        assertEquals(Headings.MAX_LEVEL_TEXT, stack.get(0).length());
+        List<Headings.StackEntry> stack = Headings.apply(new ArrayList<>(), new Headings.Heading(1, longText));
+        assertEquals(Headings.MAX_LEVEL_TEXT, stack.get(0).text().length());
     }
 
     // ===== path：拼接与截断 =====
 
     @Test
     void path_joinWithSeparator() {
-        assertEquals("A > B > C", Headings.path(List.of("A", "B", "C")));
+        assertEquals("A > B > C", Headings.path(List.of(
+                new Headings.StackEntry(1, "A"),
+                new Headings.StackEntry(2, "B"),
+                new Headings.StackEntry(3, "C"))));
         assertEquals("员工手册 > 一、考勤 > 1.1 打卡规则",
-                Headings.path(List.of("员工手册", "一、考勤", "1.1 打卡规则")));
+                Headings.path(List.of(
+                        new Headings.StackEntry(1, "员工手册"),
+                        new Headings.StackEntry(2, "一、考勤"),
+                        new Headings.StackEntry(2, "1.1 打卡规则"))));
         assertEquals("", Headings.path(List.of()));
         assertEquals("", Headings.path(null));
     }
 
     @Test
     void path_overLimit_dropsOldestLevels() {
-        List<String> stack = List.of("根".repeat(70), "中".repeat(70), "叶".repeat(70));
+        List<Headings.StackEntry> stack = List.of(
+                new Headings.StackEntry(1, "根".repeat(70)),
+                new Headings.StackEntry(2, "中".repeat(70)),
+                new Headings.StackEntry(3, "叶".repeat(70)));
         String p = Headings.path(stack);
         assertTrue(p.length() <= Headings.MAX_TITLE, "路径应被截断到上限内: len=" + p.length());
         assertFalse(p.contains("根"), "超限时应优先丢弃最老层级（保留最近标题）");

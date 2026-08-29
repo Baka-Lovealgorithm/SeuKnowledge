@@ -68,10 +68,26 @@ public class DocumentService {
 
     @Transactional
     public List<Document> upload(Long kbId, List<MultipartFile> files, Long userId) {
+        return upload(kbId, files, userId, false);
+    }
+
+    /**
+     * 上传文档（可替换同名旧文档）：replace=true 时按 kbId + fileName（大小写不敏感）查同名，
+     * 命中则事务内删除旧文档（MySQL chunk + ES 向量 + 磁盘文件 + 记录）再建新。
+     */
+    @Transactional
+    public List<Document> upload(Long kbId, List<MultipartFile> files, Long userId, boolean replace) {
         KnowledgeBase kb = kbService.getEntity(kbId);
         List<Document> saved = new ArrayList<>();
         for (MultipartFile file : files) {
             validate(file);
+            if (replace) {
+                String name = file.getOriginalFilename();
+                documentRepository.findByKbIdOrderByIdDesc(kbId).stream()
+                        .filter(d -> name != null && name.equalsIgnoreCase(d.getFileName()))
+                        .findFirst()
+                        .ifPresent(this::deleteDoc);
+            }
             Document doc = persistFile(kbId, file, userId);
             saved.add(doc);
         }
@@ -94,10 +110,16 @@ public class DocumentService {
     @Transactional
     public void delete(Long docId) {
         Document doc = getEntity(docId);
-        // 删 MySQL chunk（ES 侧由向量化清理覆盖）
-        chunkRepository.deleteByDocId(docId);
+        deleteDoc(doc);
+        evictKbCaches(doc.getKbId());
+    }
+
+    /** 清理文档全链路数据：MySQL chunk + ES 向量 + 磁盘文件 + 记录（供删除与同名覆盖共用） */
+    private void deleteDoc(Document doc) {
+        // 删 MySQL chunk
+        chunkRepository.deleteByDocId(doc.getId());
         // 删 ES chunk
-        vectorIngestionService.deleteByDocId(docId);
+        vectorIngestionService.deleteByDocId(doc.getId());
         // 删文件
         try {
             Files.deleteIfExists(Path.of(doc.getFilePath()));
@@ -105,7 +127,6 @@ public class DocumentService {
             log.warn("删除文档文件失败: {}", doc.getFilePath(), e);
         }
         documentRepository.delete(doc);
-        evictKbCaches(doc.getKbId());
     }
 
     /** 文档变更后失效知识库计数与列表缓存 */

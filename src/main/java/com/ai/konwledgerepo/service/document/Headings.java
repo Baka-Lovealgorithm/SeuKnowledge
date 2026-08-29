@@ -59,6 +59,10 @@ public final class Headings {
     public record Heading(int level, String text) {
     }
 
+    /** 标题栈条目：标题文本 + 压入时层级（用于同级替换判断，避免"无根文档"同级标题被误嵌套为父子） */
+    public record StackEntry(int level, String text) {
+    }
+
     /**
      * 识别标题行并推断层级；非标题返回 null。
      *
@@ -98,22 +102,28 @@ public final class Headings {
     }
 
     /**
-     * 应用标题到栈：截断到 {@code level-1}（同层/更高层标题替换旧分支），压入标题文本（单级截断）。
-     * 原栈不变，返回新栈。
+     * 应用标题到栈：截断到第一个"层级 ≥ 新标题层级"的条目（同级/更深层标题替换旧分支，更浅层保留为祖先），
+     * 压入新标题（单级截断）。原栈不变，返回新栈。
      *
      * @param stack 当前祖先栈（可为 null/空）
      * @param h     新标题
      */
-    public static List<String> apply(List<String> stack, Heading h) {
-        List<String> result = new ArrayList<>();
+    public static List<StackEntry> apply(List<StackEntry> stack, Heading h) {
+        List<StackEntry> result = new ArrayList<>();
         if (stack != null) {
-            int keep = Math.min(Math.max(h.level() - 1, 0), MAX_STACK - 1);
-            for (int i = 0; i < Math.min(keep, stack.size()); i++) {
-                result.add(stack.get(i));
+            for (StackEntry e : stack) {
+                if (e.level() >= h.level()) {
+                    break; // 同级或更深：从此截断，替换该分支
+                }
+                result.add(e);
             }
         }
         String text = h.text() == null ? "" : h.text().trim();
-        result.add(text.length() > MAX_LEVEL_TEXT ? text.substring(0, MAX_LEVEL_TEXT) : text);
+        result.add(new StackEntry(h.level(),
+                text.length() > MAX_LEVEL_TEXT ? text.substring(0, MAX_LEVEL_TEXT) : text));
+        if (result.size() > MAX_STACK) {
+            result = new ArrayList<>(result.subList(result.size() - MAX_STACK, result.size()));
+        }
         return result;
     }
 
@@ -121,16 +131,17 @@ public final class Headings {
      * 栈 → 路径字符串（{@code 根 > 中 > 叶}）；空栈返回 ""。
      * 总长超过 {@link #MAX_TITLE} 时从最老级（栈头）开始丢弃，最近标题优先保留。
      */
-    public static String path(List<String> stack) {
+    public static String path(List<StackEntry> stack) {
         if (stack == null || stack.isEmpty()) {
             return "";
         }
-        String joined = String.join(SEPARATOR, stack);
+        List<String> texts = stack.stream().map(StackEntry::text).toList();
+        String joined = String.join(SEPARATOR, texts);
         if (joined.length() <= MAX_TITLE) {
             return joined;
         }
-        for (int i = 1; i < stack.size(); i++) {
-            joined = String.join(SEPARATOR, stack.subList(i, stack.size()));
+        for (int i = 1; i < texts.size(); i++) {
+            joined = String.join(SEPARATOR, texts.subList(i, texts.size()));
             if (joined.length() <= MAX_TITLE) {
                 return joined;
             }

@@ -145,7 +145,7 @@ public class DocumentParserService {
         List<ChunkPiece> pieces = new ArrayList<>();
         String[] carry = new String[1];
         // 跨页标题祖先栈（section_path）继承：上一页末栈传给下一页无标题块
-        List<String>[] inheritStack = new List[1];
+        List<Headings.StackEntry>[] inheritStack = new List[1];
         for (LlamaParseService.PageMarkdown page : ordered) {
             if (page.markdown() == null || page.markdown().isBlank()) {
                 continue;

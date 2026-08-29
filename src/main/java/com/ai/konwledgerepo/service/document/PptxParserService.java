@@ -274,7 +274,7 @@ public class PptxParserService {
             }
             return Texts.truncate(headings.get(0).text(), 100);
         }
-        List<String> stack = new ArrayList<>();
+        List<Headings.StackEntry> stack = new ArrayList<>();
         for (int i = start; i < headings.size(); i++) {
             stack = Headings.apply(stack, headings.get(i));
         }

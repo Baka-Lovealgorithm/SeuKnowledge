@@ -66,7 +66,7 @@ public final class ChunkSplitter {
         int max = chunkSize <= 0 ? DEFAULT_MAX : chunkSize;
         int ov = Math.max(0, Math.min(overlap, max / 2));
         // 标题祖先栈（section_path）：块 title 为栈的完整路径（见 Headings）
-        List<String> titleStack = new ArrayList<>();
+        List<Headings.StackEntry> titleStack = new ArrayList<>();
         String currentTitle = null;
         StringBuilder window = new StringBuilder();
         StringBuilder para = new StringBuilder();
