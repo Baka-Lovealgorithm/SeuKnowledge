@@ -65,3 +65,7 @@ agent.md
 instruction.md
 need.md
 tolist.md
+
+### 测试记录/测试结果文档（含本机路径与内网 IP，不入库）###
+测试记录汇总.md
+结构化传参改造-测试结果.md
