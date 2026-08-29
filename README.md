@@ -5,7 +5,7 @@
 ## 功能亮点
 
 - **多工作空间与角色权限**：一个用户可属于多个工作空间，四角色（拥有者 / 管理员 / 编辑者 / 普通成员），所有数据按空间隔离
-- **知识库与文档管理**：.txt/.md/.pdf/.docx/.pptx 上传 → 自动解析分块 → 向量化入 Elasticsearch
+- **知识库与文档管理**：.txt/.md/.pdf/.docx/.pptx 上传 → 自动解析分块 → 向量化入 Elasticsearch；同名文件上传前端确认（覆盖/取消）；分块携带**标题祖先链路径**（如 `第一章 > 1.1 背景 > 1.1.1 研究意义`），LlamaParse 转出的 **Markdown 表格特殊解析**（小表整表原子块、大表行组+表头、空单元格 forward-fill 还原合并单元格语义）
 - **模型配置**：DashScope + OpenAI 兼容双供应商，按用途绑定（生成 / 抽取 / 检索 / 识图 / 重排 / 自检 / 标题 / 路由），按工作空间隔离，支持连通性测试
 - **智能问答**：多源召回（文档 chunk + 业务知识 + 问答对）+ 交叉编码器精排 + 自检重试，答案带 [1][2] 证据引用
 - **AI 抽取**：自动抽取业务知识（术语/别名/定义/…）与问答对，人工审核 + 启用/禁用 + 版本回退
@@ -180,6 +180,7 @@ npm run dev
 | `KB_VISION_PARSING` | true | PDF 识图总开关（需配置 VISION 类型模型） |
 | `KB_VISION_AUTO` / `KB_VISION_MIN_TEXT` / `KB_VISION_DPI` / `KB_VISION_PARALLEL` | true / 50 / 100 / 3 | 按需识图开关 / 扫描页判定阈值 / 渲染分辨率 / 并行度 |
 | `KB_LLAMAPARSE_ENABLED` / `KB_LLAMAPARSE_TIER` / `KB_LLAMAPARSE_LANGUAGE` | false / cost_effective / ch_sim | LlamaParse 开关 / 档位 / OCR 语言 |
+| `KB_LLAMAPARSE_OUTPUT_DIR` | ./data/llamaparse | LlamaParse 转换结果 Markdown 导出目录（便于检查转化效果，可为空禁用） |
 | `KB_LLAMAPARSE_TAKE_SCREENSHOT` / `KB_LLAMAPARSE_FILL_MISSING_PAGES` | true / true | 整页截图返回 / 缺页 VLM 补全（后者需 VISION 模型） |
 | `KB_ES_INDEX` / `KB_ES_DIMENSIONS` | kb_chunk / 1024 | ES 索引名与向量维度（**改维度需重建索引**） |
 | `KB_ASYNC_CORE_SIZE` / `KB_ASYNC_MAX_SIZE` / `KB_ASYNC_QUEUE_CAPACITY` | 8 / 32 / 256 | 通用异步线程池 |
@@ -200,7 +201,11 @@ npm run dev
 ## 测试
 
 ```bash
+# 纯单元测试（441 个，无需外部依赖，mock 隔离）
 mvn test
+
+# 全量测试（含 4 个 @SpringBootTest 集成测试，需 MySQL/Redis；ES 缺失时 fail-open 降级）
+$env:SPRING_PROFILES_ACTIVE='dev'; .\mvnw.cmd test
 ```
 
-当前 **45 个测试类、390 个用例**（分块器、文档解析、模型解析、模型配置、知识库、会话、抽取任务、多工作空间成员管理、重排客户端/节点、标题生成等）。其中 5 个 `@SpringBootTest` 集成测试需 MySQL/Redis 环境，纯单元测试 385 个全绿。
+当前 **48 个测试类、445 个用例**（分块器与标题祖先链、LlamaParse 表格解析、文档解析、模型解析/配置、知识库、会话、抽取任务、多工作空间成员管理、重排客户端/节点、标题生成等）。其中 4 个 `@SpringBootTest` 集成测试需 MySQL/Redis 环境，纯单元测试 441 个全绿。
