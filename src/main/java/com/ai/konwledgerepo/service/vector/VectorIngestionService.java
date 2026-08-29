@@ -83,7 +83,7 @@ public class VectorIngestionService {
         try {
             vectors = new ArrayList<>();
             int batchSize = 10;
-            List<String> texts = chunks.stream().map(Chunk::getContent).toList();
+            List<String> texts = embedTexts(chunks);
             for (int i = 0; i < texts.size(); i += batchSize) {
                 List<String> batch = texts.subList(i, Math.min(i + batchSize, texts.size()));
                 vectors.addAll(embeddingModel.embed(batch));
@@ -124,7 +124,7 @@ public class VectorIngestionService {
         try {
             Long workspaceId = workspaceIdResolver.resolve(kbId);
             EmbeddingModel embeddingModel = modelFactory.getEmbeddingModelByUsage(ModelUsage.RETRIEVE.value(), workspaceId);
-            float[] vector = embeddingModel.embed(content);
+            float[] vector = embeddingModel.embed(embedText(title, content));
             esClient.index(i -> i
                     .index(indexName)
                     .id(sourceType + "-" + entityId)
@@ -182,5 +182,28 @@ public class VectorIngestionService {
                         "sourceType", SourceType.CHUNK.value(),
                         "contentVector", vector)));
         return response.id();
+    }
+
+    /**
+     * 向量化输入文本：标题 + 正文拼接（标题为空时回退纯正文）。
+     * 标题是强语义锚点（chunk 为小节标题、BUSINESS 为术语名、QA 为问题），
+     * 拼接后 knn 向量检索可感知标题语义，与 BM25 的 title boost 对齐。
+     * 仅影响向量生成，ES content 字段仍存原文（检索展示/重排输入不受影响）。
+     */
+    static String embedText(String title, String content) {
+        if (content == null || content.isBlank()) {
+            return content;
+        }
+        if (title == null || title.isBlank()) {
+            return content;
+        }
+        return title + "\n" + content;
+    }
+
+    /** chunk 列表 → 向量化输入文本列表（顺序与入参一致），供批量 embedding 使用 */
+    static List<String> embedTexts(List<Chunk> chunks) {
+        return chunks.stream()
+                .map(c -> embedText(c.getTitle(), c.getContent()))
+                .toList();
     }
 }

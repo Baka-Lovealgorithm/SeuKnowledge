@@ -156,6 +156,15 @@
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
             </plugin>
+            <!-- JDK 21（JEP 451 默认禁用动态 agent 加载）+ Mockito inline mock maker：
+                 需显式允许 agent 加载与 self-attach，否则 final 类（如 ES client / IndexResponse）无法 mock -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <argLine>-XX:+EnableDynamicAgentLoading -Djdk.attach.allowAttachSelf=true</argLine>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
 
