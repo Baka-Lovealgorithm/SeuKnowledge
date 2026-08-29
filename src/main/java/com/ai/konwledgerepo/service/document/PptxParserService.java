@@ -232,20 +232,27 @@ public class PptxParserService {
      *   <li>无标题 → 回退首个非空行（截断 100 字符）。</li>
      * </ul>
      */
+    /**
+     * 提取页 md 的标题（祖先链路径）：按行收集页内标题（见 {@link Headings}），
+     * 逐级构建标题栈，返回 {@code Headings.path} 路径（如 {@code 概述 > 1.1 背景}）。
+     * 首个标题为页脚（detectFooter 结果）时跳过（从第二个标题起构建栈，与旧"跳过页脚取次标题"一致）；
+     * 无标题行时回退取首个非空行（截断 100）。
+     */
     static String extractTitle(String md, String footer) {
         if (md == null) {
             return null;
         }
         List<String> nonEmpty = new ArrayList<>();
-        List<String> headings = new ArrayList<>();
+        List<Headings.Heading> headings = new ArrayList<>();
         for (String line : md.split("\\r?\\n")) {
             String trimmed = line.trim();
             if (trimmed.isEmpty()) {
                 continue;
             }
             nonEmpty.add(trimmed);
-            if (trimmed.matches("^#{1,6}\\s+.*")) {
-                headings.add(trimmed.replaceFirst("^#{1,6}\\s+", "").trim());
+            Headings.Heading h = Headings.parse(trimmed);
+            if (h != null) {
+                headings.add(h);
             }
         }
         if (nonEmpty.isEmpty()) {
@@ -254,21 +261,24 @@ public class PptxParserService {
         if (headings.isEmpty()) {
             return Texts.truncate(nonEmpty.get(0), 100);
         }
-        String firstHeading = headings.get(0);
-        boolean firstIsFooter = footer != null && footer.equals(firstHeading);
-        if (firstIsFooter) {
-            if (headings.size() >= 2) {
-                return Texts.truncate(headings.get(1), 100);
-            }
+        // 页脚跳过：仅当首个标题为页脚时忽略它，从第二个标题开始构建路径
+        int start = 0;
+        if (footer != null && headings.get(0).text().equals(footer)) {
+            start = 1;
+        }
+        if (start >= headings.size()) {
             // 仅页脚一个标题：真实标题可能是紧随的短纯文本行
             String after = firstShortPlainLine(nonEmpty);
             if (after != null) {
                 return Texts.truncate(after, 100);
             }
-            return Texts.truncate(firstHeading, 100);
+            return Texts.truncate(headings.get(0).text(), 100);
         }
-        // 首个标题即真实标题
-        return Texts.truncate(firstHeading, 100);
+        List<String> stack = new ArrayList<>();
+        for (int i = start; i < headings.size(); i++) {
+            stack = Headings.apply(stack, headings.get(i));
+        }
+        return Headings.path(stack);
     }
 
     /** 若首行是标题，返回其后第一条"短纯文本"行（≤30 字符且非列表/表格/引用/代码标记）；否则返回 null */

@@ -81,11 +81,11 @@ class ChunkSplitterTest {
         String text = "# 第一章 报销规则\n\n报销需要发票。\n\n## 差旅标准\n\n出差住宿标准为每天500元。\n\n报销流程：提交单据，等待审批。";
         List<ChunkPiece> result = ChunkSplitter.split(text, 0);
         assertTrue(result.size() >= 2, "标题应强制开新块");
-        // 第一块归属 "第一章 报销规则"
+        // 根标题块：路径 = 标题本身
         assertEquals("第一章 报销规则", result.get(0).title());
-        // 后续块归属 "差旅标准"
+        // 后续块：携带完整祖先链
         ChunkPiece last = result.get(result.size() - 1);
-        assertEquals("差旅标准", last.title());
+        assertEquals("第一章 报销规则 > 差旅标准", last.title());
         // 标题行本身应保留在块内容中
         assertTrue(result.get(0).content().contains("第一章 报销规则"));
     }
@@ -112,8 +112,8 @@ class ChunkSplitterTest {
         List<ChunkPiece> result = ChunkSplitter.split(text, 0);
         assertEquals(3, result.size(), "三个标题应切出三块");
         assertEquals("员工手册", result.get(0).title());
-        assertEquals("报销规则", result.get(1).title());
-        assertEquals("年假规定", result.get(2).title());
+        assertEquals("员工手册 > 报销规则", result.get(1).title());
+        assertEquals("员工手册 > 年假规定", result.get(2).title());
     }
 
     @Test
@@ -207,5 +207,51 @@ class ChunkSplitterTest {
         ChunkSplitter.SplitResult blank = ChunkSplitter.splitWithCarry("   \n  ", 2, 800, 120, sr1.carryOut());
         assertTrue(blank.pieces().isEmpty());
         assertEquals(sr1.carryOut(), blank.carryOut(), "空页应透传 carry");
+    }
+
+    // ===== 标题祖先链（section_path）=====
+
+    @Test
+    void nestedMarkdownHeadings_buildFullAncestorPath() {
+        String text = "# 第一章 绪论\n\n## 1.1 背景\n\n### 1.1.1 研究意义\n\n正文A。\n\n### 1.1.2 研究方法\n\n正文B。";
+        List<ChunkPiece> result = ChunkSplitter.split(text, 0);
+        assertTrue(result.size() >= 3, "标题应逐级强制开块");
+        ChunkPiece leafA = result.get(result.size() - 2);
+        ChunkPiece leafB = result.get(result.size() - 1);
+        assertEquals("第一章 绪论 > 1.1 背景 > 1.1.1 研究意义", leafA.title());
+        assertEquals("第一章 绪论 > 1.1 背景 > 1.1.2 研究方法", leafB.title());
+    }
+
+    @Test
+    void siblingHeading_replacesSubLevelInStack() {
+        String text = "# 文档\n\n## 1.1 概述\n\n内容甲。\n\n## 1.2 详述\n\n内容乙。";
+        List<ChunkPiece> result = ChunkSplitter.split(text, 0);
+        ChunkPiece last = result.get(result.size() - 1);
+        assertEquals("文档 > 1.2 详述", last.title(), "同级标题应替换子级，保留根级祖先");
+    }
+
+    @Test
+    void jumpUpHeading_resetsStackFromNewRoot() {
+        String text = "# 第一章\n\n## 1.1 背景\n\n内容。\n\n# 第二章\n\n内容。";
+        List<ChunkPiece> result = ChunkSplitter.split(text, 0);
+        ChunkPiece last = result.get(result.size() - 1);
+        assertEquals("第二章", last.title(), "更高级标题应清空祖先重建");
+    }
+
+    @Test
+    void mixedHeadingStyles_buildPath() {
+        String text = "# 员工手册\n\n一、考勤\n\n1.1.1 打卡规则\n\n每日打卡。";
+        List<ChunkPiece> result = ChunkSplitter.split(text, 0);
+        ChunkPiece last = result.get(result.size() - 1);
+        assertEquals("员工手册 > 一、考勤 > 1.1.1 打卡规则", last.title());
+    }
+
+    @Test
+    void longHeadingText_truncatedToLevelCap() {
+        String longTitle = "很长的标题内容".repeat(30); // 240 字符
+        String text = "# " + longTitle + "\n\n正文。";
+        List<ChunkPiece> result = ChunkSplitter.split(text, 0);
+        assertEquals(1, result.size());
+        assertEquals(100, result.get(0).title().length(), "单级标题应截断到 100 字符");
     }
 }

@@ -2,10 +2,10 @@ package com.ai.konwledgerepo.service.document;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Pattern;
 
 /**
- * 文本分块器：按段落聚合、标题感知（Markdown 标题/中文章节）强制开新块，
+ * 文本分块器：按段落聚合、标题感知（Markdown 标题/中文章节，规则见 {@link Headings}）强制开新块，
+ * 块 title 携带标题祖先链路径（如 {@code 第一章 > 1.1 背景}），
  * 超长段落按句子切分，支持块间 overlap（上下文衔接）。
  *
  * 跨页支持：splitWithCarry 把上一页尾部文本（carry）并入下一页首个真实内容片段，
@@ -18,11 +18,6 @@ public final class ChunkSplitter {
 
     /** 默认块间重叠（字符） */
     public static final int DEFAULT_OVERLAP = 0;
-
-    private static final Pattern MD_HEADING = Pattern.compile("^#{1,6}\\s+\\S[^。！？!?；;]*$");
-    private static final Pattern CN_CHAPTER = Pattern.compile("^第[0-9一二三四五六七八九十百千]+[章节篇部分条款][^。！？!?；;]*$");
-    private static final Pattern CN_ITEM = Pattern.compile("^[一二三四五六七八九十]+[、.．][^。！？!?；;]*$");
-    private static final Pattern NUM_ITEM = Pattern.compile("^\\d{1,3}[.、．][^。！？!?；;]*$");
 
     private ChunkSplitter() {
     }
@@ -70,6 +65,8 @@ public final class ChunkSplitter {
         }
         int max = chunkSize <= 0 ? DEFAULT_MAX : chunkSize;
         int ov = Math.max(0, Math.min(overlap, max / 2));
+        // 标题祖先栈（section_path）：块 title 为栈的完整路径（见 Headings）
+        List<String> titleStack = new ArrayList<>();
         String currentTitle = null;
         StringBuilder window = new StringBuilder();
         StringBuilder para = new StringBuilder();
@@ -83,7 +80,7 @@ public final class ChunkSplitter {
                 submitParagraph(para, window, max, result, ov, currentTitle, pageNum, carryBuf);
                 continue;
             }
-            String heading = headingOf(trimmed);
+            Headings.Heading heading = Headings.parse(trimmed);
             if (heading != null) {
                 // 标题行：先提交未完段落，再强制开新块（标题行并入新块开头）
                 submitParagraph(para, window, max, result, ov, currentTitle, pageNum, carryBuf);
@@ -92,7 +89,8 @@ public final class ChunkSplitter {
                     carryBuf.setLength(0);
                 }
                 flush(result, window, max, ov, currentTitle, pageNum);
-                currentTitle = heading;
+                titleStack = Headings.apply(titleStack, heading);
+                currentTitle = Headings.path(titleStack);
                 appendSegment(window, trimmed, max, result, ov, currentTitle, pageNum, carryBuf);
                 continue;
             }
@@ -166,18 +164,8 @@ public final class ChunkSplitter {
         }
     }
 
-    /** 检测标题行：Markdown 标题 / 中文章节 / 中文序号 / 数字序号；返回干净的标题文本，非标题返回 null */
-    private static String headingOf(String para) {
-        if (MD_HEADING.matcher(para).matches()) {
-            return para.replaceFirst("^#{1,6}\\s+", "").trim();
-        }
-        if (CN_CHAPTER.matcher(para).matches() || CN_ITEM.matcher(para).matches() || NUM_ITEM.matcher(para).matches()) {
-            return para;
-        }
-        return null;
-    }
-
-    /** 超长段落按句子（中文/英文句号等）切割为不超过上限的片段 */
+    /**
+     * 超长段落按句子（中文/英文句号等）切割为不超过上限的片段 */
     private static List<String> splitLongParagraph(String para, int max) {
         List<String> segs = new ArrayList<>();
         String[] sentences = para.split("(?<=[。！？!?；;])");

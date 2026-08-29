@@ -286,19 +286,19 @@ class PptxParserServiceTest {
         assertEquals(null, PptxParserService.extractTitle("\n  \n", null));
     }
 
-    /** 首个标题即真实标题（页脚为纯文本在前，或无页脚）→ 取首个标题，后续标题为正文子标题不取 */
+    /** 首个标题即真实标题（页脚为纯文本在前，或无页脚）→ 首个标题为根；后续子标题并入祖先链 */
     @Test
     void extractTitle_firstHeadingIsTitle() {
         assertEquals("概述—— DDS 协议",
                 PptxParserService.extractTitle("# 概述—— DDS 协议\n\n* 数据分发服务…", null));
         assertEquals("概述—— 使用场景",
                 PptxParserService.extractTitle("# 概述—— 使用场景\n\n* 作为开放式架构", null));
-        // 首个标题 + 正文子标题（footer=null 时不跳过首个标题）
-        assertEquals("概述—— 使用场景",
+        // 首个标题 + 正文子标题（footer=null 时不跳过首个标题）→ 子标题并入路径
+        assertEquals("概述—— 使用场景 > 子标题",
                 PptxParserService.extractTitle("# 概述—— 使用场景\n\n## 子标题\n\n* 正文", null));
     }
 
-    /** 页脚以标题形式出现（footer="臻融科技"）→ 跳过页脚取第二个标题 */
+    /** 页脚以标题形式出现（footer="臻融科技"）→ 跳过页脚，从第二个标题起构建祖先链 */
     @Test
     void extractTitle_footerHeading_skipped() {
         String footer = "臻融科技";
@@ -306,8 +306,8 @@ class PptxParserServiceTest {
                 PptxParserService.extractTitle("# 臻融科技\n\n## 工具与服务——诊断工具\n\n正文内容", footer));
         assertEquals("工具与服务——诊断工具",
                 PptxParserService.extractTitle("# 臻融科技\n\n# 工具与服务——诊断工具\n\n正文内容", footer));
-        // 3 个标题（页脚 + 真实标题 + 正文子标题）→ 取第二个（真实标题）
-        assertEquals("工具与服务——诊断工具",
+        // 3 个标题（页脚 + 真实标题 + 更高级别标题）→ 页脚跳过，最后一个标题按层级重置路径
+        assertEquals("ZRDDS问题诊断工具",
                 PptxParserService.extractTitle("# 臻融科技\n\n## 工具与服务——诊断工具\n\n# ZRDDS问题诊断工具\n\n* 运行环境检测", footer));
     }
 

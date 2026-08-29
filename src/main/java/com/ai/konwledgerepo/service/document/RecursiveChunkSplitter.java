@@ -10,10 +10,11 @@ import java.util.regex.Pattern;
  *
  * <p>策略：按分隔符优先级逐层切分——Markdown 二级标题 → 三级标题 → … → 一级标题 → 空行（段落）
  * → 换行 → 中文/英文句子标点 → 空格 → 字符兜底；片段仍超限时用更低优先级分隔符递归切分。
- * 输出块自动携带最近出现的 Markdown 标题（ChunkPiece.title，供引用展示）。
+ * 输出块携带标题祖先链路径（ChunkPiece.title，见 {@link Headings}），供引用展示与向量/重排感知结构。
  *
  * <p>参数沿用既有分块配置（chunk-size / chunk-overlap）；跨页 carry 语义与 {@link ChunkSplitter#splitWithCarry}
- * 一致：页尾重叠文本并入下一页首个真实片段，下一页以标题行开头时丢弃 carry（章节边界无需衔接）。
+ * 一致：页尾重叠文本并入下一页首个真实片段，下一页以标题行开头时丢弃 carry（章节边界无需衔接）；
+ * 标题栈同样跨页继承（inheritStack）。
  */
 public final class RecursiveChunkSplitter {
 
@@ -29,16 +30,15 @@ public final class RecursiveChunkSplitter {
             " ", ""
     };
 
-    private static final Pattern HEADING_LINE = Pattern.compile("^#{1,6}\\s+\\S.*$", Pattern.MULTILINE);
     private static final Pattern FIRST_LINE = Pattern.compile("^[\\s\\uFEFF]*([^\\n]+)");
 
     private RecursiveChunkSplitter() {
     }
 
     /**
-     * 跨页分块结果：块列表 + 页尾重叠文本（供下一页作为 carry 延续）+ 页内最后标题（供下一页继承）。
+     * 跨页分块结果：块列表 + 页尾重叠文本（供下一页作为 carry 延续）+ 页内最后标题栈（供下一页继承）。
      */
-    public record SplitResult(List<ChunkPiece> pieces, String carryOut, String lastTitle) {
+    public record SplitResult(List<ChunkPiece> pieces, String carryOut, List<String> lastStack) {
         public SplitResult(List<ChunkPiece> pieces, String carryOut) {
             this(pieces, carryOut, null);
         }
@@ -62,14 +62,14 @@ public final class RecursiveChunkSplitter {
 
     /**
      * 跨页递归分块：carryIn 为上一页尾部重叠文本，并入本页首个真实片段；
-     * 本页以标题行开头时丢弃 carryIn。inheritTitle 为上一页末标题，供本页无标题块继承。
-     * 返回本页最后一个块的尾部重叠文本（carryOut）与页内最后标题（lastTitle）。
+     * 本页以标题行开头时丢弃 carryIn。inheritStack 为上一页末标题栈，供本页无标题块继承。
+     * 返回本页最后一个块的尾部重叠文本（carryOut）与页内最后标题栈（lastStack）。
      */
     public static SplitResult splitWithCarry(String text, int pageNum, int chunkSize, int overlap,
-                                             String carryIn, String inheritTitle) {
+                                             String carryIn, List<String> inheritStack) {
         if (text == null || text.isBlank()) {
-            // 空页：carry 透传，不打断上下文流
-            return new SplitResult(new ArrayList<>(), carryIn == null ? "" : carryIn, inheritTitle);
+            // 空页：carry 与标题栈透传，不打断上下文流
+            return new SplitResult(new ArrayList<>(), carryIn == null ? "" : carryIn, inheritStack);
         }
         if (text.charAt(0) == '\uFEFF') {
             text = text.substring(1);
@@ -87,18 +87,18 @@ public final class RecursiveChunkSplitter {
         List<String> segs = new ArrayList<>();
         splitRecursive(carry.isEmpty() ? text : carry + "\n" + text, SEPARATORS, 0, max, segs);
 
-        // 2) 逐片段进窗口：超限输出块并保留 overlap 前缀；标题跟踪（块显示首个标题，块间继承末尾标题）
+        // 2) 逐片段进窗口：超限输出块并保留 overlap 前缀；标题栈跟踪（块 title 为块内标题的完整路径）
         List<ChunkPiece> pieces = new ArrayList<>();
         StringBuilder window = new StringBuilder();
-        String prevTitle = inheritTitle;
+        List<String> prevStack = inheritStack == null ? new ArrayList<>() : new ArrayList<>(inheritStack);
         for (String seg : segs) {
             if (window.length() > 0 && window.length() + seg.length() > max) {
-                prevTitle = flush(pieces, window, ov, prevTitle, pageNum);
+                prevStack = flush(pieces, window, ov, prevStack, pageNum);
             }
             window.append(seg).append('\n');
         }
-        prevTitle = flush(pieces, window, ov, prevTitle, pageNum);
-        return new SplitResult(pieces, window.toString().trim(), prevTitle);
+        prevStack = flush(pieces, window, ov, prevStack, pageNum);
+        return new SplitResult(pieces, window.toString().trim(), prevStack);
     }
 
     /** 递归切分：选当前文本中优先级最高的分隔符切分，超长片段用更低优先级分隔符继续递归 */
@@ -175,33 +175,30 @@ public final class RecursiveChunkSplitter {
 
     /**
      * 输出当前窗口为一块，并保留尾部 overlap 字符作为下一块前缀。
-     * 块标题：取块内第一个标题用于展示；块内最后一个标题用于后续块继承（无标题块继承前置标题）。
+     * 块标题：按行扫描块内所有标题（见 {@link Headings}）更新祖先栈，
+     * 块 title = 栈的完整路径（无标题块继承前置栈）；返回块内最后栈供后续块/下页继承。
      *
-     * @return 供后续块继承的标题
+     * @return 供后续块继承的标题栈
      */
-    private static String flush(List<ChunkPiece> result, StringBuilder window, int overlap,
-                                String prevTitle, int pageNum) {
+    private static List<String> flush(List<ChunkPiece> result, StringBuilder window, int overlap,
+                                      List<String> prevStack, int pageNum) {
         if (window.length() == 0) {
-            return prevTitle;
+            return prevStack;
         }
         String block = window.toString().trim();
-        String blockTitle = null;
-        String inheritTitle = prevTitle;
+        List<String> stack = prevStack == null ? new ArrayList<>() : new ArrayList<>(prevStack);
         if (!block.isEmpty()) {
-            Matcher m = HEADING_LINE.matcher(block);
-            boolean first = true;
-            while (m.find()) {
-                String t = m.group().replaceFirst("^#{1,6}\\s+", "").trim();
-                if (first) {
-                    blockTitle = t;
-                    first = false;
+            for (String line : block.split("\\r?\\n")) {
+                String t = line.trim();
+                if (t.isEmpty()) {
+                    continue;
                 }
-                inheritTitle = t;
+                Headings.Heading h = Headings.parse(t);
+                if (h != null) {
+                    stack = Headings.apply(stack, h);
+                }
             }
-            if (blockTitle == null) {
-                blockTitle = prevTitle;
-            }
-            result.add(new ChunkPiece(block, pageNum, blockTitle));
+            result.add(new ChunkPiece(block, pageNum, Headings.path(stack)));
         }
         String tail = "";
         if (overlap > 0 && window.length() > overlap) {
@@ -211,16 +208,15 @@ public final class RecursiveChunkSplitter {
         if (!tail.isEmpty()) {
             window.append(tail).append('\n');
         }
-        return inheritTitle;
+        return List.copyOf(stack);
     }
 
-    /** 文本首个非空行是否为 Markdown 标题 */
+    /** 文本首个非空行是否为标题行（标题开头时丢弃跨页 carry） */
     private static boolean startsWithHeading(String text) {
         Matcher m = FIRST_LINE.matcher(text);
         if (!m.find()) {
             return false;
         }
-        String first = m.group(1).trim();
-        return first.startsWith("#") && first.matches("^#{1,6}\\s+\\S.*$");
+        return Headings.parse(m.group(1).trim()) != null;
     }
 }

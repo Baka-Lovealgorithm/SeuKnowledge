@@ -144,17 +144,18 @@ public class DocumentParserService {
         ordered.sort(Comparator.comparingInt(LlamaParseService.PageMarkdown::pageNumber));
         List<ChunkPiece> pieces = new ArrayList<>();
         String[] carry = new String[1];
-        String[] inheritTitle = new String[1];
+        // 跨页标题祖先栈（section_path）继承：上一页末栈传给下一页无标题块
+        List<String>[] inheritStack = new List[1];
         for (LlamaParseService.PageMarkdown page : ordered) {
             if (page.markdown() == null || page.markdown().isBlank()) {
                 continue;
             }
             RecursiveChunkSplitter.SplitResult sr = RecursiveChunkSplitter.splitWithCarry(
-                    page.markdown(), page.pageNumber(), chunkSize, chunkOverlap, carry[0], inheritTitle[0]);
+                    page.markdown(), page.pageNumber(), chunkSize, chunkOverlap, carry[0], inheritStack[0]);
             pieces.addAll(sr.pieces());
             carry[0] = sr.carryOut().isEmpty() ? null : sr.carryOut();
-            if (sr.lastTitle() != null && !sr.lastTitle().isBlank()) {
-                inheritTitle[0] = sr.lastTitle();
+            if (sr.lastStack() != null && !sr.lastStack().isEmpty()) {
+                inheritStack[0] = sr.lastStack();
             }
         }
         return pieces;
