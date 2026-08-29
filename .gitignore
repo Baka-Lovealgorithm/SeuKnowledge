@@ -51,6 +51,7 @@ ZRDDS产品资料/
 ### 本机本地配置 ###
 .claude/
 .opensquilla/
+.dsh/
 
 ### 本地开发环境配置（含本机 MySQL/Redis 密码与内网 ES 地址，不入库）###
 src/main/resources/application-dev.yml
