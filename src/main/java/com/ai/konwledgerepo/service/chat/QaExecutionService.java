@@ -16,6 +16,7 @@ import com.ai.konwledgerepo.graph.QaContextKey;
 import com.ai.konwledgerepo.graph.QaGraphRunner;
 import com.ai.konwledgerepo.service.agent.AgentService;
 import com.ai.konwledgerepo.service.knowledgebase.KnowledgeBaseService;
+import com.ai.konwledgerepo.service.workspace.WorkspaceAccess;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -39,6 +40,7 @@ public class QaExecutionService {
     private final QaGraphRunner qaGraphRunner;
     private final SessionTitleService titleService;
     private final TaskLock taskLock;
+    private final WorkspaceAccess workspaceAccess;
     private final Duration lockTtl;
     private final int maxRetry;
     private final int messageWindow;
@@ -52,6 +54,7 @@ public class QaExecutionService {
                               QaGraphRunner qaGraphRunner,
                               SessionTitleService titleService,
                               TaskLock taskLock,
+                              WorkspaceAccess workspaceAccess,
                               SeuQaProperties qaProps) {
         this.sessionService = sessionService;
         this.historyService = historyService;
@@ -62,6 +65,7 @@ public class QaExecutionService {
         this.qaGraphRunner = qaGraphRunner;
         this.titleService = titleService;
         this.taskLock = taskLock;
+        this.workspaceAccess = workspaceAccess;
         this.lockTtl = Duration.ofSeconds(Math.max(60, qaProps.qaTimeoutSeconds() + 60));
         this.maxRetry = qaProps.maxRetry();
         this.messageWindow = qaProps.messageWindow();
@@ -82,6 +86,8 @@ public class QaExecutionService {
         try {
             ChatSession session = sessionService.getSession(sessionId, userId, workspaceId);
             KnowledgeBase kb = kbService.getEntityCached(session.getKbId());
+            // RESTRICTED 知识库：提问前校验当前用户可见（读语义；权限被收回后历史会话亦不可继续提问）
+            workspaceAccess.requireKbAccess(kb.getId(), workspaceId, userId, false);
             if (!kb.isActive()) {
                 throw new BizException("知识库已停用，无法问答");
             }

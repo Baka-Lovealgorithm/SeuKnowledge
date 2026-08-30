@@ -8,16 +8,24 @@ import com.ai.konwledgerepo.dto.KbCreateRequest;
 import com.ai.konwledgerepo.dto.KbResponse;
 import com.ai.konwledgerepo.dto.KbSnapshot;
 import com.ai.konwledgerepo.dto.KbUpdateRequest;
+import com.ai.konwledgerepo.entity.KbAccess;
 import com.ai.konwledgerepo.entity.KbStatus;
+import com.ai.konwledgerepo.entity.KbVisibility;
 import com.ai.konwledgerepo.entity.KnowledgeBase;
+import com.ai.konwledgerepo.entity.WorkspaceMember;
 import com.ai.konwledgerepo.repository.DocumentRepository;
+import com.ai.konwledgerepo.repository.KbAccessRepository;
 import com.ai.konwledgerepo.repository.KnowledgeBaseRepository;
+import com.ai.konwledgerepo.repository.WorkspaceMemberRepository;
+import com.ai.konwledgerepo.security.Roles;
 import com.ai.konwledgerepo.service.workspace.WorkspaceAccess;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 知识库业务：CRUD 与状态流转。
@@ -32,6 +40,8 @@ public class KnowledgeBaseService {
     private final DocumentRepository documentRepository;
     private final RedisCacheService redisCacheService;
     private final WorkspaceAccess workspaceAccess;
+    private final KbAccessRepository accessRepository;
+    private final WorkspaceMemberRepository memberRepository;
     private final Duration kbTtl;
     private final Duration kbCountTtl;
     private final Duration kbListTtl;
@@ -40,11 +50,15 @@ public class KnowledgeBaseService {
                                 DocumentRepository documentRepository,
                                 RedisCacheService redisCacheService,
                                 WorkspaceAccess workspaceAccess,
+                                KbAccessRepository accessRepository,
+                                WorkspaceMemberRepository memberRepository,
                                 SeuCacheProperties cacheProps) {
         this.kbRepository = kbRepository;
         this.documentRepository = documentRepository;
         this.redisCacheService = redisCacheService;
         this.workspaceAccess = workspaceAccess;
+        this.accessRepository = accessRepository;
+        this.memberRepository = memberRepository;
         this.kbTtl = Duration.ofSeconds(cacheProps.kbTtlSeconds());
         this.kbCountTtl = Duration.ofSeconds(cacheProps.kbCountTtlSeconds());
         this.kbListTtl = Duration.ofSeconds(cacheProps.kbListTtlSeconds());
@@ -61,19 +75,43 @@ public class KnowledgeBaseService {
         }
     }
 
-    /** 当前工作空间下的未归档知识库（列表缓存 kb:list:{workspaceId}，TTL 60s） */
-    public List<KbResponse> list(Long workspaceId) {
+    /**
+     * 当前工作空间下的未归档知识库（列表缓存 kb:list:{workspaceId}，TTL 60s）。
+     * 可见性过滤：OWNER/ADMIN 与知识库创建者可见全部；普通成员仅见 PUBLIC 与
+     * 已授权（kb_access）的 RESTRICTED 知识库——"看不见"的知识库不出现在列表。
+     */
+    public List<KbResponse> list(Long workspaceId, Long userId) {
         List<KbResponse> cached = redisCacheService.get(RedisKeys.kbList(workspaceId),
                 new com.fasterxml.jackson.core.type.TypeReference<List<KbResponse>>() {
                 }).orElse(null);
         if (cached != null) {
-            return cached;
+            return filterVisible(cached, workspaceId, userId);
         }
         List<KbResponse> result = kbRepository.findByWorkspaceIdAndArchivedFalseOrderByIdDesc(workspaceId).stream()
                 .map(this::toResponse)
                 .toList();
         redisCacheService.set(RedisKeys.kbList(workspaceId), result, kbListTtl);
-        return result;
+        return filterVisible(result, workspaceId, userId);
+    }
+
+    /** 按用户过滤可见知识库：管理员/创建者全量；其余剔除未授权的 RESTRICTED 库 */
+    private List<KbResponse> filterVisible(List<KbResponse> all, Long workspaceId, Long userId) {
+        if (userId == null) {
+            return all;
+        }
+        String role = memberRepository.findByWorkspaceIdAndUserId(workspaceId, userId)
+                .map(WorkspaceMember::getRole).orElse(null);
+        if (Roles.OWNER.equals(role) || Roles.ADMIN.equals(role)) {
+            return all;
+        }
+        Set<Long> granted = accessRepository.findByGranteeTypeAndGranteeId("USER", userId).stream()
+                .map(KbAccess::getKbId)
+                .collect(Collectors.toSet());
+        return all.stream()
+                .filter(kb -> !KbVisibility.isRestricted(kb.visibility())
+                        || granted.contains(kb.id())
+                        || (kb.createdBy() != null && kb.createdBy().equals(userId)))
+                .toList();
     }
 
     public KbResponse create(KbCreateRequest request, Long userId, Long workspaceId) {
@@ -81,6 +119,7 @@ public class KnowledgeBaseService {
         kb.setName(request.name());
         kb.setDescription(request.description());
         kb.setStatus(KbStatus.DRAFT.value());
+        kb.setVisibility(KbVisibility.PUBLIC.value());
         kb.setCreatedBy(userId);
         kb.setWorkspaceId(workspaceId);
         kbRepository.save(kb);
@@ -97,11 +136,13 @@ public class KnowledgeBaseService {
         return toResponse(kb);
     }
 
-    /** 删除 = 归档 */
+    /** 删除 = 归档；级联清理知识库授权记录（ACL，派生删除需事务） */
+    @Transactional
     public void delete(Long id, Long workspaceId) {
         KnowledgeBase kb = getInWorkspace(id, workspaceId);
         kb.setArchived(true);
         kbRepository.save(kb);
+        accessRepository.deleteByKbId(id);
         evictKbCache(id, workspaceId);
     }
 
@@ -139,6 +180,7 @@ public class KnowledgeBaseService {
             kb.setStatus(cached.status());
             kb.setArchived(cached.archived());
             kb.setWorkspaceId(cached.workspaceId());
+            kb.setVisibility(cached.visibility());
             return kb;
         }
         KnowledgeBase kb = getEntity(id);
@@ -155,7 +197,9 @@ public class KnowledgeBaseService {
                 kb.getStatus(),
                 kb.getArchived(),
                 docCount,
-                kb.getCreatedAt());
+                kb.getCreatedAt(),
+                kb.getVisibility(),
+                kb.getCreatedBy());
     }
 
     /** 知识库文档计数（Redis 缓存 kb:count:{kbId}，TTL 300s；文档上传/删除后由 DocumentService 失效） */

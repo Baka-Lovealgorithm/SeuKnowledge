@@ -59,9 +59,9 @@ public class ChatSessionService {
         this.sessionTtl = Duration.ofSeconds(cacheProps.sessionTtlSeconds());
     }
 
-    /** 创建会话：校验知识库属于当前工作空间 */
+    /** 创建会话：校验知识库属于当前工作空间且用户可读（RESTRICTED 库需 VIEW 授权） */
     public ChatSession createSession(Long kbId, Long userId, Long workspaceId) {
-        kbService.getInWorkspace(kbId, workspaceId);
+        workspaceAccess.requireKbAccess(kbId, workspaceId, userId, false);
         ChatSession session = new ChatSession();
         session.setKbId(kbId);
         session.setUserId(userId);

@@ -59,7 +59,10 @@ class BusinessKnowledgeServiceTest {
         when(kbRepo.findById(1L)).thenReturn(Optional.of(kb));
         when(kbService.getEntity(1L)).thenReturn(kb);
         service = new BusinessKnowledgeService(repo, kbService, docRepo, sourceIndexer,
-                new WorkspaceAccess(kbRepo, docRepo), new ObjectMapper(), txOps);
+                new WorkspaceAccess(kbRepo, docRepo,
+                        mock(com.ai.konwledgerepo.repository.KbAccessRepository.class),
+                        mock(com.ai.konwledgerepo.repository.WorkspaceMemberRepository.class)),
+                new ObjectMapper(), txOps);
     }
 
     private BusinessKnowledgeRequest req() {

@@ -11,7 +11,11 @@ export const kbApi = {
   create: (data) => http.post('/kb', data),
   update: (id, data) => http.put(`/kb/${id}`, data),
   remove: (id) => http.delete(`/kb/${id}`),
-  updateStatus: (id, status) => http.patch(`/kb/${id}/status`, null, { params: { status } })
+  updateStatus: (id, status) => http.patch(`/kb/${id}/status`, null, { params: { status } }),
+  accessList: (id) => http.get(`/kb/${id}/access`),
+  accessGrant: (id, data) => http.post(`/kb/${id}/access`, data),
+  accessRevoke: (id, accessId) => http.delete(`/kb/${id}/access/${accessId}`),
+  setVisibility: (id, visibility) => http.patch(`/kb/${id}/access/visibility`, null, { params: { visibility } })
 }
 
 export const docApi = {

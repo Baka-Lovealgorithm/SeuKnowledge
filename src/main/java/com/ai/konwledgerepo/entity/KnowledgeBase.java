@@ -24,6 +24,10 @@ public class KnowledgeBase extends BaseEntity {
     @Column(nullable = false)
     private Boolean archived = false;
 
+    /** 可见性：PUBLIC（默认）/ RESTRICTED（仅授权用户可见） */
+    @Column(nullable = false, length = 10)
+    private String visibility = KbVisibility.PUBLIC.value();
+
     @Column(name = "created_by")
     private Long createdBy;
 
@@ -61,6 +65,14 @@ public class KnowledgeBase extends BaseEntity {
 
     public void setArchived(Boolean archived) {
         this.archived = archived;
+    }
+
+    public String getVisibility() {
+        return visibility;
+    }
+
+    public void setVisibility(String visibility) {
+        this.visibility = visibility;
     }
 
     public Long getCreatedBy() {

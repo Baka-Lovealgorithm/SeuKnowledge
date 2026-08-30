@@ -20,7 +20,9 @@ import com.ai.konwledgerepo.graph.QaGraphRunner;
 import com.ai.konwledgerepo.repository.ChatMessageRepository;
 import com.ai.konwledgerepo.repository.ChatSessionRepository;
 import com.ai.konwledgerepo.repository.DocumentRepository;
+import com.ai.konwledgerepo.repository.KbAccessRepository;
 import com.ai.konwledgerepo.repository.KnowledgeBaseRepository;
+import com.ai.konwledgerepo.repository.WorkspaceMemberRepository;
 import com.ai.konwledgerepo.service.agent.AgentService;
 import com.ai.konwledgerepo.service.knowledgebase.KnowledgeBaseService;
 import com.ai.konwledgerepo.service.workspace.WorkspaceAccess;
@@ -101,8 +103,9 @@ class ChatServiceTest {
         SeuQaProperties qaProps = new SeuQaProperties(20, 2, 32, 30, true, false, false, 0.4, false, 60, 200);
         SeuCacheProperties cacheProps =
                 new SeuCacheProperties(300, 600, 600, 300, 300, 60, 60, 600, 86400);
-        // WorkspaceAccess 用真实实例（requireBelongs 不触库），保证跨空间越权用例仍走真实归属校验
-        WorkspaceAccess workspaceAccess = new WorkspaceAccess(kbRepository, mock(DocumentRepository.class));
+        // WorkspaceAccess 用真实实例（归属校验走真实逻辑），ACL 仓库与成员仓库 mock 空授权（PUBLIC 库不受影响）
+        WorkspaceAccess workspaceAccess = new WorkspaceAccess(kbRepository, mock(DocumentRepository.class),
+                mock(KbAccessRepository.class), mock(WorkspaceMemberRepository.class));
         ChatSessionService sessionService = new ChatSessionService(
                 sessionRepository, messageRepository, kbRepository, kbService, workspaceAccess, redisCacheService, cacheProps);
         ChatHistoryService historyService = new ChatHistoryService(messageRepository, redisCacheService, qaProps, cacheProps);
@@ -114,7 +117,7 @@ class ChatServiceTest {
         when(taskLock.tryAcquire(anyString(), any())).thenReturn(true);
         QaExecutionService executionService = new QaExecutionService(
                 sessionService, historyService, summaryService, messageStore, kbService, agentService, qaGraphRunner,
-                titleService, taskLock, qaProps);
+                titleService, taskLock, workspaceAccess, qaProps);
         QaAnswerService answerService = new QaAnswerService(executionService);
         ChatStreamService streamService = new ChatStreamService(
                 executionService, sessionService, messageStore, summaryService);
@@ -170,6 +173,8 @@ class ChatServiceTest {
         // 落库悲观锁查询桩：返回同一实例，保持既有断言（messageCount/标题）针对同一对象
         when(sessionRepository.findByIdForUpdate(SESSION_ID)).thenReturn(Optional.of(session));
         when(kbService.getEntityCached(KB_ID)).thenReturn(kb);
+        // QaExecutionService 问答入口走 workspaceAccess.requireKbAccess（归属 + ACL），需 kb 实体存在
+        when(kbRepository.findById(KB_ID)).thenReturn(Optional.of(kb));
         when(agentService.toAgentConfig(KB_ID, kb.getName(), 2, 20)).thenReturn(AGENT);
         when(redisCacheService.get(eq(RedisKeys.history(SESSION_ID)), any(TypeReference.class)))
                 .thenReturn(Optional.empty());
@@ -181,11 +186,12 @@ class ChatServiceTest {
 
     @Test
     void createSession_validatesKbAndSaves() {
-        when(kbService.getInWorkspace(KB_ID, WS_ID)).thenReturn(kb(KB_ID, "测试库", WS_ID));
+        // createSession 走 workspaceAccess.requireKbAccess（归属 + ACL）：mock kb 存在（PUBLIC 默认放行）
+        KnowledgeBase kb = kb(KB_ID, "测试库", WS_ID);
+        when(kbRepository.findById(KB_ID)).thenReturn(Optional.of(kb));
 
         ChatSession saved = service.createSession(KB_ID, USER_ID, WS_ID);
 
-        verify(kbService).getInWorkspace(KB_ID, WS_ID);
         assertEquals("新会话", saved.getTitle());
         assertEquals(Boolean.TRUE, saved.getTitleAuto());
         assertEquals(0, saved.getMessageCount());

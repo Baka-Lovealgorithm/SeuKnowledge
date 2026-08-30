@@ -42,39 +42,43 @@ public class DocumentController {
                                                       @RequestParam(value = "replace", defaultValue = "false") boolean replace,
                                                       @RequestAttribute("userId") Long userId,
                                                       @RequestAttribute("workspaceId") Long workspaceId) {
-        workspaceAccess.requireKb(kbId, workspaceId);
+        workspaceAccess.requireKbAccess(kbId, workspaceId, userId, true);
         List<Document> saved = documentService.upload(kbId, files, userId, replace);
         return ApiResponse.ok(saved.stream().map(DocumentResponse::from).toList());
     }
 
     @GetMapping("/kb/{kbId}/documents")
     public ApiResponse<List<DocumentResponse>> list(@PathVariable Long kbId,
+                                                    @RequestAttribute("userId") Long userId,
                                                     @RequestAttribute("workspaceId") Long workspaceId) {
-        workspaceAccess.requireKb(kbId, workspaceId);
+        workspaceAccess.requireKbAccess(kbId, workspaceId, userId, false);
         return ApiResponse.ok(documentService.list(kbId));
     }
 
     @DeleteMapping("/documents/{id}")
     @EditorOrAbove
     public ApiResponse<Void> delete(@PathVariable Long id,
+                                    @RequestAttribute("userId") Long userId,
                                     @RequestAttribute("workspaceId") Long workspaceId) {
-        workspaceAccess.requireDoc(id, workspaceId);
+        workspaceAccess.requireDocAccess(id, workspaceId, userId, true);
         documentService.delete(id);
         return ApiResponse.ok();
     }
 
     @GetMapping("/documents/{id}/chunks")
     public ApiResponse<List<ChunkResponse>> chunks(@PathVariable Long id,
+                                                   @RequestAttribute("userId") Long userId,
                                                    @RequestAttribute("workspaceId") Long workspaceId) {
-        workspaceAccess.requireDoc(id, workspaceId);
+        workspaceAccess.requireDocAccess(id, workspaceId, userId, false);
         return ApiResponse.ok(documentService.chunks(id));
     }
 
     @PostMapping("/documents/{id}/retry")
     @EditorOrAbove
     public ApiResponse<Void> retry(@PathVariable Long id,
+                                   @RequestAttribute("userId") Long userId,
                                    @RequestAttribute("workspaceId") Long workspaceId) {
-        workspaceAccess.requireDoc(id, workspaceId);
+        workspaceAccess.requireDocAccess(id, workspaceId, userId, true);
         documentService.retry(id);
         return ApiResponse.ok();
     }

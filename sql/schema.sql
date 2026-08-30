@@ -20,8 +20,20 @@ CREATE DATABASE IF NOT EXISTS seuknowledge DEFAULT CHARACTER SET utf8mb4 COLLATE
 USE seuknowledge;
 
 -- ============================================================================
--- 表结构（13 张）
+-- 表结构（14 张）
 -- ============================================================================
+
+CREATE TABLE IF NOT EXISTS kb_access (
+    created_at datetime(6),
+    id bigint not null auto_increment,
+    updated_at datetime(6),
+    created_by bigint,
+    kb_id bigint not null,
+    grantee_type varchar(10) not null,
+    grantee_id bigint not null,
+    permission varchar(10) not null,
+    primary key (id)
+) engine=InnoDB;
 
 CREATE TABLE IF NOT EXISTS kb_agent (
     max_retry integer,
@@ -150,6 +162,7 @@ CREATE TABLE IF NOT EXISTS kb_knowledge_base (
     updated_at datetime(6),
     workspace_id bigint,
     status varchar(20) not null,
+    visibility varchar(10) not null,
     name varchar(128) not null,
     description varchar(500),
     primary key (id)

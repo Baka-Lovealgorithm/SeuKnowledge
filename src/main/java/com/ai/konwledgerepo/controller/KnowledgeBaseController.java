@@ -24,7 +24,8 @@ import java.util.List;
 
 /**
  * 知识库管理接口。
- * 读：MEMBER+（工作空间内所有知识库只读）；写（增删改/状态）：EDITOR+。
+ * 读：MEMBER+（可见性过滤在 Service.list：RESTRICTED 仅授权用户/创建者/管理员可见）；
+ * 写（增删改/状态）：EDITOR+ 且 RESTRICTED 库需 EDIT 授权。
  */
 @RestController
 @RequestMapping("/api/kb")
@@ -32,15 +33,20 @@ public class KnowledgeBaseController {
 
     private final KnowledgeBaseService kbService;
     private final KnowledgeBaseContentService contentService;
+    private final com.ai.konwledgerepo.service.workspace.WorkspaceAccess workspaceAccess;
 
-    public KnowledgeBaseController(KnowledgeBaseService kbService, KnowledgeBaseContentService contentService) {
+    public KnowledgeBaseController(KnowledgeBaseService kbService,
+                                   KnowledgeBaseContentService contentService,
+                                   com.ai.konwledgerepo.service.workspace.WorkspaceAccess workspaceAccess) {
         this.kbService = kbService;
         this.contentService = contentService;
+        this.workspaceAccess = workspaceAccess;
     }
 
     @GetMapping
-    public ApiResponse<List<KbResponse>> list(@RequestAttribute("workspaceId") Long workspaceId) {
-        return ApiResponse.ok(kbService.list(workspaceId));
+    public ApiResponse<List<KbResponse>> list(@RequestAttribute("workspaceId") Long workspaceId,
+                                              @RequestAttribute("userId") Long userId) {
+        return ApiResponse.ok(kbService.list(workspaceId, userId));
     }
 
     @PostMapping
@@ -55,14 +61,18 @@ public class KnowledgeBaseController {
     @EditorOrAbove
     public ApiResponse<KbResponse> update(@PathVariable Long id,
                                           @RequestBody @Valid KbUpdateRequest request,
+                                          @RequestAttribute("userId") Long userId,
                                           @RequestAttribute("workspaceId") Long workspaceId) {
+        workspaceAccess.requireKbAccess(id, workspaceId, userId, true);
         return ApiResponse.ok(kbService.update(id, request, workspaceId));
     }
 
     @DeleteMapping("/{id}")
     @EditorOrAbove
     public ApiResponse<Void> delete(@PathVariable Long id,
+                                    @RequestAttribute("userId") Long userId,
                                     @RequestAttribute("workspaceId") Long workspaceId) {
+        workspaceAccess.requireKbAccess(id, workspaceId, userId, true);
         kbService.delete(id, workspaceId);
         return ApiResponse.ok();
     }
@@ -71,14 +81,18 @@ public class KnowledgeBaseController {
     @EditorOrAbove
     public ApiResponse<KbResponse> updateStatus(@PathVariable Long id,
                                                 @RequestParam String status,
+                                                @RequestAttribute("userId") Long userId,
                                                 @RequestAttribute("workspaceId") Long workspaceId) {
+        workspaceAccess.requireKbAccess(id, workspaceId, userId, true);
         return ApiResponse.ok(kbService.updateStatus(id, status, workspaceId));
     }
 
     @DeleteMapping("/{id}/content")
     @EditorOrAbove
     public ApiResponse<Void> clearContent(@PathVariable Long id,
+                                          @RequestAttribute("userId") Long userId,
                                           @RequestAttribute("workspaceId") Long workspaceId) {
+        workspaceAccess.requireKbAccess(id, workspaceId, userId, true);
         contentService.clearContent(id, workspaceId);
         return ApiResponse.ok();
     }

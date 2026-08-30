@@ -44,7 +44,9 @@ class ModelConfigServiceTest {
         factory = mock(ModelFactory.class);
         // WorkspaceAccess 用真实实例（requireBelongs 不触库），跨空间越权用例走真实归属校验
         service = new ModelConfigService(repo, factory,
-                new WorkspaceAccess(mock(KnowledgeBaseRepository.class), mock(DocumentRepository.class)));
+                new WorkspaceAccess(mock(KnowledgeBaseRepository.class), mock(DocumentRepository.class),
+                        mock(com.ai.konwledgerepo.repository.KbAccessRepository.class),
+                        mock(com.ai.konwledgerepo.repository.WorkspaceMemberRepository.class)));
     }
 
     private ModelConfig cfg(long id, long workspaceId) {
