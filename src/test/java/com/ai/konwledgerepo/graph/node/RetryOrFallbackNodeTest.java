@@ -120,7 +120,7 @@ class RetryOrFallbackNodeTest {
 
     @Test
     void agentThresholdOverride_applied() throws Exception {
-        AgentConfig agent = new AgentConfig("测试Agent", "系统提示", 5, 0.5, 3, 5);
+        AgentConfig agent = new AgentConfig("测试Agent", "系统提示", 0.5, 3, 5);
         Map<String, Object> data = new HashMap<>();
         data.put(QaContextKey.CHUNKS, List.of(ev()));
         data.put(QaContextKey.VERIFY_SCORE, 0.5);
@@ -135,7 +135,7 @@ class RetryOrFallbackNodeTest {
 
     @Test
     void agentThreshold_lowScore_retryExhausted_refuses() throws Exception {
-        AgentConfig agent = new AgentConfig("测试Agent", "系统提示", 5, 0.8, 1, 5);
+        AgentConfig agent = new AgentConfig("测试Agent", "系统提示", 0.8, 1, 5);
         Map<String, Object> data = new HashMap<>();
         data.put(QaContextKey.CHUNKS, List.of(ev()));
         data.put(QaContextKey.VERIFY_SCORE, 0.5);

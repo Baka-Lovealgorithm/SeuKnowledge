@@ -27,7 +27,8 @@ import java.util.Optional;
  * CHUNK（文档 chunk）取 top {chunk-top}，业务知识+问答对合并取 top {other-top}，合并为最终证据。
  * 重排模型按当前工作空间从模型配置体系解析（kb_model_config model_type=RERANK，DASHSCOPE / OpenAI 兼容）；
  * 未配置 / 编码器异常 / 超时时自动降级：按 ES 分同配额截断，保证问答链路可用。
- * 自引入交叉编码器后不再使用 agent.topN 全局截断与来源权重（权重机制已废弃）。
+ * 条数与来源配额来自全局配置 seuknowledge.rerank.*（Agent 不再提供 topN 与来源权重，
+ * 权重机制已废弃并随 agent 表字段一并移除）。
  */
 @Component
 public class RerankNode extends QaNodeSupport {

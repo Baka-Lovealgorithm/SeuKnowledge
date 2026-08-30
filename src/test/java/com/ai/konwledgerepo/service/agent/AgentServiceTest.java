@@ -41,8 +41,6 @@ class AgentServiceTest {
         assertEquals(1L, agent.getKbId());
         assertEquals("默认 Agent", agent.getName());
         assertNotNull(agent.getSystemPrompt());
-        assertEquals(5, agent.getTopK());
-        assertEquals(1.2, agent.getBusinessWeight());
     }
 
     @Test
@@ -52,17 +50,14 @@ class AgentServiceTest {
         existing.setKbId(1L);
         existing.setName("旧名");
         existing.setSystemPrompt("旧提示词");
-        existing.setTopK(5);
         when(repo.findByKbId(1L)).thenReturn(Optional.of(existing));
         when(repo.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
         AgentResponse resp = service.update(1L, "测试库",
-                new AgentRequest("新名", null, "新提示词", null, null, 0.3, null, null, null, null, null));
+                new AgentRequest("新名", null, "新提示词", 0.3, null, null));
         assertEquals("新名", resp.name());
         assertEquals("新提示词", resp.systemPrompt());
         assertEquals(0.3, resp.verifyThreshold());
-        // 未传字段保留原值（update 原地修改同一实体）
-        assertEquals(5, resp.topK());
         assertEquals("新名", existing.getName());
     }
 
@@ -72,7 +67,6 @@ class AgentServiceTest {
 
         AgentConfig config = service.toAgentConfig(2L, "测试库", 3, 40);
         assertEquals("默认 Agent", config.name());
-        assertEquals(5, config.topK());
         assertEquals(0.7, config.verifyThreshold());
         assertEquals(3, config.maxRetry(), "maxRetry 应回退全局默认");
         assertEquals(40, config.memoryWindow(), "memoryWindow 应回退全局默认");
@@ -85,8 +79,6 @@ class AgentServiceTest {
         agent.setKbId(3L);
         agent.setName("专属 Agent");
         agent.setSystemPrompt("自定义");
-        agent.setTopK(8);
-        agent.setTopN(3);
         agent.setVerifyThreshold(0.7);
         agent.setMaxRetry(1);
         agent.setMemoryWindow(10);
@@ -94,7 +86,6 @@ class AgentServiceTest {
 
         AgentConfig config = service.toAgentConfig(3L, "测试库", 3, 40);
         assertEquals("专属 Agent", config.name());
-        assertEquals(8, config.topK());
         assertEquals(0.7, config.verifyThreshold());
         assertEquals(1, config.maxRetry());
         assertEquals(10, config.memoryWindow());

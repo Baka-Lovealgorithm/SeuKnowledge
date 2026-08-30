@@ -51,14 +51,9 @@ public class AgentService {
             agent.setName(Defaults.DEFAULT_AGENT_NAME);
             agent.setDescription("知识库「" + kbName + "」的默认问答 Agent");
             agent.setSystemPrompt(defaultSystemPrompt(kbName));
-            agent.setTopK(5);
-            agent.setTopN(5);
             agent.setVerifyThreshold(0.7);
             agent.setMaxRetry(2);
             agent.setMemoryWindow(20);
-            agent.setChunkWeight(1.0);
-            agent.setBusinessWeight(1.2);
-            agent.setQaWeight(1.2);
             Agent saved = repository.save(agent);
             evictAgentConfig(kbId);
             return saved;
@@ -69,7 +64,7 @@ public class AgentService {
         return toResponse(getOrCreate(kbId, kbName));
     }
 
-    /** 更新 Agent 配置：null 字段保留原值，支持动态修改提示词与检索/记忆策略。 */
+    /** 更新 Agent 配置：null 字段保留原值，支持动态修改提示词与答案/记忆策略。 */
     @Transactional
     public AgentResponse update(Long kbId, String kbName, AgentRequest request) {
         Agent agent = getOrCreate(kbId, kbName);
@@ -82,12 +77,6 @@ public class AgentService {
         if (request.systemPrompt() != null) {
             agent.setSystemPrompt(request.systemPrompt());
         }
-        if (request.topK() != null) {
-            agent.setTopK(request.topK());
-        }
-        if (request.topN() != null) {
-            agent.setTopN(request.topN());
-        }
         if (request.verifyThreshold() != null) {
             agent.setVerifyThreshold(request.verifyThreshold());
         }
@@ -96,15 +85,6 @@ public class AgentService {
         }
         if (request.memoryWindow() != null) {
             agent.setMemoryWindow(request.memoryWindow());
-        }
-        if (request.chunkWeight() != null) {
-            agent.setChunkWeight(request.chunkWeight());
-        }
-        if (request.businessWeight() != null) {
-            agent.setBusinessWeight(request.businessWeight());
-        }
-        if (request.qaWeight() != null) {
-            agent.setQaWeight(request.qaWeight());
         }
         repository.save(agent);
         evictAgentConfig(kbId);
@@ -129,13 +109,12 @@ public class AgentService {
     private AgentConfig resolveToAgentConfig(Long kbId, String kbName, int defaultMaxRetry, int defaultMemoryWindow) {
         Agent agent = repository.findByKbId(kbId).orElse(null);
         if (agent == null) {
-            return new AgentConfig(Defaults.DEFAULT_AGENT_NAME, defaultSystemPrompt(kbName), 5, 0.7,
+            return new AgentConfig(Defaults.DEFAULT_AGENT_NAME, defaultSystemPrompt(kbName), 0.7,
                     defaultMaxRetry, defaultMemoryWindow);
         }
         return new AgentConfig(
                 agent.getName(),
                 blankTo(agent.getSystemPrompt(), defaultSystemPrompt(kbName)),
-                nz(agent.getTopK(), 5),
                 agent.getVerifyThreshold() == null ? 0.7 : agent.getVerifyThreshold(),
                 nz(agent.getMaxRetry(), defaultMaxRetry),
                 nz(agent.getMemoryWindow(), defaultMemoryWindow));
@@ -148,9 +127,8 @@ public class AgentService {
 
     private AgentResponse toResponse(Agent agent) {
         return new AgentResponse(agent.getId(), agent.getKbId(), agent.getName(), agent.getDescription(),
-                agent.getSystemPrompt(), agent.getTopK(), agent.getTopN(), agent.getVerifyThreshold(),
-                agent.getMaxRetry(), agent.getMemoryWindow(), agent.getChunkWeight(),
-                agent.getBusinessWeight(), agent.getQaWeight(), agent.getCreatedAt());
+                agent.getSystemPrompt(), agent.getVerifyThreshold(),
+                agent.getMaxRetry(), agent.getMemoryWindow(), agent.getCreatedAt());
     }
 
     private static String blankTo(String s, String fallback) {

@@ -24,13 +24,8 @@ USE seuknowledge;
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS kb_agent (
-    business_weight float(53),
-    chunk_weight float(53),
     max_retry integer,
     memory_window integer,
-    qa_weight float(53),
-    top_k integer,
-    top_n integer,
     verify_threshold float(53),
     created_at datetime(6),
     created_by bigint,

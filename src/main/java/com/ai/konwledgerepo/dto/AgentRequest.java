@@ -14,12 +14,7 @@ public record AgentRequest(
 
         String systemPrompt,
 
-        Integer topK,
-        Integer topN,
         Double verifyThreshold,
         Integer maxRetry,
-        Integer memoryWindow,
-        Double chunkWeight,
-        Double businessWeight,
-        Double qaWeight) {
+        Integer memoryWindow) {
 }

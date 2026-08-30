@@ -24,23 +24,6 @@
         <div class="tip">动态修改提示词即刻生效于后续问答；留空使用默认提示词。</div>
       </el-form-item>
 
-      <el-divider content-position="left">检索策略</el-divider>
-      <el-form-item label="召回条数（TopK）">
-        <el-input-number v-model="form.topK" :min="1" :max="20" /> <span class="tip">每个候选查询每源召回的条数</span>
-      </el-form-item>
-      <el-form-item label="证据条数（TopN）">
-        <el-input-number v-model="form.topN" :min="1" :max="20" /> <span class="tip">重排后作为答案证据的条数</span>
-      </el-form-item>
-      <el-form-item label="文档权重">
-        <el-input-number v-model="form.chunkWeight" :min="0" :max="5" :step="0.1" />
-      </el-form-item>
-      <el-form-item label="业务知识权重">
-        <el-input-number v-model="form.businessWeight" :min="0" :max="5" :step="0.1" />
-      </el-form-item>
-      <el-form-item label="问答对权重">
-        <el-input-number v-model="form.qaWeight" :min="0" :max="5" :step="0.1" />
-      </el-form-item>
-
       <el-divider content-position="left">答案与记忆策略</el-divider>
       <el-form-item label="自检阈值">
         <el-input-number v-model="form.verifyThreshold" :min="0" :max="1" :step="0.05" /> <span class="tip">低于阈值触发重试（0~1）</span>
@@ -72,8 +55,7 @@ const loading = ref(false)
 const saving = ref(false)
 const form = reactive({
   name: '', description: '', systemPrompt: '',
-  topK: 5, topN: 5, verifyThreshold: 0.5, maxRetry: 2, memoryWindow: 20,
-  chunkWeight: 1.0, businessWeight: 1.2, qaWeight: 1.2
+  verifyThreshold: 0.5, maxRetry: 2, memoryWindow: 20
 })
 
 async function load() {
@@ -84,14 +66,9 @@ async function load() {
       name: data.name || '',
       description: data.description || '',
       systemPrompt: data.systemPrompt || '',
-      topK: data.topK ?? 5,
-      topN: data.topN ?? 5,
       verifyThreshold: data.verifyThreshold ?? 0.5,
       maxRetry: data.maxRetry ?? 2,
-      memoryWindow: data.memoryWindow ?? 20,
-      chunkWeight: data.chunkWeight ?? 1.0,
-      businessWeight: data.businessWeight ?? 1.2,
-      qaWeight: data.qaWeight ?? 1.2
+      memoryWindow: data.memoryWindow ?? 20
     })
   } finally {
     loading.value = false
@@ -105,14 +82,9 @@ async function save() {
       name: form.name,
       description: form.description,
       systemPrompt: form.systemPrompt,
-      topK: form.topK,
-      topN: form.topN,
       verifyThreshold: form.verifyThreshold,
       maxRetry: form.maxRetry,
-      memoryWindow: form.memoryWindow,
-      chunkWeight: form.chunkWeight,
-      businessWeight: form.businessWeight,
-      qaWeight: form.qaWeight
+      memoryWindow: form.memoryWindow
     })
     ElMessage.success('Agent 配置已保存，后续问答立即生效')
   } finally {

@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Agent 配置接口：知识库绑定默认 Agent，支持动态修改提示词与检索/记忆策略参数。
+ * Agent 配置接口：知识库绑定默认 Agent，支持动态修改提示词与答案/记忆策略参数。
  * 读：MEMBER+；写（修改配置）：EDITOR+。
  */
 @RestController

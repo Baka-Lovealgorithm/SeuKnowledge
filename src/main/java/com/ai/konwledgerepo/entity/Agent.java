@@ -5,8 +5,9 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
 
 /**
- * 问答 Agent 配置。与知识库一一绑定（kbId 唯一），保存提示词与检索/记忆/生成参数，
- * 问答状态图各节点在执行时读取本配置，实现"动态修改提示词、检索策略、记忆策略"。
+ * 问答 Agent 配置。与知识库一一绑定（kbId 唯一），保存提示词与答案/记忆参数，
+ * 问答状态图各节点在执行时读取本配置，实现"动态修改提示词、答案与记忆策略"。
+ * 检索/重排条数与来源配额由全局配置（seuknowledge.recall.* / seuknowledge.rerank.*）控制。
  */
 @Entity
 @Table(name = "kb_agent")
@@ -26,14 +27,6 @@ public class Agent extends BaseEntity {
     @Column(name = "system_prompt", columnDefinition = "TEXT")
     private String systemPrompt;
 
-    /** 检索策略：每个候选查询的召回条数 */
-    @Column(name = "top_k")
-    private Integer topK = 5;
-
-    /** 检索策略：重排后作为答案证据的 Top-N */
-    @Column(name = "top_n")
-    private Integer topN = 5;
-
     /** 答案自检置信度阈值（0~1），低于阈值触发重试 */
     @Column(name = "verify_threshold")
     private Double verifyThreshold = 0.7;
@@ -45,18 +38,6 @@ public class Agent extends BaseEntity {
     /** 记忆策略：对话记忆窗口条数 */
     @Column(name = "memory_window")
     private Integer memoryWindow = 20;
-
-    /** 多源召回权重：文档 chunk */
-    @Column(name = "chunk_weight")
-    private Double chunkWeight = 1.0;
-
-    /** 多源召回权重：业务知识 */
-    @Column(name = "business_weight")
-    private Double businessWeight = 1.2;
-
-    /** 多源召回权重：问答对 */
-    @Column(name = "qa_weight")
-    private Double qaWeight = 1.2;
 
     @Column(name = "created_by")
     private Long createdBy;
@@ -93,22 +74,6 @@ public class Agent extends BaseEntity {
         this.systemPrompt = systemPrompt;
     }
 
-    public Integer getTopK() {
-        return topK;
-    }
-
-    public void setTopK(Integer topK) {
-        this.topK = topK;
-    }
-
-    public Integer getTopN() {
-        return topN;
-    }
-
-    public void setTopN(Integer topN) {
-        this.topN = topN;
-    }
-
     public Double getVerifyThreshold() {
         return verifyThreshold;
     }
@@ -131,30 +96,6 @@ public class Agent extends BaseEntity {
 
     public void setMemoryWindow(Integer memoryWindow) {
         this.memoryWindow = memoryWindow;
-    }
-
-    public Double getChunkWeight() {
-        return chunkWeight;
-    }
-
-    public void setChunkWeight(Double chunkWeight) {
-        this.chunkWeight = chunkWeight;
-    }
-
-    public Double getBusinessWeight() {
-        return businessWeight;
-    }
-
-    public void setBusinessWeight(Double businessWeight) {
-        this.businessWeight = businessWeight;
-    }
-
-    public Double getQaWeight() {
-        return qaWeight;
-    }
-
-    public void setQaWeight(Double qaWeight) {
-        this.qaWeight = qaWeight;
     }
 
     public Long getCreatedBy() {

@@ -75,7 +75,7 @@ class ChatServiceTest {
 
     /** 与 AgentService 默认模板一致：memoryWindow=20 == messageWindow，history 窗口不截断 */
     private static final AgentConfig AGENT =
-            new AgentConfig("默认 Agent", "prompt", 5, 0.7, 2, 20);
+            new AgentConfig("默认 Agent", "prompt", 0.7, 2, 20);
 
     private ChatSessionRepository sessionRepository;
     private ChatMessageRepository messageRepository;
