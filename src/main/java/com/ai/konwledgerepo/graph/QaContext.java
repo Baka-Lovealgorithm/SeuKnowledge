@@ -96,8 +96,10 @@ public final class QaContext {
     }
 
     /**
-     * 证据列表序列化为引用 JSON 数组字符串（chunkId/docName/page/sourceType/title）。
+     * 证据列表序列化为引用 JSON 数组字符串（chunkId/docName/page/sourceType/title/docId/content）。
      * 答案生成与拒答兜底共用，保证 REFS 结构一致（前端 refs 卡片渲染）。
+     * content 为表格感知截断的 snippet（见 {@link RefSnippet}），完整原文在 MySQL 可按 docId/chunkId 按需取；
+     * docId 仅 CHUNK 来源有值（BUSINESS/QA 为 null，前端据此不提供展开详情）。
      */
     public static String toRefsJson(List<ChunkEvidence> chunks, ObjectMapper mapper) throws JsonProcessingException {
         List<Map<String, Object>> refs = new ArrayList<>();
@@ -108,6 +110,8 @@ public final class QaContext {
             ref.put("page", c.pageNum() == null ? 0 : c.pageNum());
             ref.put("sourceType", SourceType.normalize(c.sourceType()));
             ref.put("title", c.title() == null ? "" : c.title());
+            ref.put("docId", c.docId());
+            ref.put("content", RefSnippet.snippet(c.content()));
             refs.add(ref);
         }
         return mapper.writeValueAsString(refs);

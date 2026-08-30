@@ -77,6 +77,9 @@ onUpdated(() => nextTick(injectCodeBlocks))
 .md-content :deep(h1), .md-content :deep(h2), .md-content :deep(h3) { margin: 0.8em 0 0.4em; font-weight: 700; }
 .md-content :deep(blockquote) { border-left: 3px solid #409eff; padding: 2px 10px; margin: 0.5em 0; color: #606266; }
 .md-content :deep(code) { font-family: Consolas, Menlo, Monaco, monospace; font-size: 0.9em; background: #f0f2f5; padding: 1px 5px; border-radius: 3px; }
+.md-content :deep(table) { border-collapse: collapse; margin: 0.6em 0; width: 100%; font-size: 0.92em; }
+.md-content :deep(th), .md-content :deep(td) { border: 1px solid #dcdfe6; padding: 5px 10px; text-align: left; }
+.md-content :deep(thead th) { background: #f5f7fa; font-weight: 600; }
 
 /* ===== 代码块卡片（深色，仿 DeepSeek 官网） ===== */
 .md-content :deep(.code-block-wrapper) {

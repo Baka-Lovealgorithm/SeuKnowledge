@@ -52,9 +52,14 @@
             <el-tag v-if="m.role === 'ASSISTANT' && m.interrupted" type="info" size="small" style="margin-top:6px">已停止</el-tag>
             <div v-if="m.role === 'ASSISTANT' && refsList[i]" class="msg-refs">
               <div v-for="(r, j) in refsList[i]" :key="j" class="ref-item">
-                <span class="ref-index">[{{ j + 1 }}]</span>
-                <el-tag size="small" :type="refTypeTag(r.sourceType)">{{ refTypeLabel(r.sourceType) }}</el-tag>
-                {{ refTitle(r) }}{{ r.page ? ` · 第 ${r.page} 页` : '' }} <span class="ref-chunk">#{{ r.chunkId }}</span>
+                <div class="ref-meta">
+                  <span class="ref-index">[{{ j + 1 }}]</span>
+                  <el-tag size="small" :type="refTypeTag(r.sourceType)">{{ refTypeLabel(r.sourceType) }}</el-tag>
+                  {{ refTitle(r) }}{{ r.page ? ` · 第 ${r.page} 页` : '' }} <span class="ref-chunk">#{{ r.chunkId }}</span>
+                  <el-button v-if="canExpandRef(r)" link type="primary" size="small" class="ref-expand-btn"
+                             @click="openRefDetail(r)">{{ refDetailLoading.has(r.chunkId) ? '加载中…' : '查看全文' }}</el-button>
+                </div>
+                <div v-if="r.content" class="ref-snippet"><MdContent :content="r.content" /></div>
               </div>
             </div>
           </div>
@@ -99,13 +104,17 @@
       <el-button type="primary" @click="confirmRename">保存</el-button>
     </template>
   </el-dialog>
+
+  <el-dialog v-model="refDetailVisible" :title="refDetailTitle" width="720px" class="ref-detail-dialog">
+    <div class="ref-detail-body"><MdContent :content="refDetailContent" /></div>
+  </el-dialog>
 </template>
 
 <script setup>
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Edit, Delete, Expand, Fold } from '@element-plus/icons-vue'
-import { chatApi, kbApi } from '../api'
+import { chatApi, docApi, kbApi } from '../api'
 import { useAuthStore } from '../stores/auth'
 import MdContent from '../components/MdContent.vue'
 
@@ -272,6 +281,38 @@ function refTypeTag(t) {
 function refTitle(r) {
   if (r.sourceType && r.sourceType !== 'CHUNK' && r.title) return r.title
   return r.docName || ''
+}
+
+// ===== 引用片段展开详情（仅 CHUNK 来源有 docId；复用 /documents/{id}/chunks 按 chunkId 取全文）=====
+const refDetailVisible = ref(false)
+const refDetailTitle = ref('')
+const refDetailContent = ref('')
+const refDetailLoading = reactive(new Map())
+const chunkCache = reactive(new Map()) // docId -> chunks 列表
+
+function canExpandRef(r) {
+  return (!r.sourceType || r.sourceType === 'CHUNK') && r.docId
+}
+
+async function openRefDetail(r) {
+  if (refDetailLoading.has(r.chunkId)) return
+  refDetailVisible.value = true
+  refDetailTitle.value = (r.docName || '') + (r.page ? ` · 第 ${r.page} 页` : '')
+  refDetailContent.value = ''
+  refDetailLoading.set(r.chunkId, true)
+  try {
+    let chunks = chunkCache.get(r.docId)
+    if (!chunks) {
+      chunks = await docApi.chunks(r.docId)
+      chunkCache.set(r.docId, chunks)
+    }
+    const hit = chunks.find((c) => c.id === r.chunkId)
+    refDetailContent.value = hit ? hit.content : '(未找到对应分块，可能已被重新解析)'
+  } catch (e) {
+    refDetailContent.value = '加载失败：' + ((e && e.message) || '请稍后重试')
+  } finally {
+    refDetailLoading.delete(r.chunkId)
+  }
 }
 
 async function send() {
@@ -513,6 +554,10 @@ onMounted(loadKbs)
 .msg-refs { margin-top: 10px; border-top: 1px dashed #dcdfe6; padding-top: 8px; }
 .msg-row.user .msg-refs { border-color: rgba(255,255,255,0.4); }
 .ref-item { font-size: 12px; color: #606266; padding: 3px 0; }
+.ref-meta { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.ref-expand-btn { margin-left: 2px; }
+.ref-snippet { margin-top: 6px; background: #f5f7fa; border: 1px solid #ebeef5; border-radius: 6px; padding: 8px 10px; font-size: 12px; max-height: 180px; overflow: auto; }
+.ref-detail-body { max-height: 60vh; overflow: auto; font-size: 13px; }
 .ref-index { display: inline-block; min-width: 22px; font-weight: 700; color: #409eff; font-family: Consolas, Menlo, monospace; margin-right: 2px; }
 .msg-row.user .ref-index { color: #fff; }
 .ref-chunk { color: #409eff; }
