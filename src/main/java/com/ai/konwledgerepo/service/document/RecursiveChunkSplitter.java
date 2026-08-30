@@ -113,14 +113,19 @@ public final class RecursiveChunkSplitter {
 
     /**
      * 表格块产出（A+B 混合）：
-     * 小表（回填后 ≤ chunk-size）整表一个原子块；大表按行组分块（每组带表头+分隔行，组间无 overlap）。
+     * 小表（回填后 ≤ chunk-size）整表一个原子块；大表按行组分块（每组带 caption（若有）+表头+分隔行，组间无 overlap）。
      * 表格块 title = 祖先链路径；不更新标题栈（表格不产生新章节）。
      */
     static List<ChunkPiece> tablePieces(TableExtractor.Table table, int chunkSize,
                                         List<Headings.StackEntry> stack, int pageNum) {
         String title = Headings.path(stack);
-        String headBlock = "| " + String.join(" | ", table.header()) + " |\n"
-                + "| " + String.join(" | ", table.header().stream().map(h -> "---").toList()) + " |\n";
+        StringBuilder head = new StringBuilder();
+        if (table.caption() != null && !table.caption().isBlank()) {
+            head.append(table.caption()).append('\n');
+        }
+        head.append("| ").append(String.join(" | ", table.header())).append(" |\n");
+        head.append("| ").append(String.join(" | ", table.header().stream().map(h -> "---").toList())).append(" |\n");
+        String headBlock = head.toString();
         List<ChunkPiece> out = new ArrayList<>();
         if (table.toMarkdown().length() <= chunkSize) {
             // A：整表原子块

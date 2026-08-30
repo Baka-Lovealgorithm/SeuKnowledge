@@ -21,11 +21,12 @@ import java.util.Comparator;
 import java.util.List;
 
 /**
- * 文档解析服务（分发）：按类型（txt/md/pdf/docx/pptx）提取文本并分块。
+ * 文档解析服务（分发）：按类型（txt/md/pdf/docx/pptx/xlsx/xls）提取文本并分块。
  * txt/md 使用标题感知分块（ChunkSplitter，原逻辑不变）；
  * pdf/docx 在启用 LlamaParse 时走云端转 Markdown + 递归分块（RecursiveChunkSplitter），
  * pdf 失败/未配置时回退 {@link PdfParseService}（PDFBox 纯文本 + 按需识图）；
- * 缺页补全见 {@link VisionPageFiller}；pptx 复用 {@link PptxParserService}。
+ * 缺页补全见 {@link VisionPageFiller}；pptx 复用 {@link PptxParserService}；
+ * xlsx/xls 本地 POI 解析（{@link ExcelParserService}，数据不出本地，复用表格 A+B 分块）。
  * 每次解析创建一条 OpenTelemetry trace（document/parse），识图调用按 vision 类统计 token。
  */
 @Service
@@ -35,6 +36,7 @@ public class DocumentParserService {
 
     private final LlamaParseService llamaParseService;
     private final PptxParserService pptxParserService;
+    private final ExcelParserService excelParserService;
     private final WorkspaceIdResolver workspaceIdResolver;
     private final PdfParseService pdfParseService;
     private final VisionPageFiller visionPageFiller;
@@ -45,6 +47,7 @@ public class DocumentParserService {
 
     public DocumentParserService(LlamaParseService llamaParseService,
                                  PptxParserService pptxParserService,
+                                 ExcelParserService excelParserService,
                                  WorkspaceIdResolver workspaceIdResolver,
                                  PdfParseService pdfParseService,
                                  VisionPageFiller visionPageFiller,
@@ -52,6 +55,7 @@ public class DocumentParserService {
                                  SeuDocumentProperties docProps) {
         this.llamaParseService = llamaParseService;
         this.pptxParserService = pptxParserService;
+        this.excelParserService = excelParserService;
         this.workspaceIdResolver = workspaceIdResolver;
         this.pdfParseService = pdfParseService;
         this.visionPageFiller = visionPageFiller;
@@ -94,6 +98,7 @@ public class DocumentParserService {
                 case "pdf" -> parsePdfWithLlamaParseFallback(path, doc.getFileName(), workspaceId);
                 case "docx" -> parseDocx(path, doc.getFileName());
                 case "pptx" -> pptxParserService.parse(path, doc.getFileName(), workspaceId);
+                case "xlsx", "xls" -> excelParserService.parse(path, doc.getFileName());
                 default -> throw new BizException("不支持的文件类型: " + doc.getFileType());
             };
         } catch (IOException e) {

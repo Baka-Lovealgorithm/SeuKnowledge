@@ -7,9 +7,9 @@
         :show-file-list="false"
         :http-request="doUpload"
         multiple
-        accept=".txt,.md,.pdf,.docx,.pptx"
+        accept=".txt,.md,.pdf,.docx,.pptx,.xlsx,.xls"
       >
-        <el-button type="primary">上传文档 (.txt/.md/.pdf/.docx/.pptx)</el-button>
+        <el-button type="primary">上传文档 (.txt/.md/.pdf/.docx/.pptx/.xlsx/.xls)</el-button>
       </el-upload>
     </div>
     <el-table :data="list" v-loading="loading" border>

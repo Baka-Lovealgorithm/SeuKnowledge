@@ -60,18 +60,18 @@ class DocumentParserServiceTest {
 
     /** 组装解析器：PdfParseService / VisionPageFiller 用真实实例（复用同一批 mock 与配置） */
     private static DocumentParserService build(VisionOcrService vision, LlamaParseService llama, PptxParserService pptx,
-                                               WorkspaceIdResolver resolver, QaTracing tracing,
+                                               ExcelParserService excel, WorkspaceIdResolver resolver, QaTracing tracing,
                                                SeuDocumentProperties props, Executor executor) {
         PdfParseService pdfService = new PdfParseService(vision, tracing, props, executor);
         VisionPageFiller filler = new VisionPageFiller(llama, vision, tracing, props, executor);
-        return new DocumentParserService(llama, pptx, resolver, pdfService, filler, tracing, props);
+        return new DocumentParserService(llama, pptx, excel, resolver, pdfService, filler, tracing, props);
     }
 
     /** 测试中关闭识图解析与追踪，保持纯文本分块行为 */
     private DocumentParserService parser() {
         QaTracing noopTracing = QaTracing.disabled();
         return build(mock(VisionOcrService.class), mock(LlamaParseService.class),
-                mock(PptxParserService.class), mock(WorkspaceIdResolver.class),
+                mock(PptxParserService.class), mock(ExcelParserService.class), mock(WorkspaceIdResolver.class),
                 noopTracing, docProps(false, 1, false), null);
     }
 
@@ -86,7 +86,7 @@ class DocumentParserServiceTest {
         WorkspaceIdResolver resolver = mock(WorkspaceIdResolver.class);
         when(resolver.resolve(1L)).thenReturn(1L);
         return build(visionMock, mock(LlamaParseService.class),
-                mock(PptxParserService.class), resolver, noopTracing, docProps(true, 1, false), null);
+                mock(PptxParserService.class), mock(ExcelParserService.class), resolver, noopTracing, docProps(true, 1, false), null);
     }
 
     /** 并行识图解析器：parallel=3 + 真实固定线程池，mock describeParallel 返回识别结果 */
@@ -97,7 +97,7 @@ class DocumentParserServiceTest {
         WorkspaceIdResolver resolver = mock(WorkspaceIdResolver.class);
         when(resolver.resolve(1L)).thenReturn(1L);
         return build(visionMock, mock(LlamaParseService.class),
-                mock(PptxParserService.class), resolver, noopTracing, docProps(true, 3, false), executor);
+                mock(PptxParserService.class), mock(ExcelParserService.class), resolver, noopTracing, docProps(true, 3, false), executor);
     }
 
     /**
@@ -116,7 +116,7 @@ class DocumentParserServiceTest {
                 new LlamaParseService.PageMarkdown(1, "# 第一页\n\n第一页正文内容。"),
                 new LlamaParseService.PageMarkdown(2, "## 3.2 收不到数据的上一节\n\n第二页正文内容。")));
         when(llamaMock.detectMissingPages(any(), any())).thenReturn(List.of(3));
-        return build(visionMock, llamaMock, mock(PptxParserService.class), resolver,
+        return build(visionMock, llamaMock, mock(PptxParserService.class), mock(ExcelParserService.class), resolver,
                 noopTracing, docProps(true, 3, true), executor);
     }
 
@@ -244,6 +244,26 @@ class DocumentParserServiceTest {
         doc.setFilePath(file.toString());
         doc.setFileType("docx");
         assertThrows(BizException.class, () -> parser().parse(doc));
+    }
+
+    @Test
+    void excelType_delegatesToExcelParser() throws Exception {
+        ExcelParserService excel = mock(ExcelParserService.class);
+        when(excel.parse(any(), any())).thenReturn(List.of(new ChunkPiece("| a |", 1, "t")));
+        DocumentParserService service = build(mock(VisionOcrService.class), mock(LlamaParseService.class),
+                mock(PptxParserService.class), excel, mock(WorkspaceIdResolver.class),
+                QaTracing.disabled(), docProps(false, 1, false), null);
+        Path file = tempDir.resolve("test.xlsx");
+        Files.write(file, new byte[]{0x50, 0x4B});
+        Document doc = new Document();
+        doc.setFilePath(file.toString());
+        doc.setFileName("test.xlsx");
+        doc.setFileType("xlsx");
+
+        List<ChunkPiece> pieces = service.parse(doc);
+
+        verify(excel).parse(any(), eq("test.xlsx"));
+        assertEquals(1, pieces.size());
     }
 
     @Test

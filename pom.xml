@@ -106,6 +106,14 @@
             <version>${spring-ai-alibaba.version}</version>
         </dependency>
 
+        <!-- Excel 解析（xlsx/xls 本地解析，数据不出本地）：POI 5.4.1，含 poi / poi-ooxml-lite /
+             xmlbeans / commons-compress 等传递依赖（optional 的签名/图表渲染依赖不引入） -->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>5.4.1</version>
+        </dependency>
+
         <!-- ===== 可观测性：OpenTelemetry Trace 采集（Langfuse 可视化，OTLP 上报）===== -->
         <!-- 版本由 Spring Boot dependencyManagement 统一管理 -->
         <dependency>
