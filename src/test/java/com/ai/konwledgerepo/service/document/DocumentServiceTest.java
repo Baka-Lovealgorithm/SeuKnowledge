@@ -17,6 +17,7 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -69,7 +70,7 @@ class DocumentServiceTest {
         BizException ex = assertThrows(BizException.class, () -> service.retry(DOC_ID));
         assertEquals("文档解析进行中，无法重试", ex.getMessage());
         verify(chunkRepository, never()).deleteByDocId(anyLong());
-        verify(parseExecutor, never()).parseAsync(anyLong());
+        verify(parseExecutor, never()).parseAsync(anyLong(), anyBoolean());
     }
 
     @Test
@@ -90,7 +91,7 @@ class DocumentServiceTest {
 
         verify(chunkRepository).deleteByDocId(DOC_ID);
         verify(vectorIngestionService).deleteByDocId(DOC_ID);
-        // AfterCommitExecutor 在无事务时内联执行 → parseAsync 被调用
-        verify(parseExecutor).parseAsync(DOC_ID);
+        // AfterCommitExecutor 在无事务时内联执行 → parseAsync 被调用（retry 强制重新解析，不复用缓存）
+        verify(parseExecutor).parseAsync(DOC_ID, false);
     }
 }

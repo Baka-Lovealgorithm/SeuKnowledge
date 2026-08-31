@@ -40,10 +40,11 @@ public class DocumentController {
     public ApiResponse<List<DocumentResponse>> upload(@PathVariable Long kbId,
                                                       @RequestParam("files") List<MultipartFile> files,
                                                       @RequestParam(value = "replace", defaultValue = "false") boolean replace,
+                                                      @RequestParam(value = "reuseCache", defaultValue = "false") boolean reuseCache,
                                                       @RequestAttribute("userId") Long userId,
                                                       @RequestAttribute("workspaceId") Long workspaceId) {
         workspaceAccess.requireKbAccess(kbId, workspaceId, userId, true);
-        List<Document> saved = documentService.upload(kbId, files, userId, replace);
+        List<Document> saved = documentService.upload(kbId, files, userId, replace, reuseCache);
         return ApiResponse.ok(saved.stream().map(DocumentResponse::from).toList());
     }
 

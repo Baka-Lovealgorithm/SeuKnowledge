@@ -47,7 +47,7 @@ class DocumentParseExecutorTest {
     void parseAsync_lockBusy_returnsEarly() {
         when(taskLock.tryAcquire(eq(RedisKeys.docParse(DOC_ID)), any())).thenReturn(false);
 
-        executor.parseAsync(DOC_ID);
+        executor.parseAsync(DOC_ID, false);
 
         verify(parseTx, never()).startParse(any());
         verify(parseTx, never()).finalizeSuccess(any(), any());
@@ -58,7 +58,7 @@ class DocumentParseExecutorTest {
     void parseAsync_startParseFails_returnsEarly() {
         when(parseTx.startParse(DOC_ID)).thenReturn(Optional.empty());
 
-        executor.parseAsync(DOC_ID);
+        executor.parseAsync(DOC_ID, false);
 
         verify(parseTx, never()).finalizeSuccess(any(), any());
         verify(parseTx, never()).finalizeFailure(any(), any());
@@ -77,7 +77,7 @@ class DocumentParseExecutorTest {
         when(parserService.parse(doc)).thenReturn(pieces);
         when(parseTx.finalizeSuccess(DOC_ID, pieces)).thenReturn(true);
 
-        executor.parseAsync(DOC_ID);
+        executor.parseAsync(DOC_ID, false);
 
         verify(parseTx).finalizeSuccess(DOC_ID, pieces);
         verify(vectorIngestionService).ingest(DOC_ID);
@@ -94,7 +94,7 @@ class DocumentParseExecutorTest {
         when(parserService.parse(doc)).thenReturn(pieces);
         when(parseTx.finalizeSuccess(DOC_ID, pieces)).thenReturn(false);
 
-        executor.parseAsync(DOC_ID);
+        executor.parseAsync(DOC_ID, false);
 
         verify(vectorIngestionService, never()).ingest(any());
         verify(taskLock).release(RedisKeys.docParse(DOC_ID));
@@ -107,7 +107,7 @@ class DocumentParseExecutorTest {
         when(parseTx.startParse(DOC_ID)).thenReturn(Optional.of(doc));
         when(parserService.parse(doc)).thenThrow(new RuntimeException("parse error"));
 
-        executor.parseAsync(DOC_ID);
+        executor.parseAsync(DOC_ID, false);
 
         verify(parseTx).finalizeFailure(eq(DOC_ID), any());
         verify(parseTx, never()).finalizeSuccess(any(), any());

@@ -3,6 +3,7 @@ package com.ai.konwledgerepo.entity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 import jakarta.persistence.Version;
 
 /**
@@ -45,6 +46,13 @@ public class Document extends BaseEntity {
 
     @Column(name = "created_by")
     private Long createdBy;
+
+    /**
+     * 本次上传是否复用解析缓存（用户选择，仅本次解析链路生效，不落库）。
+     * 由 DocumentService 上传时经 parseAsync 显式设置；startParse 重查实体后由执行器回填。
+     */
+    @Transient
+    private boolean reuseCache;
 
     public Long getKbId() {
         return kbId;
@@ -124,5 +132,13 @@ public class Document extends BaseEntity {
 
     public void setCreatedBy(Long createdBy) {
         this.createdBy = createdBy;
+    }
+
+    public boolean isReuseCache() {
+        return reuseCache;
+    }
+
+    public void setReuseCache(boolean reuseCache) {
+        this.reuseCache = reuseCache;
     }
 }

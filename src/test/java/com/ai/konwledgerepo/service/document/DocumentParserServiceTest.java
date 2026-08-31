@@ -64,7 +64,8 @@ class DocumentParserServiceTest {
                                                SeuDocumentProperties props, Executor executor) {
         PdfParseService pdfService = new PdfParseService(vision, tracing, props, executor);
         VisionPageFiller filler = new VisionPageFiller(llama, vision, tracing, props, executor);
-        return new DocumentParserService(llama, pptx, excel, resolver, pdfService, filler, tracing, props);
+        return new DocumentParserService(llama, pptx, excel, resolver, pdfService, filler,
+                mock(ParseCacheService.class), tracing, props);
     }
 
     /** 测试中关闭识图解析与追踪，保持纯文本分块行为 */

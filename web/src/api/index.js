@@ -19,10 +19,10 @@ export const kbApi = {
 }
 
 export const docApi = {
-  upload: (kbId, files, replace = false) => {
+  upload: (kbId, files, replace = false, reuseCache = false) => {
     const fd = new FormData()
     files.forEach((f) => fd.append('files', f))
-    return http.post(`/kb/${kbId}/documents`, fd, { params: { replace } })
+    return http.post(`/kb/${kbId}/documents`, fd, { params: { replace, reuseCache } })
   },
   list: (kbId) => http.get(`/kb/${kbId}/documents`),
   remove: (id) => http.delete(`/documents/${id}`),

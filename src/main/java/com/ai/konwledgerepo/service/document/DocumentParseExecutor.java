@@ -51,9 +51,12 @@ public class DocumentParseExecutor {
     /**
      * 异步解析：文本提取 → 分块 → 落库 → 向量化。
      * 由 DocumentService 在事务提交后触发，确保本线程能读到已提交的文档数据。
+     *
+     * @param reuseCache 用户是否选择复用解析缓存（@Transient，startParse 重查后由本方法回填，
+     *                   供 DocumentParserService 读取）
      */
     @Async
-    public void parseAsync(Long docId) {
+    public void parseAsync(Long docId, boolean reuseCache) {
         // ---- F-2 in-flight guard：防双解析（worker×worker） ----
         if (!taskLock.tryAcquire(RedisKeys.docParse(docId), PARSE_LOCK_TTL)) {
             log.info("文档 {} 解析已在进行，跳过本次触发", docId);
@@ -66,6 +69,7 @@ public class DocumentParseExecutor {
                 return; // 文档不存在 / 已被并发解析 / 状态非 PENDING
             }
             Document doc = docOpt.get();
+            doc.setReuseCache(reuseCache);
             // ---- 长任务：文本解析（无事务，不占用连接） ----
             List<ChunkPiece> pieces = parserService.parse(doc);
             // ---- F-1 收尾：事务内重读 + chunk 批量写入 + SUCCESS（行不存在则静默中止） ----

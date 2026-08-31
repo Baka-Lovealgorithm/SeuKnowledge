@@ -92,7 +92,20 @@ async function doUpload({ file }) {
         '文件已存在',
         { type: 'warning', confirmButtonText: '覆盖', cancelButtonText: '取消' }
       )
-      await docApi.upload(kbId, [file], true)
+      // 覆盖后追加询问：是否复用解析缓存（内容相同时跳过云端解析，节省消耗）
+      let reuse = false
+      try {
+        await ElMessageBox.confirm(
+          '是否复用已有解析结果？若文件内容与缓存一致将跳过云端解析（节省消耗），分块与向量化仍会正常生成。选择「重新解析」将全量解析。',
+          '复用解析结果',
+          { type: 'info', confirmButtonText: '复用', cancelButtonText: '重新解析' }
+        )
+        reuse = true
+      } catch {
+        // 用户选「重新解析」或关闭弹窗 → 全量解析（不复用缓存）
+        reuse = false
+      }
+      await docApi.upload(kbId, [file], true, reuse)
     } else {
       await docApi.upload(kbId, [file])
     }
