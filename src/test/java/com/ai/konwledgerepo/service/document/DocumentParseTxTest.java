@@ -1,12 +1,14 @@
 package com.ai.konwledgerepo.service.document;
 
 import com.ai.konwledgerepo.entity.Chunk;
+import com.ai.konwledgerepo.entity.ChunkStatus;
 import com.ai.konwledgerepo.entity.DocStatus;
 import com.ai.konwledgerepo.entity.Document;
 import com.ai.konwledgerepo.repository.ChunkRepository;
 import com.ai.konwledgerepo.repository.DocumentRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.List;
 import java.util.Optional;
@@ -95,6 +97,46 @@ class DocumentParseTxTest {
         assertFalse(ok);
         verify(chunkRepository, never()).saveAll(anyList());
         verify(documentRepository, never()).save(any());
+    }
+
+    @Test
+    void finalizeSuccess_withCleanOutcomes_setsStatuses() {
+        Document d = doc(1L, DocStatus.PARSING.value());
+        when(documentRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(d));
+        when(chunkRepository.saveAll(anyList())).thenReturn(List.of());
+
+        ChunkPiece keep = new ChunkPiece("正常内容", 1, "t1");
+        ChunkPiece suspect = new ChunkPiece("图 1-1 架构", 2, "t2");
+        ChunkPiece drop = new ChunkPiece("   ", 3, "t3");
+        List<ChunkPiece> kept = List.of(keep, suspect);
+        List<DocumentCleanService.CleanOutcome> outcomes = List.of(
+                new DocumentCleanService.CleanOutcome(suspect, "B1", DocumentCleanService.Disposition.SUSPECT,
+                        "B1 孤立图题「图 1-1 架构」"),
+                new DocumentCleanService.CleanOutcome(drop, "A1", DocumentCleanService.Disposition.AUTO_DROP,
+                        "A1 空白碎片"));
+
+        boolean ok = parseTx.finalizeSuccess(1L, kept, outcomes);
+
+        assertTrue(ok);
+        assertEquals(3, d.getChunkCount());
+        ArgumentCaptor<List<Chunk>> captor = ArgumentCaptor.forClass(List.class);
+        verify(chunkRepository).saveAll(captor.capture());
+        List<Chunk> chunks = captor.getValue();
+        assertEquals(3, chunks.size());
+        // kept 正常：EMBEDDING 无清洗标记
+        Chunk cKeep = chunks.get(0);
+        assertEquals(ChunkStatus.EMBEDDING.value(), cKeep.getStatus());
+        assertEquals(null, cKeep.getCleanStatus());
+        // SUSPECT：照常 EMBEDDING + 清洗标记
+        Chunk cSuspect = chunks.get(1);
+        assertEquals(ChunkStatus.EMBEDDING.value(), cSuspect.getStatus());
+        assertEquals("SUSPECT", cSuspect.getCleanStatus());
+        assertEquals("B1 孤立图题「图 1-1 架构」", cSuspect.getCleanReason());
+        // AUTO-DROP：FILTERED + 清洗标记（记录保留，永不向量化）
+        Chunk cDrop = chunks.get(2);
+        assertEquals(ChunkStatus.FILTERED.value(), cDrop.getStatus());
+        assertEquals("FILTERED", cDrop.getCleanStatus());
+        assertEquals("A1 空白碎片", cDrop.getCleanReason());
     }
 
     @Test

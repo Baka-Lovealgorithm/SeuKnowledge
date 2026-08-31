@@ -32,7 +32,7 @@ class LlamaParseServiceTest {
         return new LlamaParseService(
                 new SeuDocumentProperties(true, true, 50, 100, 3, 800, 120,
                         new SeuDocumentProperties.LlamaParse(false, "", "https://api.cloud.llamaindex.ai",
-                                "cost_effective", "latest", "ch_sim", 5, 900, "", false, true, null)),
+                                "cost_effective", "latest", "ch_sim", 5, 900, "", false, true, null), SeuDocumentProperties.Clean.defaults()),
                 new ObjectMapper());
     }
 

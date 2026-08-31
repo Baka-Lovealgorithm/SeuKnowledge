@@ -41,6 +41,7 @@ public class DocumentParserService {
     private final PdfParseService pdfParseService;
     private final VisionPageFiller visionPageFiller;
     private final ParseCacheService parseCacheService;
+    private final DocumentCleanService documentCleanService;
     private final QaTracing qaTracing;
     private final int chunkSize;
     private final int chunkOverlap;
@@ -53,6 +54,7 @@ public class DocumentParserService {
                                  PdfParseService pdfParseService,
                                  VisionPageFiller visionPageFiller,
                                  ParseCacheService parseCacheService,
+                                 DocumentCleanService documentCleanService,
                                  QaTracing qaTracing,
                                  SeuDocumentProperties docProps) {
         this.llamaParseService = llamaParseService;
@@ -62,6 +64,7 @@ public class DocumentParserService {
         this.pdfParseService = pdfParseService;
         this.visionPageFiller = visionPageFiller;
         this.parseCacheService = parseCacheService;
+        this.documentCleanService = documentCleanService;
         this.qaTracing = qaTracing;
         this.chunkSize = docProps.chunkSize();
         this.chunkOverlap = docProps.chunkOverlap();
@@ -156,6 +159,9 @@ public class DocumentParserService {
             pages = llamaParseService.parseToMarkdown(path, fileName, false);
             writeCache(path, fileName, pages);
         }
+        // P1 页面级清洗：剥离页眉页脚行 + 删首尾噪声页（在 fill 之前，避免为封面/目录/空白页浪费识图调用）
+        DocumentCleanService.PageCleanResult clean = documentCleanService.cleanPages(pages);
+        pages = clean.pages();
         if (fillMissingPages) {
             pages = visionPageFiller.fill(path, pages, workspaceId);
         }

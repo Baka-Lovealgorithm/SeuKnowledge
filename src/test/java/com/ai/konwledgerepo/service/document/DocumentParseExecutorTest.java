@@ -27,6 +27,7 @@ class DocumentParseExecutorTest {
     private TaskLock taskLock;
     private DocumentParseTx parseTx;
     private DocumentParserService parserService;
+    private DocumentCleanService documentCleanService;
     private VectorIngestionService vectorIngestionService;
     private DocumentParseExecutor executor;
 
@@ -37,10 +38,16 @@ class DocumentParseExecutorTest {
         taskLock = mock(TaskLock.class);
         parseTx = mock(DocumentParseTx.class);
         parserService = mock(DocumentParserService.class);
+        documentCleanService = mock(DocumentCleanService.class);
         vectorIngestionService = mock(VectorIngestionService.class);
-        executor = new DocumentParseExecutor(taskLock, parseTx, parserService, vectorIngestionService);
+        executor = new DocumentParseExecutor(taskLock, parseTx, parserService, documentCleanService, vectorIngestionService);
 
         when(taskLock.tryAcquire(any(), any())).thenReturn(true);
+        // 清洗默认透传：原 pieces 全部保留、无清洗判定
+        when(documentCleanService.cleanChunks(any())).thenAnswer(inv -> {
+            List<ChunkPiece> pieces = inv.getArgument(0);
+            return new DocumentCleanService.ChunkCleanResult(pieces, List.of());
+        });
     }
 
     @Test
@@ -75,11 +82,11 @@ class DocumentParseExecutorTest {
         when(parseTx.startParse(DOC_ID)).thenReturn(Optional.of(doc));
         List<ChunkPiece> pieces = List.of(new ChunkPiece("content", 1, "title"));
         when(parserService.parse(doc)).thenReturn(pieces);
-        when(parseTx.finalizeSuccess(DOC_ID, pieces)).thenReturn(true);
+        when(parseTx.finalizeSuccess(DOC_ID, pieces, List.of())).thenReturn(true);
 
         executor.parseAsync(DOC_ID, false);
 
-        verify(parseTx).finalizeSuccess(DOC_ID, pieces);
+        verify(parseTx).finalizeSuccess(DOC_ID, pieces, List.of());
         verify(vectorIngestionService).ingest(DOC_ID);
         verify(parseTx, never()).finalizeFailure(any(), any());
         verify(taskLock).release(RedisKeys.docParse(DOC_ID));
@@ -92,7 +99,7 @@ class DocumentParseExecutorTest {
         when(parseTx.startParse(DOC_ID)).thenReturn(Optional.of(doc));
         List<ChunkPiece> pieces = List.of(new ChunkPiece("content", 1, "title"));
         when(parserService.parse(doc)).thenReturn(pieces);
-        when(parseTx.finalizeSuccess(DOC_ID, pieces)).thenReturn(false);
+        when(parseTx.finalizeSuccess(DOC_ID, pieces, List.of())).thenReturn(false);
 
         executor.parseAsync(DOC_ID, false);
 

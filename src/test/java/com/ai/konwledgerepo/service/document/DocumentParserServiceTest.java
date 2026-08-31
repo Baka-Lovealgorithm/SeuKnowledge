@@ -55,7 +55,7 @@ class DocumentParserServiceTest {
     private static SeuDocumentProperties docProps(boolean visionParsing, int visionParallel, boolean fillMissingPages) {
         return new SeuDocumentProperties(visionParsing, true, 10, 100, visionParallel, 800, 120,
                 new SeuDocumentProperties.LlamaParse(false, "", "https://api.cloud.llamaindex.ai",
-                        "cost_effective", "latest", "ch_sim", 5, 900, "", true, fillMissingPages, null));
+                        "cost_effective", "latest", "ch_sim", 5, 900, "", true, fillMissingPages, null), SeuDocumentProperties.Clean.defaults());
     }
 
     /** 组装解析器：PdfParseService / VisionPageFiller 用真实实例（复用同一批 mock 与配置） */
@@ -64,8 +64,12 @@ class DocumentParserServiceTest {
                                                SeuDocumentProperties props, Executor executor) {
         PdfParseService pdfService = new PdfParseService(vision, tracing, props, executor);
         VisionPageFiller filler = new VisionPageFiller(llama, vision, tracing, props, executor);
+        DocumentCleanService clean = mock(DocumentCleanService.class);
+        // 页面级清洗默认透传：pages 原样返回（页面级规则单独在 DocumentCleanServiceTest 覆盖）
+        when(clean.cleanPages(any())).thenAnswer(inv ->
+                new DocumentCleanService.PageCleanResult(inv.getArgument(0), List.of()));
         return new DocumentParserService(llama, pptx, excel, resolver, pdfService, filler,
-                mock(ParseCacheService.class), tracing, props);
+                mock(ParseCacheService.class), clean, tracing, props);
     }
 
     /** 测试中关闭识图解析与追踪，保持纯文本分块行为 */

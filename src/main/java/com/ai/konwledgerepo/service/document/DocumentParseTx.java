@@ -61,17 +61,37 @@ public class DocumentParseTx {
      * 解析成功收尾：事务内重读文档（悲观锁），存在则批量写入 chunk 并置 SUCCESS。
      * 返回 true 表示已落库成功（调用方可继续触发向量化）；false 表示文档已被删除
      * 或不存在（静默中止，不产生孤儿 chunk）。
+     * <p>
+     * 旧签名（无清洗）：全部 chunk 正常落库（EMBEDDING）。
      */
     @Transactional
     public boolean finalizeSuccess(Long docId, List<ChunkPiece> pieces) {
+        return finalizeSuccess(docId, pieces, List.of());
+    }
+
+    /**
+     * 解析成功收尾（含 P1 清洗结果）：
+     * <ul>
+     *   <li>kept 中的 chunk → status=EMBEDDING（其中 SUSPECT 判定项附加 clean_status=SUSPECT + clean_reason，照常向量化）；</li>
+     *   <li>outcomes 中 AUTO-DROP 的 chunk → status=FILTERED + clean_status=FILTERED + clean_reason（记录保留但永不向量化）。</li>
+     * </ul>
+     */
+    @Transactional
+    public boolean finalizeSuccess(Long docId, List<ChunkPiece> kept, List<DocumentCleanService.CleanOutcome> outcomes) {
         Document doc = documentRepository.findByIdForUpdate(docId).orElse(null);
         if (doc == null) {
             log.info("finalizeSuccess 中止：文档 {} 已被删除", docId);
             return false;
         }
-        List<Chunk> chunks = new ArrayList<>(pieces.size());
+        // 引用相等匹配（ChunkPiece 是 record，kept 与 outcomes 持有同一对象引用）
+        java.util.Map<ChunkPiece, DocumentCleanService.CleanOutcome> outcomeByPiece =
+                new java.util.IdentityHashMap<>();
+        for (DocumentCleanService.CleanOutcome o : outcomes) {
+            outcomeByPiece.put(o.piece(), o);
+        }
+        List<Chunk> chunks = new ArrayList<>(kept.size() + outcomes.size());
         int seq = 1;
-        for (ChunkPiece piece : pieces) {
+        for (ChunkPiece piece : kept) {
             Chunk chunk = new Chunk();
             chunk.setDocId(docId);
             chunk.setKbId(doc.getKbId());
@@ -80,14 +100,38 @@ public class DocumentParseTx {
             chunk.setPageNum(piece.pageNum());
             chunk.setTitle(piece.title());
             chunk.setStatus(com.ai.konwledgerepo.entity.ChunkStatus.EMBEDDING.value());
+            DocumentCleanService.CleanOutcome o = outcomeByPiece.get(piece);
+            if (o != null && o.disposition() == DocumentCleanService.Disposition.SUSPECT) {
+                chunk.setCleanStatus("SUSPECT");
+                chunk.setCleanReason(o.reason());
+            }
+            chunks.add(chunk);
+        }
+        for (DocumentCleanService.CleanOutcome o : outcomes) {
+            if (o.disposition() != DocumentCleanService.Disposition.AUTO_DROP) {
+                continue; // SUSPECT/KEEP 已随 kept 落库
+            }
+            ChunkPiece piece = o.piece();
+            Chunk chunk = new Chunk();
+            chunk.setDocId(docId);
+            chunk.setKbId(doc.getKbId());
+            chunk.setSeq(seq++);
+            chunk.setContent(piece.content());
+            chunk.setPageNum(piece.pageNum());
+            chunk.setTitle(piece.title());
+            chunk.setStatus(com.ai.konwledgerepo.entity.ChunkStatus.FILTERED.value());
+            chunk.setCleanStatus("FILTERED");
+            chunk.setCleanReason(o.reason());
             chunks.add(chunk);
         }
         chunkRepository.saveAll(chunks);
         doc.setParseStatus(DocStatus.SUCCESS.value());
-        doc.setChunkCount(pieces.size());
+        doc.setChunkCount(chunks.size());
         doc.setErrorMsg(null);
         documentRepository.save(doc);
-        log.info("finalizeSuccess：文档 {} 解析完成，{} 个 chunk 已落库", docId, pieces.size());
+        log.info("finalizeSuccess：文档 {} 解析完成，{} 个 chunk 已落库（AUTO-DROP {}）",
+                docId, chunks.size(),
+                outcomes.stream().filter(o -> o.disposition() == DocumentCleanService.Disposition.AUTO_DROP).count());
         return true;
     }
 

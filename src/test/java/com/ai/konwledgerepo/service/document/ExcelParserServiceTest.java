@@ -35,7 +35,7 @@ class ExcelParserServiceTest {
     private static ExcelParserService parser() {
         SeuDocumentProperties props = new SeuDocumentProperties(true, true, 50, 100, 3, 800, 120,
                 new SeuDocumentProperties.LlamaParse(false, "", "https://api.cloud.llamaindex.ai",
-                        "cost_effective", "latest", "ch_sim", 5, 900, "", true, false, null));
+                        "cost_effective", "latest", "ch_sim", 5, 900, "", true, false, null), SeuDocumentProperties.Clean.defaults());
         return new ExcelParserService(props);
     }
 

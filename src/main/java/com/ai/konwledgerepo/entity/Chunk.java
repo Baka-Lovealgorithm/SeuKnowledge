@@ -39,9 +39,17 @@ public class Chunk extends BaseEntity {
     @Column(name = "token_count")
     private Integer tokenCount;
 
-    /** 状态：EMBEDDING / INDEXED / FAILED */
+    /** 状态：EMBEDDING / INDEXED / FAILED / FILTERED（清洗丢弃） */
     @Column(nullable = false, length = 20)
     private String status = ChunkStatus.EMBEDDING.value();
+
+    /** 清洗状态（P1 规则清洗）：null=未清洗 / KEEP=保留 / SUSPECT=可疑待人工（照常入库）/ FILTERED=丢弃 */
+    @Column(name = "clean_status", length = 20)
+    private String cleanStatus;
+
+    /** 清洗原因（规则 ID + 说明，如 "C2 近重复（3-gram Jaccard≥0.9）"） */
+    @Column(name = "clean_reason", length = 500)
+    private String cleanReason;
 
     public String getEsId() {
         return esId;
@@ -113,5 +121,21 @@ public class Chunk extends BaseEntity {
 
     public void setStatus(String status) {
         this.status = status;
+    }
+
+    public String getCleanStatus() {
+        return cleanStatus;
+    }
+
+    public void setCleanStatus(String cleanStatus) {
+        this.cleanStatus = cleanStatus;
+    }
+
+    public String getCleanReason() {
+        return cleanReason;
+    }
+
+    public void setCleanReason(String cleanReason) {
+        this.cleanReason = cleanReason;
     }
 }

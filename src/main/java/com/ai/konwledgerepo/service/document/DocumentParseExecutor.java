@@ -36,15 +36,18 @@ public class DocumentParseExecutor {
     private final TaskLock taskLock;
     private final DocumentParseTx parseTx;
     private final DocumentParserService parserService;
+    private final DocumentCleanService documentCleanService;
     private final VectorIngestionService vectorIngestionService;
 
     public DocumentParseExecutor(TaskLock taskLock,
                                  DocumentParseTx parseTx,
                                  DocumentParserService parserService,
+                                 DocumentCleanService documentCleanService,
                                  VectorIngestionService vectorIngestionService) {
         this.taskLock = taskLock;
         this.parseTx = parseTx;
         this.parserService = parserService;
+        this.documentCleanService = documentCleanService;
         this.vectorIngestionService = vectorIngestionService;
     }
 
@@ -72,13 +75,19 @@ public class DocumentParseExecutor {
             doc.setReuseCache(reuseCache);
             // ---- 长任务：文本解析（无事务，不占用连接） ----
             List<ChunkPiece> pieces = parserService.parse(doc);
+            // ---- P1 chunk 级清洗：E 保护 → A 碎片 → B 图题 → C 重复（处置由配置名单决定） ----
+            DocumentCleanService.ChunkCleanResult clean = documentCleanService.cleanChunks(pieces);
             // ---- F-1 收尾：事务内重读 + chunk 批量写入 + SUCCESS（行不存在则静默中止） ----
-            boolean ok = parseTx.finalizeSuccess(docId, pieces);
+            boolean ok = parseTx.finalizeSuccess(docId, clean.kept(), clean.outcomes());
             if (ok) {
-                // 向量化（ingest 内部会重校验文档存在性，ES 无孤儿）
+                // 向量化（ingest 内部会重校验文档存在性，ES 无孤儿；FILTERED 的 chunk 天然被跳过）
                 vectorIngestionService.ingest(docId);
             }
-            log.info("文档 {} 解析完成，{} 个 chunk", doc.getFileName(), pieces.size());
+            log.info("文档 {} 解析完成，{} 个 chunk（清洗前 {}，AUTO-DROP {}，SUSPECT {}）",
+                    doc.getFileName(), clean.kept().size() + clean.outcomes().size(),
+                    pieces.size(),
+                    clean.outcomes().stream().filter(o -> o.disposition() == DocumentCleanService.Disposition.AUTO_DROP).count(),
+                    clean.outcomes().stream().filter(o -> o.disposition() == DocumentCleanService.Disposition.SUSPECT).count());
         } catch (Exception e) {
             log.error("文档 {} 解析失败", docId, e);
             // ---- F-1 失败路径：事务内重读 + FAILED（行不存在则静默返回） ----

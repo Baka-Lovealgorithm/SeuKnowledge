@@ -52,7 +52,7 @@ class PptxParserServiceTest {
         return new PptxParserService(llamaMock, visionMock, noopTracing,
                 new SeuDocumentProperties(true, true, 50, 100, 1, 800, 120,
                         new SeuDocumentProperties.LlamaParse(false, "", "https://api.cloud.llamaindex.ai",
-                                "cost_effective", "latest", "ch_sim", 5, 900, "", true, true, null)),
+                                "cost_effective", "latest", "ch_sim", 5, 900, "", true, true, null), SeuDocumentProperties.Clean.defaults()),
                 null);
     }
 
@@ -64,7 +64,7 @@ class PptxParserServiceTest {
         return new PptxParserService(llamaMock, visionMock, noopTracing,
                 new SeuDocumentProperties(true, true, 50, 100, 3, 800, 120,
                         new SeuDocumentProperties.LlamaParse(false, "", "https://api.cloud.llamaindex.ai",
-                                "cost_effective", "latest", "ch_sim", 5, 900, "", true, true, null)),
+                                "cost_effective", "latest", "ch_sim", 5, 900, "", true, true, null), SeuDocumentProperties.Clean.defaults()),
                 pool);
     }
 
@@ -218,7 +218,7 @@ class PptxParserServiceTest {
         PptxParserService service = new PptxParserService(llamaMock, visionMock, noopTracing,
                 new SeuDocumentProperties(false, true, 50, 100, 1, 800, 120,
                         new SeuDocumentProperties.LlamaParse(false, "", "https://api.cloud.llamaindex.ai",
-                                "cost_effective", "latest", "ch_sim", 5, 900, "", true, true, null)),
+                                "cost_effective", "latest", "ch_sim", 5, 900, "", true, true, null), SeuDocumentProperties.Clean.defaults()),
                 null);
         when(llamaMock.isConfigured()).thenReturn(true);
         when(llamaMock.parseToMarkdown(any(), any())).thenReturn(List.of(
@@ -241,7 +241,7 @@ class PptxParserServiceTest {
         PptxParserService service = new PptxParserService(llamaMock, visionMock, noopTracing,
                 new SeuDocumentProperties(true, true, 50, 100, 1, 800, 120,
                         new SeuDocumentProperties.LlamaParse(false, "", "https://api.cloud.llamaindex.ai",
-                                "cost_effective", "latest", "ch_sim", 5, 900, "", true, false, null)),
+                                "cost_effective", "latest", "ch_sim", 5, 900, "", true, false, null), SeuDocumentProperties.Clean.defaults()),
                 null);
         when(llamaMock.isConfigured()).thenReturn(true);
         when(llamaMock.parseToMarkdown(any(), any())).thenReturn(List.of(

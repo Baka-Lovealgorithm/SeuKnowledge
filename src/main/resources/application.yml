@@ -127,6 +127,19 @@ seuknowledge:
       take-screenshot: ${KB_LLAMAPARSE_TAKE_SCREENSHOT:true}    # 返回每页整页截图（本地下载按需：仅 PPTX 文字较少页（md 为空/< vision-min-text）下载，PDF 路径不下载）
       fill-missing-pages: ${KB_LLAMAPARSE_FILL_MISSING_PAGES:true} # 缺页补全：LlamaParse 结果缺页时用识图模型转写 Markdown 并入 md 流（需配置 VISION 类型模型）
       output-dir: ${KB_LLAMAPARSE_OUTPUT_DIR:./data/llamaparse} # 转换结果 Markdown 导出目录（便于检查转化效果，可为空禁用）
+    clean:                                          # P1 规则清洗（纯规则零模型成本；处置名单：AUTO-DROP 不进 ES，SUSPECT 打标照常入库）
+      enabled: ${KB_CLEAN_ENABLED:true}             # 清洗总开关
+      header-footer-ratio: ${KB_CLEAN_HF_RATIO:0.8} # 页眉页脚判定：归一化行出现率阈值（含页码数字归一化）
+      header-footer-window: ${KB_CLEAN_HF_WINDOW:3} # 页眉页脚判定：页首/页尾窗口行数（窗口外的重复行不剥）
+      header-footer-max-len: ${KB_CLEAN_HF_MAX_LEN:50} # 页眉页脚判定：行最大长度（防正文长段落误判）
+      short-min-len: ${KB_CLEAN_SHORT_MIN:10}       # A4 超短碎片阈值：长度低于且（无中文 或 无数字）
+      near-dup-sim: ${KB_CLEAN_NEAR_DUP_SIM:0.9}    # C2 近重复：3-gram Jaccard 相似度阈值（同文档内，保留首个）
+      template-ratio: ${KB_CLEAN_TEMPLATE_RATIO:0.6} # C1 页眉页脚模板：归一化文本出现于 chunk 比例阈值
+      long-dup-min-len: ${KB_CLEAN_LONG_DUP_MIN:80} # C3 跨 chunk 长重复：相同行最小长度
+      figure-title-max-len: ${KB_CLEAN_FIG_TITLE_MAX:30} # B1 孤立图题：图题后无内容的最大长度
+      figure-content-min-len: ${KB_CLEAN_FIG_CONTENT_MIN:40} # E3 保护：图题+内容达到此长度视为视觉内容放行
+      auto-drop-rules: ${KB_CLEAN_AUTO_DROP:A1,A2,A5,C1} # AUTO-DROP 白名单：命中直接删除（不进 ES），逗号分隔
+      suspect-rules: ${KB_CLEAN_SUSPECT:A3,A4,B1,B2,B3,C2,C3,P5} # SUSPECT 名单：命中打标待人工（照常入库进 ES），逗号分隔
   recall:                                         # 知识召回策略参数：每查询每来源召回多少条进精排候选
     chunk-top: ${KB_RECALL_CHUNK_TOP:15}          # 文档 chunk 每查询召回条数（进精排候选）
     source-top: ${KB_RECALL_SOURCE_TOP:8}         # 业务知识/问答对各每查询召回条数（进精排候选）
