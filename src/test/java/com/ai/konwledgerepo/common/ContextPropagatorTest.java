@@ -65,6 +65,37 @@ class ContextPropagatorTest {
     }
 
     @Test
+    void subthreadMarkDeltaSent_isVisibleInMainThread() throws Exception {
+        // 模拟真实链路：ChatStreamService 在请求线程创建共享 SseFlow，
+        // 图在虚拟线程执行时 markDeltaSent，请求线程随后 isDeltaSent 必须为 true
+        // （回归：曾因 DELTA_SENT 存 ThreadLocal 导致跨线程丢失，整段答案被重复补发）
+        SseEmitter emitter = new SseEmitter();
+        SseStreamContext.SseFlow flow = new SseStreamContext.SseFlow(emitter);
+        SseStreamContext.setFlow(flow);
+        try {
+            assertTrue(!SseStreamContext.isDeltaSent(), "初始未推送 delta");
+            CompletableFuture.runAsync(ContextPropagator.wrap(() ->
+                    SseStreamContext.markDeltaSent()), EXEC).get(5, TimeUnit.SECONDS);
+            assertTrue(SseStreamContext.isDeltaSent(), "子线程 markDeltaSent 后主线程应可见（SseFlow 共享标记）");
+        } finally {
+            SseStreamContext.clear();
+        }
+    }
+
+    @Test
+    void sameThreadMarkDeltaSent_withoutFlow_fallsBackToThreadLocal() {
+        // 无 SseFlow（非流式场景）时，markDeltaSent/isDeltaSent 回退 ThreadLocal，行为不变
+        SseStreamContext.setFlow(null);
+        try {
+            assertTrue(!SseStreamContext.isDeltaSent());
+            SseStreamContext.markDeltaSent();
+            assertTrue(SseStreamContext.isDeltaSent());
+        } finally {
+            SseStreamContext.clear();
+        }
+    }
+
+    @Test
     void wrap_callable_subthreadSeesMdcAndCleansUp() throws Exception {
         ExecutorService single = Executors.newSingleThreadExecutor();
         try {

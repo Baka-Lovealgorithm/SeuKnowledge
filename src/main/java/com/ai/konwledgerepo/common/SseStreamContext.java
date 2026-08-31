@@ -20,12 +20,14 @@ public final class SseStreamContext {
     private static final ThreadLocal<Boolean> DELTA_SENT = ThreadLocal.withInitial(() -> false);
 
     /**
-     * 跨线程共享的流控对象：emitter 引用 + 取消标志 + 已发 delta 累积。
-     * 所有通过 ContextPropagator 快照/恢复的线程共享同一实例。
+     * 跨线程共享的流控对象：emitter 引用 + 取消标志 + 已发 delta 累积 + delta 已推送标记。
+     * 所有通过 ContextPropagator 快照/恢复的线程共享同一实例，
+     * 因此节点线程（图在 qaExecutor 虚拟线程池执行）与请求线程都能读写同一份状态。
      */
     public static final class SseFlow {
         public final SseEmitter emitter;
         public final AtomicBoolean cancelled = new AtomicBoolean(false);
+        private final AtomicBoolean deltaSent = new AtomicBoolean(false);
         private final StringBuilder partial = new StringBuilder();
 
         public SseFlow(SseEmitter emitter) {
@@ -40,6 +42,16 @@ public final class SseStreamContext {
 
         public synchronized String partialAnswer() {
             return partial.toString();
+        }
+
+        /** 标记已推送过 delta（跨线程安全：本对象被所有线程共享） */
+        public void markDeltaSent() {
+            deltaSent.set(true);
+        }
+
+        /** 是否已推送过 delta（跨线程安全） */
+        public boolean isDeltaSent() {
+            return deltaSent.get();
         }
     }
 
@@ -176,12 +188,28 @@ public final class SseStreamContext {
         }
     }
 
-    /** 标记已流式输出过答案 */
+    /**
+     * 标记已流式输出过答案。
+     * 优先写共享 SseFlow 上的标记（图在虚拟线程执行时，节点线程与请求线程都能读到）；
+     * 无 SseFlow 时回退到 ThreadLocal（兼容非流式/纯同线程场景）。
+     */
     public static void markDeltaSent() {
+        SseFlow flow = FLOW.get();
+        if (flow != null) {
+            flow.markDeltaSent();
+        }
         DELTA_SENT.set(true);
     }
 
+    /**
+     * 是否已流式输出过答案。
+     * 优先读共享 SseFlow 上的标记（跨线程一致）；无 SseFlow 时回退 ThreadLocal。
+     */
     public static boolean isDeltaSent() {
+        SseFlow flow = FLOW.get();
+        if (flow != null) {
+            return flow.isDeltaSent();
+        }
         return DELTA_SENT.get();
     }
 
