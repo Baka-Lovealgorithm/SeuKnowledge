@@ -69,11 +69,13 @@ onUpdated(() => nextTick(injectCodeBlocks))
 
 <style scoped>
 .md-content { line-height: 1.7; word-break: break-word; }
-.md-content :deep(p) { margin: 0.5em 0; }
+.md-content :deep(p) { margin: 0.35em 0; }
 .md-content :deep(strong) { font-weight: 700; }
 .md-content :deep(em) { font-style: italic; }
-.md-content :deep(ul), .md-content :deep(ol) { padding-left: 1.5em; margin: 0.5em 0; }
-.md-content :deep(li) { margin: 0.25em 0; }
+.md-content :deep(ul), .md-content :deep(ol) { padding-left: 1.5em; margin: 0.35em 0; }
+.md-content :deep(li) { margin: 0.15em 0; }
+.md-content :deep(> :first-child) { margin-top: 0; }
+.md-content :deep(> :last-child) { margin-bottom: 0; }
 .md-content :deep(h1), .md-content :deep(h2), .md-content :deep(h3) { margin: 0.8em 0 0.4em; font-weight: 700; }
 .md-content :deep(blockquote) { border-left: 3px solid #409eff; padding: 2px 10px; margin: 0.5em 0; color: #606266; }
 .md-content :deep(code) { font-family: Consolas, Menlo, Monaco, monospace; font-size: 0.9em; background: #f0f2f5; padding: 1px 5px; border-radius: 3px; }

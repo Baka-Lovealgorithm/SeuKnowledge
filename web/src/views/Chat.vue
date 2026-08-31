@@ -550,7 +550,9 @@ onMounted(loadKbs)
 .msg-row.user .msg-bubble { background: #409eff; color: #fff; }
 .msg-role { font-size: 12px; color: #909399; margin-bottom: 6px; }
 .msg-row.user .msg-role { color: #d9ecff; }
-.msg-content { white-space: pre-wrap; word-break: break-word; }
+/* 不用 pre-wrap：marked 输出的块级 HTML 之间存在源码换行符，pre-wrap 会把它们渲染成多余空行；
+   用户输入里的单个换行已由 markdown breaks:true 转成 <br>，这里保持默认空白折叠 */
+.msg-content { word-break: break-word; }
 .msg-refs { margin-top: 10px; border-top: 1px dashed #dcdfe6; padding-top: 8px; }
 .msg-row.user .msg-refs { border-color: rgba(255,255,255,0.4); }
 .ref-item { font-size: 12px; color: #606266; padding: 3px 0; }
