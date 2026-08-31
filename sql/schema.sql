@@ -109,6 +109,8 @@ CREATE TABLE IF NOT EXISTS kb_chunk (
     updated_at datetime(6),
     status varchar(20) not null,
     es_id varchar(64),
+    clean_status varchar(20),
+    clean_reason varchar(500),
     content TEXT not null,
     title varchar(255),
     primary key (id)
@@ -151,6 +153,19 @@ CREATE TABLE IF NOT EXISTS kb_extract_task (
     doc_ids TEXT,
     error_log TEXT,
     failed_doc_ids TEXT,
+    primary key (id)
+) engine=InnoDB;
+
+CREATE TABLE IF NOT EXISTS chunk_review_log (
+    created_at datetime(6),
+    updated_at datetime(6),
+    chunk_id bigint not null,
+    doc_id bigint not null,
+    user_id bigint,
+    id bigint not null auto_increment,
+    action varchar(20) not null,
+    before_content TEXT,
+    after_content TEXT,
     primary key (id)
 ) engine=InnoDB;
 

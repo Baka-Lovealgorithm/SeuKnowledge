@@ -8,7 +8,6 @@ import com.ai.konwledgerepo.entity.ChunkStatus;
 import com.ai.konwledgerepo.entity.DocStatus;
 import com.ai.konwledgerepo.entity.Document;
 import com.ai.konwledgerepo.entity.ModelUsage;
-import com.ai.konwledgerepo.entity.SourceType;
 import com.ai.konwledgerepo.model.ModelFactory;
 import com.ai.konwledgerepo.repository.ChunkRepository;
 import com.ai.konwledgerepo.repository.DocumentRepository;
@@ -21,7 +20,6 @@ import org.springframework.stereotype.Service;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 /**
  * 向量化与 ES 写入服务：文档 chunk、业务知识、问答对统一写入 ES（kb_chunk 索引），
@@ -56,7 +54,8 @@ public class VectorIngestionService {
 
     /**
      * 为文档所有待向量化 chunk 生成向量并写入 ES。
-     * embedding 失败时不阻断（chunk 保持 EMBEDDING，可重试），文档置为 ERROR。
+     * 清洗 DEFER 决策：clean_status=SUSPECT 的 chunk 暂不向量化（人工审核通过后由
+     * {@link #reindexChunk} 单条索引）；embedding 失败时不阻断（chunk 保持 EMBEDDING，可重试），文档置为 ERROR。
      */
     public void ingest(Long docId) {
         Document doc = documentRepository.findById(docId).orElse(null);
@@ -65,6 +64,7 @@ public class VectorIngestionService {
         }
         List<Chunk> chunks = chunkRepository.findByDocIdOrderBySeqAsc(docId).stream()
                 .filter(c -> ChunkStatus.EMBEDDING.is(c.getStatus()))
+                .filter(c -> !"SUSPECT".equals(c.getCleanStatus()))
                 .toList();
         if (chunks.isEmpty()) {
             return;
@@ -171,17 +171,49 @@ public class VectorIngestionService {
         IndexResponse response = esClient.index(i -> i
                 .index(indexName)
                 .id(String.valueOf(chunk.getId()))
-                .document(Map.of(
-                        "chunkId", chunk.getId(),
-                        "docId", chunk.getDocId(),
-                        "kbId", chunk.getKbId(),
-                        "docName", doc.getFileName(),
-                        "pageNum", chunk.getPageNum() == null ? 0 : chunk.getPageNum(),
-                        "title", chunk.getTitle() == null ? "" : chunk.getTitle(),
-                        "content", chunk.getContent(),
-                        "sourceType", SourceType.CHUNK.value(),
-                        "contentVector", vector)));
+                .document(ChunkDocFields.chunkDocument(
+                        chunk.getId(), chunk.getDocId(), chunk.getKbId(), doc.getFileName(),
+                        chunk.getPageNum() == null ? 0 : chunk.getPageNum(),
+                        chunk.getTitle() == null ? "" : chunk.getTitle(),
+                        chunk.getContent(), vector, chunk.getCleanStatus())));
         return response.id();
+    }
+
+    /**
+     * 单 chunk 向量化（人工审核触发）：重新 embedding 并 upsert ES，回填 esId 且 status→INDEXED。
+     * 用于 DEFER 决策下 SUSPECT chunk 审核通过（keep/edit）后的索引，以及人工误删后的恢复。
+     * embedding 失败时抛 BizException（chunk 保持原状态，可由调用方决定是否重试）。
+     */
+    public void reindexChunk(Chunk chunk) {
+        if (chunk == null || chunk.getContent() == null || chunk.getContent().isBlank()) {
+            throw new IllegalArgumentException("chunk 内容为空，无法向量化");
+        }
+        Document doc = documentRepository.findById(chunk.getDocId()).orElse(null);
+        if (doc == null) {
+            throw new IllegalStateException("文档不存在 docId=" + chunk.getDocId());
+        }
+        try {
+            Long workspaceId = workspaceIdResolver.resolve(chunk.getKbId());
+            EmbeddingModel embeddingModel = modelFactory.getEmbeddingModelByUsage(ModelUsage.RETRIEVE.value(), workspaceId);
+            float[] vector = embeddingModel.embed(embedText(chunk.getTitle(), chunk.getContent()));
+            String esId = indexChunk(doc, chunk, vector);
+            chunk.setEsId(esId);
+            chunk.setStatus(ChunkStatus.INDEXED.value());
+            chunkRepository.save(chunk);
+            log.info("chunk {} 已单条向量化（cleanStatus={}）", chunk.getId(), chunk.getCleanStatus());
+        } catch (Exception e) {
+            log.error("chunk {} 单条向量化失败: {}", chunk.getId(), e.getMessage());
+            throw new com.ai.konwledgerepo.common.BizException("向量化失败: " + e.getMessage());
+        }
+    }
+
+    /** 按 chunkId 删除 ES 文档（人工审核 drop / 误删恢复前调用）；不存在时静默容错 */
+    public void deleteByChunkId(Long chunkId) {
+        try {
+            esClient.delete(d -> d.index(indexName).id(String.valueOf(chunkId)));
+        } catch (Exception e) {
+            log.warn("删除 ES chunk {} 失败（容错）: {}", chunkId, e.getMessage());
+        }
     }
 
     /**

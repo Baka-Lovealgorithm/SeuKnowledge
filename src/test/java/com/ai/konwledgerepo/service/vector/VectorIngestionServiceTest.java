@@ -112,6 +112,67 @@ class VectorIngestionServiceTest {
         assertEquals("ERROR", captor.getValue().getParseStatus(), "embedding 失败应将文档置为 ERROR");
     }
 
+    // ===== DEFER 决策：SUSPECT chunk 跳过自动向量化 =====
+
+    @Test
+    void ingest_suspectChunk_skippedWithoutEmbedding() {
+        Chunk suspect = chunk(1L, "标题", "正文");
+        suspect.setCleanStatus("SUSPECT");
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc()));
+        when(chunkRepository.findByDocIdOrderBySeqAsc(1L)).thenReturn(List.of(suspect));
+
+        service.ingest(1L);
+
+        verify(embeddingModel, never()).embed(anyList());
+        verify(documentRepository, never()).save(any(Document.class));
+    }
+
+    @Test
+    void ingest_mixedKeepAndSuspect_onlyKeepEmbedded() {
+        Chunk keep = chunk(1L, "标题", "保留正文");
+        Chunk suspect = chunk(2L, "标题", "可疑正文");
+        suspect.setCleanStatus("SUSPECT");
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc()));
+        when(chunkRepository.findByDocIdOrderBySeqAsc(1L)).thenReturn(List.of(keep, suspect));
+        // embed 抛异常以在 ES 写入前终止（esClient 不可 mock），验证入参批次只含 KEEP
+        when(embeddingModel.embed(anyList())).thenThrow(new RuntimeException("停止"));
+
+        service.ingest(1L);
+
+        ArgumentCaptor<List<String>> captor = ArgumentCaptor.forClass(List.class);
+        verify(embeddingModel).embed(captor.capture());
+        assertEquals(1, captor.getValue().size(), "仅 KEEP chunk 进入 embedding 批");
+        assertEquals("标题\n保留正文", captor.getValue().get(0), "SUSPECT 不应进入向量化批次");
+    }
+
+    // ===== reindexChunk：单 chunk 向量化（人工审核触发）=====
+
+    @Test
+    void reindexChunk_blankContent_rejected() {
+        Chunk c = chunk(1L, "标题", "  ");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> service.reindexChunk(c));
+    }
+
+    @Test
+    void reindexChunk_docMissing_throws() {
+        Chunk c = chunk(1L, "标题", "正文");
+        when(documentRepository.findById(1L)).thenReturn(Optional.empty());
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> service.reindexChunk(c));
+    }
+
+    @Test
+    void reindexChunk_embeddingFailure_throwsBizException() {
+        Chunk c = chunk(1L, "标题", "正文");
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc()));
+        when(embeddingModel.embed(anyString())).thenThrow(new RuntimeException("embed 失败"));
+
+        org.junit.jupiter.api.Assertions.assertThrows(com.ai.konwledgerepo.common.BizException.class,
+                () -> service.reindexChunk(c));
+        assertEquals(ChunkStatus.EMBEDDING.value(), c.getStatus(), "失败时 chunk 状态不变");
+    }
+
     // ===== indexSource：内容为空短路（不触达 ES）=====
 
     @Test

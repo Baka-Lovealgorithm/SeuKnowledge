@@ -108,7 +108,7 @@ public class DocumentService {
 
     public List<DocumentResponse> list(Long kbId) {
         return documentRepository.findByKbIdOrderByIdDesc(kbId).stream()
-                .map(DocumentResponse::from)
+                .map(d -> DocumentResponse.withSuspectCount(d, chunkRepository.countByDocIdAndCleanStatus(d.getId(), "SUSPECT")))
                 .toList();
     }
 
@@ -149,8 +149,7 @@ public class DocumentService {
     public List<ChunkResponse> chunks(Long docId) {
         getEntity(docId);
         return chunkRepository.findByDocIdOrderBySeqAsc(docId).stream()
-                .map(c -> new ChunkResponse(c.getId(), c.getDocId(), c.getSeq(), c.getContent(), c.getPageNum(),
-                        c.getTitle(), c.getStatus(), c.getEsId()))
+                .map(ChunkResponse::from)
                 .toList();
     }
 

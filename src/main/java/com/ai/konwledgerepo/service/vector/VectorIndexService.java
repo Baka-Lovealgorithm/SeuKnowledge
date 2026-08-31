@@ -70,13 +70,14 @@ public class VectorIndexService implements ApplicationRunner {
         }
     }
 
-    /** 旧索引补充多源召回字段（sourceType / title），字段已存在时幂等无副作用 */
+    /** 旧索引补充多源召回字段（sourceType / title / cleanStatus），字段已存在时幂等无副作用 */
     private void ensureExtraFields() {
         try {
             esClient.indices().putMapping(p -> p
                     .index(indexName)
                     .properties(ChunkDocFields.TITLE, pr -> pr.keyword(k -> k))
-                    .properties(ChunkDocFields.SOURCE_TYPE, pr -> pr.keyword(k -> k)));
+                    .properties(ChunkDocFields.SOURCE_TYPE, pr -> pr.keyword(k -> k))
+                    .properties(ChunkDocFields.CLEAN_STATUS, pr -> pr.keyword(k -> k)));
         } catch (Exception e) {
             log.warn("ES 索引补充字段失败（不影响存量检索）：{}", e.getMessage());
         }

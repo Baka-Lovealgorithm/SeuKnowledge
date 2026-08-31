@@ -34,6 +34,11 @@ const routes = [
     meta: { auth: true, title: 'AI 抽取任务' }
   },
   {
+    path: '/review',
+    component: () => import('../views/Review.vue'),
+    meta: { auth: true, title: '清洗复核' }
+  },
+  {
     path: '/models',
     component: () => import('../views/ModelConfig.vue'),
     meta: { auth: true, roles: ['OWNER', 'ADMIN'], title: '模型配置' }

@@ -24,6 +24,12 @@
         </template>
       </el-table-column>
       <el-table-column prop="chunkCount" label="分块数" width="90" />
+      <el-table-column label="待审核" width="90">
+        <template #default="{ row }">
+          <el-tag v-if="row.suspectCount > 0" type="warning" size="small">{{ row.suspectCount }}</el-tag>
+          <span v-else>-</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="errorMsg" label="错误信息" min-width="180" show-overflow-tooltip />
       <el-table-column prop="createdAt" label="上传时间" width="170">
         <template #default="{ row }">{{ fmt(row.createdAt) }}</template>
@@ -42,8 +48,15 @@
         <el-table-column prop="seq" label="序号" width="70" />
         <el-table-column prop="title" label="所属标题" min-width="130" show-overflow-tooltip />
         <el-table-column prop="pageNum" label="页码" width="70" />
-        <el-table-column prop="content" label="内容" min-width="360" show-overflow-tooltip />
-        <el-table-column prop="status" label="状态" width="100" />
+        <el-table-column prop="content" label="内容" min-width="320" show-overflow-tooltip />
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            <el-tooltip v-if="row.cleanReason" :content="row.cleanReason" placement="top">
+              <el-tag :type="chunkStatusType(row)" size="small">{{ chunkStatusText(row) }}</el-tag>
+            </el-tooltip>
+            <el-tag v-else :type="chunkStatusType(row)" size="small">{{ chunkStatusText(row) }}</el-tag>
+          </template>
+        </el-table-column>
       </el-table>
     </el-dialog>
   </div>
@@ -67,6 +80,17 @@ const chunks = ref([])
 const chunkTitle = ref('')
 
 const parseType = (s) => ({ SUCCESS: 'success', FAILED: 'danger', PARSING: 'warning', PENDING: 'info' }[s] || 'info')
+
+const chunkStatusType = (row) => {
+  if (row.cleanStatus === 'SUSPECT') return 'warning'
+  if (row.cleanStatus === 'FILTERED' || row.status === 'FILTERED') return 'info'
+  return { INDEXED: 'success', EMBEDDING: 'primary', FAILED: 'danger' }[row.status] || 'info'
+}
+const chunkStatusText = (row) => {
+  if (row.cleanStatus === 'SUSPECT') return 'SUSPECT'
+  if (row.cleanStatus === 'FILTERED' || row.status === 'FILTERED') return 'FILTERED'
+  return row.status || ''
+}
 
 function sizeText(n) {
   if (!n) return '-'

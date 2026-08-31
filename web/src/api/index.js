@@ -26,8 +26,16 @@ export const docApi = {
   },
   list: (kbId) => http.get(`/kb/${kbId}/documents`),
   remove: (id) => http.delete(`/documents/${id}`),
-  chunks: (id) => http.get(`/documents/${id}/chunks`),
+  chunks: (id, filter) => http.get(`/documents/${id}/chunks`, { params: { filter } }),
   retry: (id) => http.post(`/documents/${id}/retry`)
+}
+
+export const reviewApi = {
+  suspectQueue: (kbId) => http.get(`/kb/${kbId}/chunks/suspect`),
+  keep: (id) => http.post(`/chunks/${id}/review/keep`),
+  drop: (id) => http.post(`/chunks/${id}/review/drop`),
+  edit: (id, data) => http.post(`/chunks/${id}/edit`, data),
+  batch: (ids, action) => http.post('/chunks/review/batch', { ids, action })
 }
 
 export const modelApi = {
