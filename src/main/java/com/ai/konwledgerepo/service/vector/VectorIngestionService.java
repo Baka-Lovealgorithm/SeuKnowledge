@@ -1,7 +1,10 @@
 package com.ai.konwledgerepo.service.vector;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch.core.BulkRequest;
+import co.elastic.clients.elasticsearch.core.BulkResponse;
 import co.elastic.clients.elasticsearch.core.IndexResponse;
+import co.elastic.clients.elasticsearch.core.bulk.BulkResponseItem;
 import com.ai.konwledgerepo.config.props.SeuEsProperties;
 import com.ai.konwledgerepo.entity.Chunk;
 import com.ai.konwledgerepo.entity.ChunkStatus;
@@ -31,6 +34,9 @@ import java.util.List;
 public class VectorIngestionService {
 
     private static final Logger log = LoggerFactory.getLogger(VectorIngestionService.class);
+
+    /** ES bulk 批量写入每批 chunk 数：大文档几百 chunk 时一次提交一批（每条约 1MB，100 条远低于 ES 默认 100MB 请求上限） */
+    private static final int BULK_BATCH_SIZE = 100;
 
     private final ElasticsearchClient esClient;
     private final ChunkRepository chunkRepository;
@@ -110,20 +116,7 @@ public class VectorIngestionService {
             documentRepository.save(doc);
             return;
         }
-        boolean allIndexed = true;
-        for (int i = 0; i < chunks.size(); i++) {
-            Chunk chunk = chunks.get(i);
-            try {
-                String esId = indexChunk(doc, chunk, vectors.get(i));
-                chunk.setEsId(esId);
-                chunk.setStatus(ChunkStatus.INDEXED.value());
-            } catch (IOException e) {
-                log.error("chunk {} 写入 ES 失败", chunk.getId(), e);
-                chunk.setStatus(ChunkStatus.FAILED.value());
-                allIndexed = false;
-            }
-            chunkRepository.save(chunk);
-        }
+        boolean allIndexed = indexChunksBulk(doc, chunks, vectors);
         log.info("文档 {} 向量化完成（{} 块，全部成功={}）", docId, chunks.size(), allIndexed);
     }
 
@@ -180,6 +173,72 @@ public class VectorIngestionService {
         } catch (IOException e) {
             log.error("删除 ES 知识库 {} 文档失败", kbId, e);
         }
+    }
+
+    /**
+     * 批量写入 ES（BulkRequest）：按 {@link #BULK_BATCH_SIZE} 分块一次提交多条，替代逐条 index
+     * （大文档几百 chunk 时从几百次 HTTP 往返降到几次）。逐 item 校验结果：
+     * 失败（error 非空或 status≥300）的 chunk 置 FAILED，其余置 INDEXED 并回填 esId；
+     * 整批 IOException 时该批全部置 FAILED。结束后统一 saveAll 落库。
+     *
+     * @return 是否全部成功（false 表示存在失败 chunk，不影响文档状态，与旧逐条语义一致）
+     */
+    private boolean indexChunksBulk(Document doc, List<Chunk> chunks, List<float[]> vectors) {
+        boolean allIndexed = true;
+        List<List<Chunk>> batches = partitionBySize(chunks, BULK_BATCH_SIZE);
+        int offset = 0;
+        for (List<Chunk> batch : batches) {
+            BulkRequest.Builder bulk = new BulkRequest.Builder();
+            for (int i = 0; i < batch.size(); i++) {
+                Chunk chunk = batch.get(i);
+                float[] vector = vectors.get(offset + i);
+                bulk.operations(op -> op.index(idx -> idx
+                        .index(indexName)
+                        .id(String.valueOf(chunk.getId()))
+                        .document(ChunkDocFields.chunkDocument(
+                                chunk.getId(), chunk.getDocId(), chunk.getKbId(), doc.getFileName(),
+                                chunk.getPageNum() == null ? 0 : chunk.getPageNum(),
+                                chunk.getTitle() == null ? "" : chunk.getTitle(),
+                                chunk.getContent(), vector, chunk.getCleanStatus()))));
+            }
+            try {
+                BulkResponse response = esClient.bulk(bulk.build());
+                List<BulkResponseItem> items = response.items();
+                for (int i = 0; i < batch.size(); i++) {
+                    Chunk chunk = batch.get(i);
+                    BulkResponseItem item = items.get(i);
+                    if (item.error() != null || item.status() >= 300) {
+                        log.error("chunk {} 写入 ES 失败（bulk item status={}）", chunk.getId(), item.status());
+                        chunk.setStatus(ChunkStatus.FAILED.value());
+                        allIndexed = false;
+                    } else {
+                        chunk.setEsId(String.valueOf(chunk.getId()));
+                        chunk.setStatus(ChunkStatus.INDEXED.value());
+                    }
+                }
+            } catch (IOException e) {
+                log.error("chunk 批量写入 ES 失败（批 {} 条）", batch.size(), e);
+                for (Chunk chunk : batch) {
+                    chunk.setStatus(ChunkStatus.FAILED.value());
+                }
+                allIndexed = false;
+            }
+            offset += batch.size();
+        }
+        chunkRepository.saveAll(chunks);
+        return allIndexed;
+    }
+
+    /**
+     * 按 batchSize 将列表分块（末块可能不足），返回子列表视图集合，保持元素顺序与引用。
+     * package-private 供单元测试验证分块边界。
+     */
+    static List<List<Chunk>> partitionBySize(List<Chunk> chunks, int batchSize) {
+        List<List<Chunk>> batches = new ArrayList<>();
+        for (int from = 0; from < chunks.size(); from += batchSize) {
+            batches.add(chunks.subList(from, Math.min(from + batchSize, chunks.size())));
+        }
+        return batches;
     }
 
     private String indexChunk(Document doc, Chunk chunk, float[] vector) throws IOException {

@@ -18,6 +18,8 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -173,6 +175,52 @@ class VectorIngestionServiceTest {
         assertEquals(ChunkStatus.EMBEDDING.value(), c.getStatus(), "失败时 chunk 状态不变");
     }
 
+    // ===== partitionBySize：bulk 分块边界（纯逻辑，不依赖 ES client）=====
+
+    @Test
+    void partitionBySize_emptyList_returnsNoBatches() {
+        assertTrue(VectorIngestionService.partitionBySize(List.of(), 100).isEmpty());
+    }
+
+    @Test
+    void partitionBySize_lessThanBatch_returnsSingleBatch() {
+        List<Chunk> chunks = List.of(chunk(1L, "t", "c"), chunk(2L, "t", "c"));
+        List<List<Chunk>> batches = VectorIngestionService.partitionBySize(chunks, 100);
+        assertEquals(1, batches.size(), "不足一批应只分一批");
+        assertEquals(List.of(1L, 2L), ids(batches.get(0)));
+    }
+
+    @Test
+    void partitionBySize_exactlyBatchSize_returnsSingleBatch() {
+        List<Chunk> chunks = List.of(chunk(1L, "t", "c"), chunk(2L, "t", "c"), chunk(3L, "t", "c"));
+        List<List<Chunk>> batches = VectorIngestionService.partitionBySize(chunks, 3);
+        assertEquals(1, batches.size(), "恰好一批应只分一批");
+        assertEquals(3, batches.get(0).size());
+    }
+
+    @Test
+    void partitionBySize_exceedsBatch_partitionsWithCorrectTail() {
+        List<Chunk> chunks = List.of(chunk(1L, "t", "c"), chunk(2L, "t", "c"), chunk(3L, "t", "c"),
+                chunk(4L, "t", "c"), chunk(5L, "t", "c"));
+        List<List<Chunk>> batches = VectorIngestionService.partitionBySize(chunks, 2);
+        assertEquals(3, batches.size(), "5 条按 2/批应分 3 批");
+        assertEquals(List.of(1L, 2L), ids(batches.get(0)));
+        assertEquals(List.of(3L, 4L), ids(batches.get(1)));
+        assertEquals(List.of(5L), ids(batches.get(2)), "末批应为剩余 1 条且保持顺序");
+    }
+
+    @Test
+    void partitionBySize_preservesOriginalOrderAndReferences() {
+        List<Chunk> chunks = new java.util.ArrayList<>(List.of(
+                chunk(10L, "t", "c"), chunk(20L, "t", "c"), chunk(30L, "t", "c"), chunk(40L, "t", "c")));
+        List<List<Chunk>> batches = VectorIngestionService.partitionBySize(chunks, 2);
+        List<Chunk> flattened = batches.stream().flatMap(List::stream).toList();
+        assertEquals(4, flattened.size());
+        for (int i = 0; i < chunks.size(); i++) {
+            assertSame(chunks.get(i), flattened.get(i), "分块应保持元素引用与顺序");
+        }
+    }
+
     // ===== indexSource：内容为空短路（不触达 ES）=====
 
     @Test
@@ -202,5 +250,10 @@ class VectorIngestionServiceTest {
         d.setKbId(1L);
         d.setFileName("test.md");
         return d;
+    }
+
+    /** 提取 chunk 列表 id（供分块边界断言） */
+    private static List<Long> ids(List<Chunk> chunks) {
+        return chunks.stream().map(Chunk::getId).toList();
     }
 }
