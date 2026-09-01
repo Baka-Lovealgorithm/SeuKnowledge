@@ -1,11 +1,15 @@
 <template>
   <div>
     <div class="toolbar">
-      <el-select v-model="kbId" placeholder="选择知识库" style="width: 220px" @change="load">
+      <el-select v-model="kbId" placeholder="选择知识库" style="width: 200px" @change="onKbChange">
         <el-option v-for="kb in kbs" :key="kb.id" :label="kb.name" :value="kb.id" />
       </el-select>
-      <el-tag v-if="kbId && queue.length" type="warning" size="small" effect="plain">
-        待审核 {{ queue.length }} 块
+      <el-select v-model="docFilter" placeholder="全部文档" style="width: 280px" filterable clearable
+                 :disabled="!kbId || !docs.length" @change="">
+        <el-option v-for="d in docs" :key="d.id" :label="docLabel(d)" :value="d.id" />
+      </el-select>
+      <el-tag v-if="kbId && filtered.length" type="warning" size="small" effect="plain">
+        待审核 {{ filtered.length }} 块
       </el-tag>
       <el-button v-if="auth.canWrite && kbId && selected.length" type="primary" size="small" @click="batchKeep">
         批量保留 ({{ selected.length }})
@@ -15,7 +19,7 @@
       </el-button>
     </div>
 
-    <el-table :data="queue" v-loading="loading" border @selection-change="onSelection">
+    <el-table :data="filtered" v-loading="loading" border @selection-change="onSelection">
       <el-table-column v-if="auth.canWrite" type="selection" width="50" />
       <el-table-column prop="docName" label="文档" min-width="150" show-overflow-tooltip />
       <el-table-column prop="pageNum" label="页码" width="70" />
@@ -43,7 +47,7 @@
         </template>
       </el-table-column>
     </el-table>
-    <el-empty v-if="!loading && kbId && !queue.length" description="暂无待审核的 SUSPECT 分块" />
+    <el-empty v-if="!loading && kbId && !filtered.length" description="暂无待审核的 SUSPECT 分块" />
 
     <el-dialog v-model="editVisible" title="编辑并保留分块" width="720px">
       <div class="edit-reason" v-if="editing && editing.cleanReason">
@@ -71,15 +75,17 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { kbApi, reviewApi } from '../api'
+import { docApi, kbApi, reviewApi } from '../api'
 import { useAuthStore } from '../stores/auth'
 import ChunkDetail from '../components/ChunkDetail.vue'
 
 const auth = useAuthStore()
 const kbs = ref([])
 const kbId = ref(null)
+const docs = ref([])
+const docFilter = ref(null)
 const queue = ref([])
 const loading = ref(false)
 const selected = ref([])
@@ -91,6 +97,16 @@ const saving = ref(false)
 const detailVisible = ref(false)
 const detailRow = ref(null)
 
+/** 按文档过滤后的待审核队列（未选文档 = 全部） */
+const filtered = computed(() =>
+  docFilter.value ? queue.value.filter((q) => q.docId === docFilter.value) : queue.value
+)
+const suspectOf = (d) => queue.value.filter((q) => q.docId === d.id).length
+const docLabel = (d) => {
+  const n = suspectOf(d)
+  return `${d.fileName}${n ? `（SUSPECT ${n}）` : ''}`
+}
+
 async function loadKbs() {
   kbs.value = await kbApi.list()
 }
@@ -98,7 +114,18 @@ async function loadKbs() {
 async function load() {
   if (!kbId.value) return
   loading.value = true
-  try { queue.value = await reviewApi.suspectQueue(kbId.value) } finally { loading.value = false }
+  try {
+    const [ds, qs] = await Promise.all([docApi.list(kbId.value), reviewApi.suspectQueue(kbId.value)])
+    docs.value = ds
+    queue.value = qs
+  } finally {
+    loading.value = false
+  }
+}
+
+function onKbChange() {
+  docFilter.value = null
+  load()
 }
 
 function ruleId(row) {
