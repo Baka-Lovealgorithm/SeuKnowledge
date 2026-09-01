@@ -15,6 +15,9 @@ public interface DocumentRepository extends JpaRepository<Document, Long> {
 
     List<Document> findByKbIdOrderByIdDesc(Long kbId);
 
+    /** 策展门队列：按知识库查处于展示门/已接受状态的文档（跨文档聚合待决断项） */
+    List<Document> findByKbIdAndCurateStatusInOrderByIdDesc(Long kbId, List<String> curateStatuses);
+
     long countByKbId(Long kbId);
 
     /** 行级悲观锁查询（SELECT ... FOR UPDATE），供解析/删除/重试的并发串行化使用 */

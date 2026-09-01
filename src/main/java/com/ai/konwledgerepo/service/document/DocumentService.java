@@ -10,6 +10,8 @@ import com.ai.konwledgerepo.entity.DocStatus;
 import com.ai.konwledgerepo.entity.Document;
 import com.ai.konwledgerepo.entity.KnowledgeBase;
 import com.ai.konwledgerepo.repository.ChunkRepository;
+import com.ai.konwledgerepo.repository.DocumentCurateLogRepository;
+import com.ai.konwledgerepo.repository.DocumentCurateRepository;
 import com.ai.konwledgerepo.repository.DocumentRepository;
 import com.ai.konwledgerepo.service.knowledgebase.KnowledgeBaseService;
 import com.ai.konwledgerepo.service.vector.VectorIngestionService;
@@ -42,6 +44,8 @@ public class DocumentService {
 
     private final DocumentRepository documentRepository;
     private final ChunkRepository chunkRepository;
+    private final DocumentCurateRepository curateRepository;
+    private final DocumentCurateLogRepository curateLogRepository;
     private final KnowledgeBaseService kbService;
     private final VectorIngestionService vectorIngestionService;
     private final DocumentParseExecutor parseExecutor;
@@ -51,6 +55,8 @@ public class DocumentService {
 
     public DocumentService(DocumentRepository documentRepository,
                            ChunkRepository chunkRepository,
+                           DocumentCurateRepository curateRepository,
+                           DocumentCurateLogRepository curateLogRepository,
                            KnowledgeBaseService kbService,
                            VectorIngestionService vectorIngestionService,
                            DocumentParseExecutor parseExecutor,
@@ -58,6 +64,8 @@ public class DocumentService {
                            SeuFileProperties fileProps) {
         this.documentRepository = documentRepository;
         this.chunkRepository = chunkRepository;
+        this.curateRepository = curateRepository;
+        this.curateLogRepository = curateLogRepository;
         this.kbService = kbService;
         this.vectorIngestionService = vectorIngestionService;
         this.parseExecutor = parseExecutor;
@@ -68,12 +76,12 @@ public class DocumentService {
 
     @Transactional
     public List<Document> upload(Long kbId, List<MultipartFile> files, Long userId) {
-        return upload(kbId, files, userId, false, false);
+        return upload(kbId, files, userId, false, false, false);
     }
 
     /**
      * 上传文档（可替换同名旧文档）：replace=true 时按 kbId + fileName（大小写不敏感）查同名，
-     * 命中则事务内删除旧文档（MySQL chunk + ES 向量 + 磁盘文件 + 记录）再建新。
+     * 命中则事务内删除旧文档（MySQL chunk + ES 向量 + 策展 md + 磁盘文件 + 记录）再建新。
      *
      * @param reuseCache 用户是否选择复用解析缓存：true 时解析阶段查文件哈希缓存，
      *                   同内容文件跳过 LlamaParse 复用逐页 markdown；false 全量解析
@@ -81,6 +89,16 @@ public class DocumentService {
      */
     @Transactional
     public List<Document> upload(Long kbId, List<MultipartFile> files, Long userId, boolean replace, boolean reuseCache) {
+        return upload(kbId, files, userId, replace, reuseCache, false);
+    }
+
+    /**
+     * 上传文档（含策展门开关）：curateGate=true 时解析分块完成后停在展示门
+     * （PREVIEWING，不向量化），人工决断后才向量化；false 完全照旧自动链路。
+     */
+    @Transactional
+    public List<Document> upload(Long kbId, List<MultipartFile> files, Long userId, boolean replace, boolean reuseCache,
+                                 boolean curateGate) {
         KnowledgeBase kb = kbService.getEntity(kbId);
         List<Document> saved = new ArrayList<>();
         for (MultipartFile file : files) {
@@ -94,6 +112,7 @@ public class DocumentService {
             }
             Document doc = persistFile(kbId, file, userId);
             doc.setReuseCache(reuseCache);
+            doc.setCurateRequired(curateGate);
             saved.add(doc);
         }
         // 异步解析分块：独立 bean 承载 @Async，挂到事务提交后触发（避免异步线程读不到未提交数据）
@@ -119,12 +138,15 @@ public class DocumentService {
         evictKbCaches(doc.getKbId());
     }
 
-    /** 清理文档全链路数据：MySQL chunk + ES 向量 + 磁盘文件 + 记录（供删除与同名覆盖共用） */
+    /** 清理文档全链路数据：MySQL chunk + ES 向量 + 策展 md/审计 + 磁盘文件 + 记录（供删除与同名覆盖共用） */
     private void deleteDoc(Document doc) {
         // 删 MySQL chunk
         chunkRepository.deleteByDocId(doc.getId());
         // 删 ES chunk
         vectorIngestionService.deleteByDocId(doc.getId());
+        // 删策展 md（全部版本）与策展审计
+        curateRepository.deleteByDocId(doc.getId());
+        curateLogRepository.deleteByDocId(doc.getId());
         // 删文件
         try {
             Files.deleteIfExists(Path.of(doc.getFilePath()));

@@ -112,6 +112,53 @@ public class DocumentParserService {
         }
     }
 
+    /**
+     * 策展门专用：解析到逐页 markdown（页面级清洗 + 缺页补全后），不进入分块。
+     * 仅支持会走 LlamaParse 的文档类型（pdf/docx，md 产物）；txt/md/pptx/xlsx 不支持
+     * 策展门（无逐页 md），调用方应据 fileType 判断后回退照旧链路。
+     *
+     * @throws BizException pdf 未启用 LlamaParse 或类型不支持策展门
+     */
+    public List<LlamaParseService.PageMarkdown> parseToPages(Document doc) {
+        Long workspaceId = workspaceIdResolver.resolve(doc.getKbId());
+        Path path = Path.of(doc.getFilePath());
+        String type = doc.getFileType().toLowerCase();
+        if (!"pdf".equals(type) && !"docx".equals(type)) {
+            throw new BizException("策展门仅支持 PDF/DOCX（LlamaParse md 产物）");
+        }
+        if ("pdf".equals(type) && !llamaParseService.isConfigured()) {
+            throw new BizException("策展门需要启用 LlamaParse（seuknowledge.document.llamaparse.enabled 且配置 API Key）");
+        }
+        return pagesFromLlamaParse(path, doc.getFileName(), workspaceId, doc.isReuseCache());
+    }
+
+    /**
+     * 逐页 markdown → 分块片段（跨页 carry 延续，跨页标题继承）。
+     * 初始解析与策展重分块共用：重分块时由调用方先做页面级清洗再传入。
+     */
+    public List<ChunkPiece> chunkFromPages(List<LlamaParseService.PageMarkdown> pages) {
+        // 复制为可变列表再排序（调用方可能返回不可变列表，如测试 mock 的 List.of）
+        List<LlamaParseService.PageMarkdown> ordered = new ArrayList<>(pages);
+        ordered.sort(Comparator.comparingInt(LlamaParseService.PageMarkdown::pageNumber));
+        List<ChunkPiece> pieces = new ArrayList<>();
+        String[] carry = new String[1];
+        // 跨页标题祖先栈（section_path）继承：上一页末栈传给下一页无标题块
+        List<Headings.StackEntry>[] inheritStack = new List[1];
+        for (LlamaParseService.PageMarkdown page : ordered) {
+            if (page.markdown() == null || page.markdown().isBlank()) {
+                continue;
+            }
+            RecursiveChunkSplitter.SplitResult sr = RecursiveChunkSplitter.splitWithCarry(
+                    page.markdown(), page.pageNumber(), chunkSize, chunkOverlap, carry[0], inheritStack[0]);
+            pieces.addAll(sr.pieces());
+            carry[0] = sr.carryOut().isEmpty() ? null : sr.carryOut();
+            if (sr.lastStack() != null && !sr.lastStack().isEmpty()) {
+                inheritStack[0] = sr.lastStack();
+            }
+        }
+        return pieces;
+    }
+
     private List<ChunkPiece> parseText(Path path) throws IOException {
         String content = Files.readString(path, StandardCharsets.UTF_8);
         return ChunkSplitter.split(content, 0, chunkSize, chunkOverlap);
@@ -151,6 +198,15 @@ public class DocumentParserService {
      *                   复用逐页 markdown；未命中/未选择则全量 LlamaParse 解析并写入缓存。
      */
     private List<ChunkPiece> parseWithLlamaParse(Path path, String fileName, Long workspaceId, boolean reuseCache) {
+        return chunkFromPages(pagesFromLlamaParse(path, fileName, workspaceId, reuseCache));
+    }
+
+    /**
+     * LlamaParse 逐页转 Markdown（页面级清洗 + 缺页补全 + 排序），不进入分块。
+     * 供初始解析（parseWithLlamaParse）与策展门（parseToPages）共用。
+     */
+    private List<LlamaParseService.PageMarkdown> pagesFromLlamaParse(Path path, String fileName, Long workspaceId,
+                                                                     boolean reuseCache) {
         List<LlamaParseService.PageMarkdown> pages;
         if (reuseCache) {
             pages = resolveFromCacheOrParse(path, fileName, workspaceId);
@@ -165,26 +221,7 @@ public class DocumentParserService {
         if (fillMissingPages) {
             pages = visionPageFiller.fill(path, pages, workspaceId);
         }
-        // 复制为可变列表再排序（调用方可能返回不可变列表，如测试 mock 的 List.of）
-        List<LlamaParseService.PageMarkdown> ordered = new ArrayList<>(pages);
-        ordered.sort(Comparator.comparingInt(LlamaParseService.PageMarkdown::pageNumber));
-        List<ChunkPiece> pieces = new ArrayList<>();
-        String[] carry = new String[1];
-        // 跨页标题祖先栈（section_path）继承：上一页末栈传给下一页无标题块
-        List<Headings.StackEntry>[] inheritStack = new List[1];
-        for (LlamaParseService.PageMarkdown page : ordered) {
-            if (page.markdown() == null || page.markdown().isBlank()) {
-                continue;
-            }
-            RecursiveChunkSplitter.SplitResult sr = RecursiveChunkSplitter.splitWithCarry(
-                    page.markdown(), page.pageNumber(), chunkSize, chunkOverlap, carry[0], inheritStack[0]);
-            pieces.addAll(sr.pieces());
-            carry[0] = sr.carryOut().isEmpty() ? null : sr.carryOut();
-            if (sr.lastStack() != null && !sr.lastStack().isEmpty()) {
-                inheritStack[0] = sr.lastStack();
-            }
-        }
-        return pieces;
+        return pages;
     }
 
     /**

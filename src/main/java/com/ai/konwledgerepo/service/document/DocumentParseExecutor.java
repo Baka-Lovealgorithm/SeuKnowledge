@@ -16,6 +16,10 @@ import java.util.Optional;
 /**
  * 文档异步解析执行器：提取文本 → 分块 → 写入 MySQL chunk → 向量化入 ES。
  * <p>
+ * 策展门分支：curateRequired=true 且类型为 LlamaParse 产物（pdf/docx）时，解析到逐页 md
+ * 落库（v1）→ 分块 → 落 chunk 后停在展示门（PREVIEWING，不向量化），等待人工决断
+ * （编辑 md 重分块 / 接受后精修 / 确认后统一向量化）；其余照旧自动链路。
+ * <p>
  * 并发安全增强（F-1 / F-2 / F-7）：
  * <ul>
  *   <li>Redis SETNX in-flight guard（taskLock）：防止同一文档被两次解析（解析间互斥）。</li>
@@ -37,17 +41,20 @@ public class DocumentParseExecutor {
     private final DocumentParseTx parseTx;
     private final DocumentParserService parserService;
     private final DocumentCleanService documentCleanService;
+    private final DocumentCurateService curateService;
     private final VectorIngestionService vectorIngestionService;
 
     public DocumentParseExecutor(TaskLock taskLock,
                                  DocumentParseTx parseTx,
                                  DocumentParserService parserService,
                                  DocumentCleanService documentCleanService,
+                                 DocumentCurateService curateService,
                                  VectorIngestionService vectorIngestionService) {
         this.taskLock = taskLock;
         this.parseTx = parseTx;
         this.parserService = parserService;
         this.documentCleanService = documentCleanService;
+        this.curateService = curateService;
         this.vectorIngestionService = vectorIngestionService;
     }
 
@@ -73,21 +80,11 @@ public class DocumentParseExecutor {
             }
             Document doc = docOpt.get();
             doc.setReuseCache(reuseCache);
-            // ---- 长任务：文本解析（无事务，不占用连接） ----
-            List<ChunkPiece> pieces = parserService.parse(doc);
-            // ---- P1 chunk 级清洗：E 保护 → A 碎片 → B 图题 → C 重复（处置由配置名单决定） ----
-            DocumentCleanService.ChunkCleanResult clean = documentCleanService.cleanChunks(pieces);
-            // ---- F-1 收尾：事务内重读 + chunk 批量写入 + SUCCESS（行不存在则静默中止） ----
-            boolean ok = parseTx.finalizeSuccess(docId, clean.kept(), clean.outcomes());
-            if (ok) {
-                // 向量化（ingest 内部会重校验文档存在性，ES 无孤儿；FILTERED 的 chunk 天然被跳过）
-                vectorIngestionService.ingest(docId);
+            if (Boolean.TRUE.equals(doc.getCurateRequired()) && isLlamaParseType(doc.getFileType())) {
+                parseGated(doc);
+            } else {
+                parseAuto(doc);
             }
-            log.info("文档 {} 解析完成，{} 个 chunk（清洗前 {}，AUTO-DROP {}，SUSPECT {}）",
-                    doc.getFileName(), clean.kept().size() + clean.outcomes().size(),
-                    pieces.size(),
-                    clean.outcomes().stream().filter(o -> o.disposition() == DocumentCleanService.Disposition.AUTO_DROP).count(),
-                    clean.outcomes().stream().filter(o -> o.disposition() == DocumentCleanService.Disposition.SUSPECT).count());
         } catch (Exception e) {
             log.error("文档 {} 解析失败", docId, e);
             // ---- F-1 失败路径：事务内重读 + FAILED（行不存在则静默返回） ----
@@ -95,5 +92,50 @@ public class DocumentParseExecutor {
         } finally {
             taskLock.release(RedisKeys.docParse(docId));
         }
+    }
+
+    /** 策展门路径：LlamaParse 逐页 md → 落库 v1 → 分块 → 落 chunk 停在展示门（不向量化） */
+    private void parseGated(Document doc) {
+        List<LlamaParseService.PageMarkdown> pages = parserService.parseToPages(doc);
+        curateService.saveInitialMd(doc.getId(), pages, doc.getCreatedBy());
+        List<ChunkPiece> pieces = parserService.chunkFromPages(pages);
+        // ---- P1 chunk 级清洗：E 保护 → A 碎片 → B 图题 → C 重复（处置由配置名单决定） ----
+        DocumentCleanService.ChunkCleanResult clean = documentCleanService.cleanChunks(pieces);
+        // ---- 收尾：事务内重读 + chunk 批量写入 + SUCCESS + PREVIEWING（不 ingest，等人工决断） ----
+        boolean ok = parseTx.finalizeSuccessGated(doc.getId(), clean.kept(), clean.outcomes());
+        if (ok) {
+            log.info("文档 {} 解析完成并进入展示门（清洗前 {}，AUTO-DROP {}，SUSPECT {}），等待人工决断",
+                    doc.getFileName(), pieces.size(),
+                    clean.outcomes().stream().filter(o -> o.disposition() == DocumentCleanService.Disposition.AUTO_DROP).count(),
+                    clean.outcomes().stream().filter(o -> o.disposition() == DocumentCleanService.Disposition.SUSPECT).count());
+        }
+    }
+
+    /** 照旧自动路径：解析 → 分块 → 落库 → 向量化 */
+    private void parseAuto(Document doc) {
+        // ---- 长任务：文本解析（无事务，不占用连接） ----
+        List<ChunkPiece> pieces = parserService.parse(doc);
+        // ---- P1 chunk 级清洗：E 保护 → A 碎片 → B 图题 → C 重复（处置由配置名单决定） ----
+        DocumentCleanService.ChunkCleanResult clean = documentCleanService.cleanChunks(pieces);
+        // ---- F-1 收尾：事务内重读 + chunk 批量写入 + SUCCESS（行不存在则静默中止） ----
+        boolean ok = parseTx.finalizeSuccess(doc.getId(), clean.kept(), clean.outcomes());
+        if (ok) {
+            // 向量化（ingest 内部会重校验文档存在性，ES 无孤儿；FILTERED 的 chunk 天然被跳过）
+            vectorIngestionService.ingest(doc.getId());
+        }
+        log.info("文档 {} 解析完成，{} 个 chunk（清洗前 {}，AUTO-DROP {}，SUSPECT {}）",
+                doc.getFileName(), clean.kept().size() + clean.outcomes().size(),
+                pieces.size(),
+                clean.outcomes().stream().filter(o -> o.disposition() == DocumentCleanService.Disposition.AUTO_DROP).count(),
+                clean.outcomes().stream().filter(o -> o.disposition() == DocumentCleanService.Disposition.SUSPECT).count());
+    }
+
+    /** 策展门仅对 LlamaParse 产物（pdf/docx）有意义；txt/md/pptx/xlsx 无逐页 md，回退照旧链路 */
+    private static boolean isLlamaParseType(String fileType) {
+        if (fileType == null) {
+            return false;
+        }
+        String t = fileType.toLowerCase();
+        return "pdf".equals(t) || "docx".equals(t);
     }
 }

@@ -130,6 +130,37 @@ CREATE TABLE IF NOT EXISTS kb_document (
     error_msg varchar(500),
     file_path varchar(500),
     file_name varchar(255) not null,
+    curate_required bit,
+    curate_status varchar(20),
+    primary key (id)
+) engine=InnoDB;
+
+-- 人工清洗（md 策展）：分页分段 + append-only 版本（每次整篇保存插入新版本的全部页行，
+-- 最新 = max(version)；版本即审计，相邻版本按页对比即 diff；删除文档时按 doc_id 整删）。
+CREATE TABLE IF NOT EXISTS kb_document_curate (
+    id bigint not null auto_increment,
+    doc_id bigint not null,
+    version integer not null,
+    page_num integer not null,
+    content MEDIUMTEXT not null,
+    updated_by bigint not null,
+    created_at datetime(6),
+    updated_at datetime(6),
+    CONSTRAINT uk_doc_version_page UNIQUE (doc_id, version, page_num),
+    primary key (id)
+) engine=InnoDB;
+
+-- 文档级策展动作审计（save_md / accept / confirm / edit_chunk / drop_chunk / keep_chunk）；
+-- chunk 级编辑内容留痕仍写 chunk_review_log，本表仅记文档级动作与前后摘要。
+CREATE TABLE IF NOT EXISTS document_curate_log (
+    id bigint not null auto_increment,
+    doc_id bigint not null,
+    action varchar(30) not null,
+    before_summary TEXT,
+    after_summary TEXT,
+    user_id bigint,
+    created_at datetime(6),
+    updated_at datetime(6),
     primary key (id)
 ) engine=InnoDB;
 

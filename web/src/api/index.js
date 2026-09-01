@@ -19,15 +19,29 @@ export const kbApi = {
 }
 
 export const docApi = {
-  upload: (kbId, files, replace = false, reuseCache = false) => {
+  upload: (kbId, files, replace = false, reuseCache = false, curateGate = false) => {
     const fd = new FormData()
     files.forEach((f) => fd.append('files', f))
-    return http.post(`/kb/${kbId}/documents`, fd, { params: { replace, reuseCache } })
+    return http.post(`/kb/${kbId}/documents`, fd, { params: { replace, reuseCache, curateGate } })
   },
   list: (kbId) => http.get(`/kb/${kbId}/documents`),
   remove: (id) => http.delete(`/documents/${id}`),
   chunks: (id, filter) => http.get(`/documents/${id}/chunks`, { params: { filter } }),
   retry: (id) => http.post(`/documents/${id}/retry`)
+}
+
+/** 文档人工策展（md 清洗 + 展示门）：读（队列/md/chunk）与写（保存 md/接受/确认/chunk 精修） */
+export const curateApi = {
+  info: (id) => http.get(`/documents/${id}/curate`),
+  queue: (kbId) => http.get(`/kb/${kbId}/curate/queue`),
+  getMd: (id) => http.get(`/documents/${id}/curate/md`),
+  saveMd: (id, content) => http.post(`/documents/${id}/curate/md`, { content }),
+  chunks: (id) => http.get(`/documents/${id}/curate/chunks`),
+  accept: (id) => http.post(`/documents/${id}/curate/accept`),
+  confirm: (id) => http.post(`/documents/${id}/curate/confirm`),
+  editChunk: (id, chunkId, data) => http.post(`/documents/${id}/curate/chunks/${chunkId}/edit`, data),
+  dropChunk: (id, chunkId) => http.post(`/documents/${id}/curate/chunks/${chunkId}/drop`),
+  keepChunk: (id, chunkId) => http.post(`/documents/${id}/curate/chunks/${chunkId}/keep`)
 }
 
 export const reviewApi = {

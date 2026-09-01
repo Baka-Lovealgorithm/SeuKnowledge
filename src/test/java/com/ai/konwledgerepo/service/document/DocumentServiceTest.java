@@ -6,6 +6,8 @@ import com.ai.konwledgerepo.config.props.SeuFileProperties;
 import com.ai.konwledgerepo.entity.Document;
 import com.ai.konwledgerepo.entity.KnowledgeBase;
 import com.ai.konwledgerepo.repository.ChunkRepository;
+import com.ai.konwledgerepo.repository.DocumentCurateLogRepository;
+import com.ai.konwledgerepo.repository.DocumentCurateRepository;
 import com.ai.konwledgerepo.repository.DocumentRepository;
 import com.ai.konwledgerepo.service.knowledgebase.KnowledgeBaseService;
 import com.ai.konwledgerepo.service.vector.VectorIngestionService;
@@ -36,6 +38,8 @@ class DocumentServiceTest {
 
     private DocumentRepository documentRepository;
     private ChunkRepository chunkRepository;
+    private DocumentCurateRepository curateRepository;
+    private DocumentCurateLogRepository curateLogRepository;
     private KnowledgeBaseService kbService;
     private VectorIngestionService vectorIngestionService;
     private DocumentParseExecutor parseExecutor;
@@ -45,12 +49,14 @@ class DocumentServiceTest {
     void setUp() {
         documentRepository = mock(DocumentRepository.class);
         chunkRepository = mock(ChunkRepository.class);
+        curateRepository = mock(DocumentCurateRepository.class);
+        curateLogRepository = mock(DocumentCurateLogRepository.class);
         kbService = mock(KnowledgeBaseService.class);
         vectorIngestionService = mock(VectorIngestionService.class);
         parseExecutor = mock(DocumentParseExecutor.class);
         SeuFileProperties fileProps = new SeuFileProperties("./data/files", 20 * 1024 * 1024L);
-        service = new DocumentService(documentRepository, chunkRepository, kbService,
-                vectorIngestionService, parseExecutor, new AfterCommitExecutor(), fileProps);
+        service = new DocumentService(documentRepository, chunkRepository, curateRepository, curateLogRepository,
+                kbService, vectorIngestionService, parseExecutor, new AfterCommitExecutor(), fileProps);
 
         Document doc = new Document();
         doc.setId(DOC_ID);

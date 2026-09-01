@@ -2,6 +2,9 @@
   <div>
     <div class="toolbar">
       <el-button @click="goBack">← 返回知识库</el-button>
+      <el-checkbox v-model="curateOn" :disabled="!auth.canWrite" style="margin-left: 8px">
+        解析后人工确认分段（策展门）
+      </el-checkbox>
       <el-upload
         v-if="auth.canWrite"
         :show-file-list="false"
@@ -23,6 +26,13 @@
           <el-tag :type="parseType(row.parseStatus)" size="small">{{ row.parseStatus }}</el-tag>
         </template>
       </el-table-column>
+      <el-table-column label="策展" width="110">
+        <template #default="{ row }">
+          <el-tag v-if="row.curateStatus === 'PREVIEWING'" type="warning" size="small">待决断</el-tag>
+          <el-tag v-else-if="row.curateStatus === 'ACCEPTED'" type="warning" size="small">待确认</el-tag>
+          <span v-else>-</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="chunkCount" label="分块数" width="90" />
       <el-table-column label="待审核" width="90">
         <template #default="{ row }">
@@ -34,9 +44,10 @@
       <el-table-column prop="createdAt" label="上传时间" width="170">
         <template #default="{ row }">{{ fmt(row.createdAt) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="240" fixed="right">
+      <el-table-column label="操作" width="300" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="viewChunks(row)">分块</el-button>
+          <el-button v-if="row.curateStatus" link type="warning" @click="curate(row)">策展</el-button>
           <el-button v-if="auth.canWrite" link type="warning" @click="retry(row)">重试</el-button>
           <el-button v-if="auth.canWrite" link type="danger" @click="remove(row)">删除</el-button>
         </template>
@@ -78,6 +89,7 @@ const loading = ref(false)
 const chunkVisible = ref(false)
 const chunks = ref([])
 const chunkTitle = ref('')
+const curateOn = ref(false)
 
 const parseType = (s) => ({ SUCCESS: 'success', FAILED: 'danger', PARSING: 'warning', PENDING: 'info' }[s] || 'info')
 
@@ -129,9 +141,9 @@ async function doUpload({ file }) {
         // 用户选「重新解析」或关闭弹窗 → 全量解析（不复用缓存）
         reuse = false
       }
-      await docApi.upload(kbId, [file], true, reuse)
+      await docApi.upload(kbId, [file], true, reuse, curateOn.value)
     } else {
-      await docApi.upload(kbId, [file])
+      await docApi.upload(kbId, [file], false, false, curateOn.value)
     }
     ElMessage.success(`上传 ${file.name} 成功`)
     load()
@@ -145,6 +157,11 @@ async function viewChunks(row) {
   chunks.value = await docApi.chunks(row.id)
   chunkTitle.value = `分块结果：${row.fileName}`
   chunkVisible.value = true
+}
+
+/** 进入策展门处理页（md 清洗 / 展示门决断 / chunk 精修） */
+function curate(row) {
+  router.push(`/curate/${row.id}`)
 }
 
 async function retry(row) {

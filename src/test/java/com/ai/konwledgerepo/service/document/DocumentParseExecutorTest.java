@@ -20,7 +20,7 @@ import static org.mockito.Mockito.when;
 
 /**
  * DocumentParseExecutor 单元测试：mock DocumentParserService（不实例化真实解析器）。
- * 覆盖：锁占用早退、startParse 失败、成功路径、异常路径。
+ * 覆盖：锁占用早退、startParse 失败、成功路径、异常路径、策展门分支（pdf 走门不向量化）。
  */
 class DocumentParseExecutorTest {
 
@@ -28,6 +28,7 @@ class DocumentParseExecutorTest {
     private DocumentParseTx parseTx;
     private DocumentParserService parserService;
     private DocumentCleanService documentCleanService;
+    private DocumentCurateService curateService;
     private VectorIngestionService vectorIngestionService;
     private DocumentParseExecutor executor;
 
@@ -39,8 +40,10 @@ class DocumentParseExecutorTest {
         parseTx = mock(DocumentParseTx.class);
         parserService = mock(DocumentParserService.class);
         documentCleanService = mock(DocumentCleanService.class);
+        curateService = mock(DocumentCurateService.class);
         vectorIngestionService = mock(VectorIngestionService.class);
-        executor = new DocumentParseExecutor(taskLock, parseTx, parserService, documentCleanService, vectorIngestionService);
+        executor = new DocumentParseExecutor(taskLock, parseTx, parserService, documentCleanService, curateService,
+                vectorIngestionService);
 
         when(taskLock.tryAcquire(any(), any())).thenReturn(true);
         // 清洗默认透传：原 pieces 全部保留、无清洗判定
@@ -118,6 +121,68 @@ class DocumentParseExecutorTest {
 
         verify(parseTx).finalizeFailure(eq(DOC_ID), any());
         verify(parseTx, never()).finalizeSuccess(any(), any());
+        verify(taskLock).release(RedisKeys.docParse(DOC_ID));
+    }
+
+    // ===== 策展门分支 =====
+
+    @Test
+    void parseAsync_curateRequiredPdf_goesGated_noIngest() {
+        Document doc = new Document();
+        doc.setId(DOC_ID);
+        doc.setKbId(10L);
+        doc.setFileName("test.pdf");
+        doc.setFileType("pdf");
+        doc.setCurateRequired(true);
+        when(parseTx.startParse(DOC_ID)).thenReturn(Optional.of(doc));
+        List<LlamaParseService.PageMarkdown> pages = List.of(new LlamaParseService.PageMarkdown(1, "md内容"));
+        when(parserService.parseToPages(doc)).thenReturn(pages);
+        List<ChunkPiece> pieces = List.of(new ChunkPiece("md内容", 1, "title"));
+        when(parserService.chunkFromPages(pages)).thenReturn(pieces);
+        when(parseTx.finalizeSuccessGated(DOC_ID, pieces, List.of())).thenReturn(true);
+
+        executor.parseAsync(DOC_ID, false);
+
+        verify(curateService).saveInitialMd(DOC_ID, pages, null);
+        verify(parseTx).finalizeSuccessGated(DOC_ID, pieces, List.of());
+        verify(vectorIngestionService, never()).ingest(any());
+        verify(parserService, never()).parse(any());
+        verify(taskLock).release(RedisKeys.docParse(DOC_ID));
+    }
+
+    @Test
+    void parseAsync_curateRequiredTxt_fallsBackToAuto() {
+        Document doc = new Document();
+        doc.setId(DOC_ID);
+        doc.setKbId(10L);
+        doc.setFileName("test.txt");
+        doc.setFileType("txt");
+        doc.setCurateRequired(true);
+        when(parseTx.startParse(DOC_ID)).thenReturn(Optional.of(doc));
+        List<ChunkPiece> pieces = List.of(new ChunkPiece("content", 0, null));
+        when(parserService.parse(doc)).thenReturn(pieces);
+        when(parseTx.finalizeSuccess(DOC_ID, pieces, List.of())).thenReturn(true);
+
+        executor.parseAsync(DOC_ID, false);
+
+        verify(parserService).parse(doc);
+        verify(parserService, never()).parseToPages(any());
+        verify(vectorIngestionService).ingest(DOC_ID);
+    }
+
+    @Test
+    void parseAsync_curateRequiredPdf_parseFails_finalizesFailure() {
+        Document doc = new Document();
+        doc.setId(DOC_ID);
+        doc.setFileType("pdf");
+        doc.setCurateRequired(true);
+        when(parseTx.startParse(DOC_ID)).thenReturn(Optional.of(doc));
+        when(parserService.parseToPages(doc)).thenThrow(new RuntimeException("llama parse error"));
+
+        executor.parseAsync(DOC_ID, false);
+
+        verify(parseTx).finalizeFailure(eq(DOC_ID), any());
+        verify(curateService, never()).saveInitialMd(any(), any(), any());
         verify(taskLock).release(RedisKeys.docParse(DOC_ID));
     }
 }

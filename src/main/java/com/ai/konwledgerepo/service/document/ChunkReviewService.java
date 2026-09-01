@@ -74,10 +74,12 @@ public class ChunkReviewService {
     /**
      * 保留：clean_status SUSPECT→KEEP 并触发单 chunk 向量化（DEFER 后首次进 ES）。
      * 非 SUSPECT chunk 幂等返回（已处理过，不重复操作）。
+     * 策展流程中的文档（展示门/已接受）拒绝在此处理（须走策展页，确认前不触 ES）。
      */
     @Transactional
     public ChunkReviewResponse keep(Long chunkId, Long userId) {
         Chunk chunk = requireChunk(chunkId);
+        requireNotCurating(chunk.getDocId());
         if (!CLEAN_SUSPECT.equals(chunk.getCleanStatus())) {
             log.info("chunk {} 非 SUSPECT（cleanStatus={}），保留动作跳过", chunkId, chunk.getCleanStatus());
             return ChunkReviewResponse.of(chunk, docName(chunk.getDocId()));
@@ -96,6 +98,7 @@ public class ChunkReviewService {
     @Transactional
     public ChunkReviewResponse edit(Long chunkId, String content, String title, Long userId) {
         Chunk chunk = requireChunk(chunkId);
+        requireNotCurating(chunk.getDocId());
         if (content == null || content.trim().isEmpty()) {
             throw new BizException("编辑后内容不能为空");
         }
@@ -119,6 +122,7 @@ public class ChunkReviewService {
     @Transactional
     public ChunkReviewResponse drop(Long chunkId, Long userId) {
         Chunk chunk = requireChunk(chunkId);
+        requireNotCurating(chunk.getDocId());
         if (!CLEAN_SUSPECT.equals(chunk.getCleanStatus())) {
             log.info("chunk {} 非 SUSPECT（cleanStatus={}），删除动作跳过", chunkId, chunk.getCleanStatus());
             return ChunkReviewResponse.of(chunk, docName(chunk.getDocId()));
@@ -165,6 +169,15 @@ public class ChunkReviewService {
     private Chunk requireChunk(Long chunkId) {
         return chunkRepository.findById(chunkId)
                 .orElseThrow(() -> new BizException("chunk 不存在: " + chunkId));
+    }
+
+    /** 策展流程中的文档（展示门/已接受）拒绝在常规审核页处理（须走策展页，确认前不触 ES） */
+    private void requireNotCurating(Long docId) {
+        Document doc = documentRepository.findById(docId).orElse(null);
+        if (doc != null && DocumentCurateService.isCurating(doc)) {
+            throw new BizException("该文档处于策展流程（" + doc.getCurateStatus()
+                    + "），请在策展页处理；确认向量化后可在此复核剩余 SUSPECT");
+        }
     }
 
     private String docName(Long docId) {
