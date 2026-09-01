@@ -35,6 +35,10 @@ public final class Defaults {
     /** 问答链路异常时的通用兜底 */
     public static final String QA_FALLBACK_ANSWER = "抱歉，暂时无法回答该问题。";
 
+    /** 提示注入拒答文案（意图路由判定纯注入时直接返回，不走 LLM；不含"系统提示词"等字样，避免诱导） */
+    public static final String PROMPT_INJECTION_REFUSAL = "抱歉，我无法执行该指令。"
+            + "我是知识库问答助手，仅回答与知识库内容相关的业务问题。请直接描述您想了解的业务内容。";
+
     /** 空引用列表 */
     public static final String EMPTY_REFS = "[]";
 

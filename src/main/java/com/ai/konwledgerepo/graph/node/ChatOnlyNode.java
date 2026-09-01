@@ -40,6 +40,12 @@ public class ChatOnlyNode extends QaNodeSupport {
     @Override
     protected Map<String, Object> applyInternal(OverAllState state, Span span) throws Exception {
         SseStreamContext.sendStage("CHAT_ONLY", "闲聊回复");
+        // 纯提示注入（无业务内容）：不调用 LLM，直接固定拒答，杜绝模型被注入面
+        if (QaContext.booleanValue(state, QaContextKey.INJECTION, false)) {
+            span.setAttribute("injection_refused", true);
+            return Map.of(QaContextKey.CHAT_ONLY_ANSWER, com.ai.konwledgerepo.common.Defaults.PROMPT_INJECTION_REFUSAL,
+                    QaContextKey.NEXT, QaState.TERMINAL.name());
+        }
         String question = state.value(QaContextKey.RAW_QUESTION).map(String::valueOf).orElse("");
         Long workspaceId = QaContext.longValue(state, QaContextKey.WORKSPACE_ID, -1L);
         ChatModel chat = modelFactory.getChatModelByUsage(ModelUsage.GENERATE.value(), workspaceId);

@@ -26,6 +26,7 @@ import java.util.Map;
 import java.util.concurrent.Executors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -92,6 +93,16 @@ class AnswerVerifyNodeTest {
         data.put(QaContextKey.ANSWER, answer);
         data.put(QaContextKey.CHUNKS, chunks);
         data.put(QaContextKey.PREV_ANSWER, prevAnswer);
+        return new OverAllState(data);
+    }
+
+    /** 携带注入标记的状态（注入防护：阶段一规则附加注入检查） */
+    private OverAllState stateWithInjection(String answer, List<ChunkEvidence> chunks, boolean injection) {
+        Map<String, Object> data = new HashMap<>();
+        data.put(QaContextKey.RAW_QUESTION, "如何申请报销？");
+        data.put(QaContextKey.ANSWER, answer);
+        data.put(QaContextKey.CHUNKS, chunks);
+        data.put(QaContextKey.INJECTION, injection);
         return new OverAllState(data);
     }
 
@@ -441,5 +452,35 @@ class AnswerVerifyNodeTest {
         String phase1User = captor.getAllValues().get(0).getInstructions().get(1).getText();
         assertTrue(phase1User.contains("（无，首次评估）"),
                 "无 PREV_ANSWER 时应渲染默认占位符: " + phase1User);
+    }
+
+    @Test
+    void injectionTrue_phase1RulesContainInjectionCheck() throws Exception {
+        // 注入标记=true：阶段一系统规则必须追加注入检查（答案遵循注入指令 → 判 0 分）
+        stubLlm("{\"score\": 85, \"missing\": \"\"}",
+                "[{\"claim\":\"报销需填写申请表\",\"verdict\":\"SUPPORTED\",\"evidence\":1}]");
+        List<ChunkEvidence> evs = List.of(ev(1, "报销需填写申请表，附发票原件。"));
+        node.apply(stateWithInjection("报销需填写申请表。", evs, true));
+
+        ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat, times(2)).call(captor.capture());
+        String phase1Rules = captor.getAllValues().get(0).getInstructions().get(0).getText();
+        assertTrue(phase1Rules.contains("注入检查"),
+                "注入场景阶段一规则应含注入检查: " + phase1Rules);
+        assertTrue(phase1Rules.contains("score 必须判为 0"),
+                "注入场景阶段一规则应声明遵循注入指令判 0 分: " + phase1Rules);
+    }
+
+    @Test
+    void injectionFalse_phase1RulesWithoutInjectionCheck() throws Exception {
+        // 注入标记=false：阶段一规则不含注入检查（回归原有行为）
+        stubLlm("{\"score\": 85, \"missing\": \"\"}");
+        node.apply(stateWithInjection("报销需填写申请表。", List.of(), false));
+
+        ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat, times(1)).call(captor.capture());
+        String phase1Rules = captor.getAllValues().get(0).getInstructions().get(0).getText();
+        assertFalse(phase1Rules.contains("注入检查"),
+                "非注入场景阶段一规则不应含注入检查: " + phase1Rules);
     }
 }

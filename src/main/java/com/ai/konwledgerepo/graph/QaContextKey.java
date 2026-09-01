@@ -14,6 +14,8 @@ public final class QaContextKey {
     public static final String WORKSPACE_ID = "workspaceId";
     public static final String SESSION_ID = "sessionId";
     public static final String INTENT = "intent";
+    /** 提示注入检测标记（意图路由输出：用户问题是否包含注入指令，如要求忽略指令/输出系统提示词等） */
+    public static final String INJECTION = "injection";
     public static final String QUERIES = "queries";
     public static final String CHUNKS = "chunks";
     /** 累计证据池：历轮被 rerank 选中、进入答案生成的知识（跨轮保留，重试轮不再参与 rerank） */
@@ -47,7 +49,7 @@ public final class QaContextKey {
 
     /** ReplaceStrategy 覆盖的键列表（QaGraphRunner 组装图时使用） */
     public static final List<String> REPLACE_KEYS = List.of(
-            RAW_QUESTION, KB_ID, KB_NAME, WORKSPACE_ID, SESSION_ID, INTENT, QUERIES,
+            RAW_QUESTION, KB_ID, KB_NAME, WORKSPACE_ID, SESSION_ID, INTENT, INJECTION, QUERIES,
             CHUNKS, ACCUMULATED_CHUNKS, ANSWER, REFS, PREV_ANSWER,
             VERIFY_SCORE, FAITHFULNESS_SCORE, UNSUPPORTED_CLAIMS, CONTRADICTED_CLAIMS,
             MISSING_INFO, PREV_CHUNK_IDS, NO_IMPROVEMENT, RETRY_COUNT, MAX_RETRY,

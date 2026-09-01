@@ -69,11 +69,14 @@ public class IntentRouteNode extends QaNodeSupport {
         String prompt = promptCatalog.get("intent-route").formatted(kbName, agentPrompt, recentJson, question);
 
         Intent intent = null;
+        boolean injection = false;
         String response = null;
         for (int attempt = 1; attempt <= ROUTER_MAX_ATTEMPTS; attempt++) {
             response = LlmTrace.call(qaTracing, chat, prompt, opts);
-            intent = parseIntent(response);
-            if (intent != null) {
+            RouteResult route = parseRoute(response);
+            if (route != null) {
+                intent = route.intent();
+                injection = route.injection();
                 break;
             }
             if (attempt < ROUTER_MAX_ATTEMPTS) {
@@ -83,6 +86,7 @@ public class IntentRouteNode extends QaNodeSupport {
         }
         if (intent == null) {
             intent = Intent.BUSINESS;
+            injection = false;
             span.setAttribute("router_fallback", true);
             log.warn("意图路由 {} 次输出均无法解析，失败反转默认 BUSINESS: response={}",
                     ROUTER_MAX_ATTEMPTS,
@@ -91,20 +95,44 @@ public class IntentRouteNode extends QaNodeSupport {
 
         String next = intent == Intent.BUSINESS ? QaState.QUERY_REWRITE.name() : QaState.CHAT_ONLY.name();
         span.setAttribute("intent", intent.value());
-        return Map.of(QaContextKey.INTENT, intent.value(), QaContextKey.NEXT, next);
+        span.setAttribute("injection", injection);
+        return Map.of(QaContextKey.INTENT, intent.value(),
+                QaContextKey.INJECTION, injection,
+                QaContextKey.NEXT, next);
     }
 
-    static Intent parseIntent(String response) {
+    /** 路由解析结果：意图 + 是否包含注入指令 */
+    record RouteResult(Intent intent, boolean injection) {
+    }
+
+    /**
+     * 解析路由输出：BUSINESS / CHITCHAT / BUSINESS INJECTED / CHITCHAT INJECTED / INJECTION。
+     * 纯注入（INJECTION，无业务内容）以 CHITCHAT + injection=true 返回，由闲聊出口执行固定拒答；
+     * 无法解析返回 null（触发重试/失败反转）。
+     */
+    static RouteResult parseRoute(String response) {
         if (response == null || response.isBlank()) {
             return null;
         }
         String up = response.trim().toUpperCase();
-        if (up.contains(Intent.BUSINESS.value())) {
-            return Intent.BUSINESS;
+        boolean hasBusiness = up.contains(Intent.BUSINESS.value());
+        boolean hasChitchat = up.contains(Intent.CHITCHAT.value());
+        boolean hasInjection = up.contains("INJECTED") || up.contains("INJECTION");
+        if (hasBusiness) {
+            return new RouteResult(Intent.BUSINESS, hasInjection);
         }
-        if (up.contains(Intent.CHITCHAT.value())) {
-            return Intent.CHITCHAT;
+        if (hasChitchat) {
+            return new RouteResult(Intent.CHITCHAT, hasInjection);
+        }
+        if (hasInjection) {
+            return new RouteResult(Intent.CHITCHAT, true);
         }
         return null;
+    }
+
+    /** 兼容包装：仅取意图（旧调用方/测试使用），注入信息见 {@link #parseRoute} */
+    static Intent parseIntent(String response) {
+        RouteResult route = parseRoute(response);
+        return route == null ? null : route.intent();
     }
 }
