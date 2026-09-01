@@ -13,6 +13,13 @@ spring:
     username: ${MYSQL_USER:root}
     password: ${MYSQL_PASSWORD:}
     driver-class-name: com.mysql.cj.jdbc.Driver
+    # Hikari 连接池：显式配置以支持并发（QA 32 并发 + 悲观锁 + 抽取/解析长事务下默认 10 连接可能耗尽），
+    # 生产按并发负载调大 DB_POOL_MAX_SIZE；connection-timeout 超时快速失败而非无限等待
+    hikari:
+      maximum-pool-size: ${DB_POOL_MAX_SIZE:20}
+      minimum-idle: ${DB_POOL_MIN_IDLE:5}
+      connection-timeout: ${DB_POOL_CONN_TIMEOUT:30000}
+      pool-name: SeuHikariPool
   jpa:
     hibernate:
       ddl-auto: update

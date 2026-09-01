@@ -67,6 +67,7 @@ cd seuknowledge
 |---|---|---|
 | `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_DB` | 127.0.0.1 / 3306 / seuknowledge | MySQL 地址 / 端口 / 库名 |
 | `MYSQL_USER` | root | MySQL 账号 |
+| `DB_POOL_MAX_SIZE` / `DB_POOL_MIN_IDLE` / `DB_POOL_CONN_TIMEOUT` | 20 / 5 / 30000 | Hikari 连接池最大连接 / 最小空闲 / 获取连接超时（毫秒）；并发高时调大 `DB_POOL_MAX_SIZE` |
 | `ES_USERNAME` / `ES_PASSWORD` | 空 | ES 认证（如开启） |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` / `REDIS_DATABASE` | 127.0.0.1 / 6379 / 空 / 0 | Redis 连接 |
 | `SERVER_PORT` | 18080 | 后端端口 |
@@ -158,6 +159,7 @@ npm run dev
 |---|---|---|
 | `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_DB` | 127.0.0.1 / 3306 / seuknowledge | MySQL 地址 / 端口 / 库名 |
 | `MYSQL_USER` / `MYSQL_PASSWORD` | root / —（必填） | MySQL 账号密码 |
+| `DB_POOL_MAX_SIZE` / `DB_POOL_MIN_IDLE` / `DB_POOL_CONN_TIMEOUT` | 20 / 5 / 30000 | Hikari 连接池最大连接 / 最小空闲 / 获取连接超时（毫秒）；并发高时调大 `DB_POOL_MAX_SIZE` |
 | `ES_URIS` | http://localhost:9200 | ES 地址 |
 | `ES_USERNAME` / `ES_PASSWORD` | 空 | ES 认证（如开启） |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` / `REDIS_DATABASE` | 127.0.0.1 / 6379 / 空 / 0 | Redis 连接 |
