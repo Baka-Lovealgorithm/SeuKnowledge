@@ -26,13 +26,6 @@
           <el-tag :type="parseType(row.parseStatus)" size="small">{{ row.parseStatus }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="策展" width="110">
-        <template #default="{ row }">
-          <el-tag v-if="row.curateStatus === 'PREVIEWING'" type="warning" size="small">待决断</el-tag>
-          <el-tag v-else-if="row.curateStatus === 'ACCEPTED'" type="warning" size="small">待确认</el-tag>
-          <span v-else>-</span>
-        </template>
-      </el-table-column>
       <el-table-column prop="chunkCount" label="分块数" width="90" />
       <el-table-column label="待审核" width="90">
         <template #default="{ row }">
@@ -44,10 +37,9 @@
       <el-table-column prop="createdAt" label="上传时间" width="170">
         <template #default="{ row }">{{ fmt(row.createdAt) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="300" fixed="right">
+      <el-table-column label="操作" width="280" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="viewChunks(row)">分块</el-button>
-          <el-button v-if="row.curateStatus" link type="warning" @click="curate(row)">策展</el-button>
           <el-button v-if="auth.canWrite" link type="warning" @click="retry(row)">重试</el-button>
           <el-button v-if="auth.canWrite" link type="danger" @click="remove(row)">删除</el-button>
         </template>
@@ -59,7 +51,11 @@
         <el-table-column prop="seq" label="序号" width="70" />
         <el-table-column prop="title" label="所属标题" min-width="130" show-overflow-tooltip />
         <el-table-column prop="pageNum" label="页码" width="70" />
-        <el-table-column prop="content" label="内容" min-width="320" show-overflow-tooltip />
+        <el-table-column label="内容" min-width="300">
+          <template #default="{ row }">
+            <div class="content-cell">{{ row.content }}</div>
+          </template>
+        </el-table-column>
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
             <el-tooltip v-if="row.cleanReason" :content="row.cleanReason" placement="top">
@@ -68,8 +64,16 @@
             <el-tag v-else :type="chunkStatusType(row)" size="small">{{ chunkStatusText(row) }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="操作" width="80" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="info" @click="openDetail(row)">详情</el-button>
+          </template>
+        </el-table-column>
       </el-table>
     </el-dialog>
+
+    <!-- chunk 详情（只读，完整内容） -->
+    <ChunkDetail v-model="detailVisible" :row="detailRow" />
   </div>
 </template>
 
@@ -79,6 +83,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { docApi } from '../api'
 import { useAuthStore } from '../stores/auth'
+import ChunkDetail from '../components/ChunkDetail.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -90,6 +95,8 @@ const chunkVisible = ref(false)
 const chunks = ref([])
 const chunkTitle = ref('')
 const curateOn = ref(false)
+const detailVisible = ref(false)
+const detailRow = ref(null)
 
 const parseType = (s) => ({ SUCCESS: 'success', FAILED: 'danger', PARSING: 'warning', PENDING: 'info' }[s] || 'info')
 
@@ -145,7 +152,7 @@ async function doUpload({ file }) {
     } else {
       await docApi.upload(kbId, [file], false, false, curateOn.value)
     }
-    ElMessage.success(`上传 ${file.name} 成功`)
+    ElMessage.success(`上传 ${file.name} 成功${curateOn.value ? '，已启用策展门，请到左侧「文档策展」页处理' : ''}`)
     load()
   } catch (e) {
     // 拦截器已提示；用户取消覆盖询问时静默跳过
@@ -159,9 +166,9 @@ async function viewChunks(row) {
   chunkVisible.value = true
 }
 
-/** 进入策展门处理页（md 清洗 / 展示门决断 / chunk 精修） */
-function curate(row) {
-  router.push(`/curate/${row.id}`)
+function openDetail(row) {
+  detailRow.value = row
+  detailVisible.value = true
 }
 
 async function retry(row) {
@@ -184,4 +191,9 @@ onMounted(load)
 
 <style scoped>
 .toolbar { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
+.content-cell {
+  max-height: 60px; overflow: hidden; text-overflow: ellipsis;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  white-space: pre-line; word-break: break-all; font-size: 13px;
+}
 </style>

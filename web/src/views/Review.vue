@@ -32,11 +32,14 @@
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column v-if="auth.canWrite" label="操作" width="200" fixed="right">
+      <el-table-column label="操作" :width="auth.canWrite ? 260 : 80" fixed="right">
         <template #default="{ row }">
-          <el-button link type="success" @click="keep(row)">保留</el-button>
-          <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
-          <el-button link type="danger" @click="drop(row)">删除</el-button>
+          <el-button link type="info" @click="openDetail(row)">详情</el-button>
+          <template v-if="auth.canWrite">
+            <el-button link type="success" @click="keep(row)">保留</el-button>
+            <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+            <el-button link type="danger" @click="drop(row)">删除</el-button>
+          </template>
         </template>
       </el-table-column>
     </el-table>
@@ -61,6 +64,9 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- chunk 详情（只读，完整内容） -->
+    <ChunkDetail v-model="detailVisible" :row="detailRow" />
   </div>
 </template>
 
@@ -69,6 +75,7 @@ import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { kbApi, reviewApi } from '../api'
 import { useAuthStore } from '../stores/auth'
+import ChunkDetail from '../components/ChunkDetail.vue'
 
 const auth = useAuthStore()
 const kbs = ref([])
@@ -81,6 +88,8 @@ const editing = ref(null)
 const editTitle = ref('')
 const editContent = ref('')
 const saving = ref(false)
+const detailVisible = ref(false)
+const detailRow = ref(null)
 
 async function loadKbs() {
   kbs.value = await kbApi.list()
@@ -99,6 +108,11 @@ function ruleId(row) {
 
 function onSelection(rows) {
   selected.value = rows
+}
+
+function openDetail(row) {
+  detailRow.value = row
+  detailVisible.value = true
 }
 
 async function keep(row) {

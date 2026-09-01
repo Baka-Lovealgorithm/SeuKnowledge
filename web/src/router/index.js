@@ -39,6 +39,11 @@ const routes = [
     meta: { auth: true, title: '清洗复核' }
   },
   {
+    path: '/curate',
+    component: () => import('../views/CurateGate.vue'),
+    meta: { auth: true, title: '文档策展' }
+  },
+  {
     path: '/curate/:docId',
     component: () => import('../views/CurateGate.vue'),
     meta: { auth: true, title: '文档策展' }

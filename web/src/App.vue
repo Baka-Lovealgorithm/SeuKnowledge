@@ -20,6 +20,9 @@
         <el-menu-item v-if="auth.canWrite" index="/review">
           <el-icon><Checked /></el-icon><span>清洗复核</span>
         </el-menu-item>
+        <el-menu-item v-if="auth.canWrite" index="/curate">
+          <el-icon><EditPen /></el-icon><span>文档策展</span>
+        </el-menu-item>
         <el-menu-item v-if="auth.isAdmin" index="/models">
           <el-icon><Cpu /></el-icon><span>模型配置</span>
         </el-menu-item>
@@ -85,7 +88,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowDown, ChatDotRound, Checked, Collection, Cpu, FolderOpened, MagicStick, OfficeBuilding, QuestionFilled, User } from '@element-plus/icons-vue'
+import { ArrowDown, ChatDotRound, Checked, Collection, Cpu, EditPen, FolderOpened, MagicStick, OfficeBuilding, QuestionFilled, User } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from './stores/auth'
 import { authApi, workspaceApi } from './api'
@@ -102,6 +105,7 @@ const activeMenu = computed(() => {
   if (route.path.startsWith('/qa')) return '/qa'
   if (route.path.startsWith('/extract')) return '/extract'
   if (route.path.startsWith('/review')) return '/review'
+  if (route.path.startsWith('/curate')) return '/curate'
   if (route.path.startsWith('/models')) return '/models'
   if (route.path.startsWith('/members')) return '/members'
   if (route.path.startsWith('/chat')) return '/chat'
