@@ -6,6 +6,7 @@ import io.opentelemetry.context.Scope;
 
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.function.Supplier;
 
 /**
@@ -27,7 +28,7 @@ public final class ContextPropagator {
     public static Runnable wrap(Runnable task) {
         Map<String, String> mdc = LogContext.snapshot();
         Object sse = SseStreamContext.snapshot();
-        Map<String, long[]> tokens = TokenAccumulator.snapshot();
+        Map<String, AtomicLongArray> tokens = TokenAccumulator.snapshot();
         Context otel = Context.current();
         return () -> {
             LogContext.restore(mdc);
@@ -52,7 +53,7 @@ public final class ContextPropagator {
     public static <T> Supplier<T> wrapSupplier(Supplier<T> task) {
         Map<String, String> mdc = LogContext.snapshot();
         Object sse = SseStreamContext.snapshot();
-        Map<String, long[]> tokens = TokenAccumulator.snapshot();
+        Map<String, AtomicLongArray> tokens = TokenAccumulator.snapshot();
         Context otel = Context.current();
         return () -> {
             LogContext.restore(mdc);
@@ -71,7 +72,7 @@ public final class ContextPropagator {
     private static <T> Callable<T> wrap(Callable<T> task) {
         Map<String, String> mdc = LogContext.snapshot();
         Object sse = SseStreamContext.snapshot();
-        Map<String, long[]> tokens = TokenAccumulator.snapshot();
+        Map<String, AtomicLongArray> tokens = TokenAccumulator.snapshot();
         Context otel = Context.current();
         return () -> {
             LogContext.restore(mdc);

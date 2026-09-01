@@ -12,6 +12,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLongArray;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -30,7 +31,7 @@ class ContextPropagatorTest {
     void wrap_callable_subthreadSeesTokenAccumulator() throws Exception {
         TokenAccumulator.begin();
         try {
-            Map<String, long[]> snap = TokenAccumulator.snapshot();
+            Map<String, AtomicLongArray> snap = TokenAccumulator.snapshot();
             // 子线程通过 wrapCallable 恢复累加器并累加，主线程 totals() 应能看到
             long[] totals = CompletableFuture.supplyAsync(
                     ContextPropagator.wrapSupplier(() -> {
