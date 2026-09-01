@@ -267,7 +267,9 @@ public class DocumentCurateService {
         doc.setCurateStatus(null);
         documentRepository.save(doc);
         recordLog(docId, "confirm", Document.CURATE_ACCEPTED, "向量化", userId);
-        afterCommitExecutor.runAfterCommit(() -> vectorIngestionService.ingest(docId));
+        // 事务提交后异步向量化：@Async 换独立线程执行，避免在 afterCommit 已提交事务上下文中
+        // 同步 ingest 导致 chunk save 被静默丢弃（esId 不回填）
+        afterCommitExecutor.runAfterCommit(() -> vectorIngestionService.ingestAsync(docId));
     }
 
     // ==================== chunk 级精修（ACCEPTED 后，确认前） ====================
@@ -313,6 +315,59 @@ public class DocumentCurateService {
         chunkRepository.save(chunk);
         recordChunkLog(chunk, "keep", null, null, userId);
         return ChunkReviewResponse.of(chunk, docName(chunk.getDocId()));
+    }
+
+    /**
+     * 精修：合并相邻 chunk（source 并入 target，保留 target id；确认前不触 ES）。
+     * 合并后 target 置 SUSPECT（回到待审，confirm 后由复核页处置）；source 软删 FILTERED（记录保留）。
+     * 约束：同文档、|seq差|=1、双方均未进 ES（esId 空且 EMBEDDING）、非 FILTERED、合并后内容非空。
+     */
+    @Transactional
+    public ChunkReviewResponse mergeChunk(Long docId, Long sourceId, Long targetId, Long userId) {
+        Chunk source = requireChunk(sourceId);
+        Chunk target = requireChunk(targetId);
+        if (!source.getDocId().equals(docId) || !target.getDocId().equals(docId)) {
+            throw new BizException("分块不属于该文档");
+        }
+        requireAccepted(docId);
+        if (sourceId.equals(targetId)) {
+            throw new BizException("合并源与目标不能是同一分块");
+        }
+        if (Math.abs(source.getSeq() - target.getSeq()) != 1) {
+            throw new BizException("仅支持合并相邻分块（当前 seq " + source.getSeq() + " / " + target.getSeq() + "）");
+        }
+        if (source.getEsId() != null || target.getEsId() != null
+                || !ChunkStatus.EMBEDDING.is(source.getStatus()) || !ChunkStatus.EMBEDDING.is(target.getStatus())) {
+            throw new BizException("仅未向量化的分块可合并（已进 ES/已索引的分块请先在清洗复核页处理）");
+        }
+        if (ChunkStatus.FILTERED.is(source.getStatus()) || ChunkStatus.FILTERED.is(target.getStatus())) {
+            throw new BizException("已删除的分块不可参与合并");
+        }
+        // 按文档顺序拼接（seq 小者在先）
+        Chunk first = source.getSeq() < target.getSeq() ? source : target;
+        Chunk second = source.getSeq() < target.getSeq() ? target : source;
+        String merged = first.getContent() + "\n" + second.getContent();
+        if (merged.trim().isEmpty()) {
+            throw new BizException("合并后内容不能为空");
+        }
+        String beforeTarget = target.getContent();
+        String beforeSource = source.getContent();
+        // 写目标（保留 target id/seq/title，pageNum 取 min，置 SUSPECT 待审，不动 esId/status，不触 ES）
+        target.setContent(merged);
+        target.setPageNum(Math.min(
+                source.getPageNum() == null ? 0 : source.getPageNum(),
+                target.getPageNum() == null ? 0 : target.getPageNum()));
+        target.setCleanStatus(ChunkReviewService.CLEAN_SUSPECT);
+        target.setCleanReason("人工合并（原 chunk " + source.getId() + "、" + target.getId() + "）");
+        chunkRepository.save(target);
+        // 源软删（记录保留，供历史引用"查看全文"兜底）
+        source.setCleanStatus(ChunkReviewService.CLEAN_FILTERED);
+        source.setStatus(ChunkStatus.FILTERED.value());
+        chunkRepository.save(source);
+        // 审计：merge（目标 before/after）+ merge-source（源 before/after=目标 id）
+        recordChunkLog(target, "merge", beforeTarget, merged, userId);
+        recordChunkLog(source, "merge-source", beforeSource, "并入 chunk " + target.getId(), userId);
+        return ChunkReviewResponse.of(target, docName(target.getDocId()));
     }
 
     // ==================== 工具 ====================

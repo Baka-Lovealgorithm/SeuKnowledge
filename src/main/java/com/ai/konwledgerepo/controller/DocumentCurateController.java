@@ -141,9 +141,23 @@ public class DocumentCurateController {
         return ApiResponse.ok(curateService.keepChunk(chunkId, userId));
     }
 
+    /** 精修：合并相邻 chunk（source 并入 target，保留 target id；合并后置 SUSPECT 待审，不触 ES） */
+    @PostMapping("/documents/{id}/curate/chunks/merge")
+    @EditorOrAbove
+    public ApiResponse<ChunkReviewResponse> mergeChunk(@PathVariable Long id,
+                                                       @RequestBody MergeRequest request,
+                                                       @RequestAttribute("userId") Long userId,
+                                                       @RequestAttribute("workspaceId") Long workspaceId) {
+        workspaceAccess.requireDocAccess(id, workspaceId, userId, true);
+        return ApiResponse.ok(curateService.mergeChunk(id, request.sourceId(), request.targetId(), userId));
+    }
+
     public record SaveMdRequest(String content) {
     }
 
     public record EditRequest(String content, String title) {
+    }
+
+    public record MergeRequest(Long sourceId, Long targetId) {
     }
 }

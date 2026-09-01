@@ -15,6 +15,7 @@ import com.ai.konwledgerepo.service.knowledgebase.WorkspaceIdResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -50,6 +51,20 @@ public class VectorIngestionService {
         this.workspaceIdResolver = workspaceIdResolver;
         this.modelFactory = modelFactory;
         this.indexName = esProps.indexName();
+    }
+
+    /**
+     * 异步向量化入口（精修确认后触发）：与解析流程一致，在独立线程（无外层事务）执行
+     * {@link #ingest}，确保各 chunk 的 save 自行开事务并真实提交。
+     * <p>
+     * 背景：若在 {@code afterCommitExecutor.runAfterCommit} 回调内同步调用 ingest，
+     * 回调时外层事务已提交但 {@code TransactionSynchronizationManager} 的资源尚未清理，
+     * 后续 chunkRepository.save 会「加入」这个已提交事务而被静默丢弃（不抛异常，ES 已写、
+     * 日志显示成功，但 MySQL esId 不回填）。@Async 换线程后无活动事务，修复该问题。
+     */
+    @Async
+    public void ingestAsync(Long docId) {
+        ingest(docId);
     }
 
     /**

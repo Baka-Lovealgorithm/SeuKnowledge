@@ -96,11 +96,12 @@ public final class QaContext {
     }
 
     /**
-     * 证据列表序列化为引用 JSON 数组字符串（chunkId/docName/page/sourceType/title/docId/content/fullContent）。
+     * 证据列表序列化为引用 JSON 数组字符串（chunkId/docName/page/sourceType/title/docId/content）。
      * 答案生成与拒答兜底共用，保证 REFS 结构一致（前端 refs 卡片渲染）。
-     * content 为表格感知截断的 snippet（见 {@link RefSnippet}）；fullContent 为回答时刻的
-     * 内容快照（截断 2000 字符），供历史证据"展开全文"离线展示——清洗/重切后 chunk 变化或
-     * 删除不影响历史引用；docId 仅 CHUNK 来源有值（BUSINESS/QA 为 null，前端据此不提供展开详情）。
+     * content 为表格感知截断的 snippet（见 {@link RefSnippet}），供引用卡片离线展示；
+     * 历史证据"展开全文"走实时查询（/documents/{id}/chunks 按 chunkId 取当前内容，
+     * 见前端 Chat.vue openRefDetail），故不再存全文快照；
+     * docId 仅 CHUNK 来源有值（BUSINESS/QA 为 null，前端据此不提供展开详情）。
      */
     public static String toRefsJson(List<ChunkEvidence> chunks, ObjectMapper mapper) throws JsonProcessingException {
         List<Map<String, Object>> refs = new ArrayList<>();
@@ -113,20 +114,9 @@ public final class QaContext {
             ref.put("title", c.title() == null ? "" : c.title());
             ref.put("docId", c.docId());
             ref.put("content", RefSnippet.snippet(c.content()));
-            ref.put("fullContent", truncateFull(c.content()));
             refs.add(ref);
         }
         return mapper.writeValueAsString(refs);
-    }
-
-    /** fullContent 快照截断上限（字符）；chunk 默认 ≤800 字，2000 足够覆盖单条引用全文 */
-    private static final int FULL_CONTENT_MAX = 2000;
-
-    private static String truncateFull(String s) {
-        if (s == null) {
-            return "";
-        }
-        return s.length() > FULL_CONTENT_MAX ? s.substring(0, FULL_CONTENT_MAX) : s;
     }
 
     @SuppressWarnings("unchecked")

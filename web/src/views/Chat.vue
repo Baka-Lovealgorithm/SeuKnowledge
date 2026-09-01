@@ -310,7 +310,14 @@ async function openRefDetail(r) {
       chunkCache.set(r.docId, chunks)
     }
     const hit = chunks.find((c) => c.id === r.chunkId)
-    refDetailContent.value = hit ? hit.content : '(未找到对应分块，可能已被重新解析)'
+    if (hit && hit.cleanStatus === 'FILTERED') {
+      // 引用命中但该分块已在精修阶段被删除/合并：给出原因提示（cleanReason 由合并/删除时写入）
+      refDetailContent.value = hit.cleanReason ? `该分块已被删除/合并（原因：${hit.cleanReason}）` : '该分块已被删除/合并，不再提供全文'
+    } else if (hit) {
+      refDetailContent.value = hit.content
+    } else {
+      refDetailContent.value = '(未找到对应分块，可能已被重新解析)'
+    }
   } catch (e) {
     refDetailContent.value = '加载失败：' + ((e && e.message) || '请稍后重试')
   } finally {

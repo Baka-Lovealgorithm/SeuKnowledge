@@ -41,7 +41,8 @@ export const curateApi = {
   confirm: (id) => http.post(`/documents/${id}/curate/confirm`),
   editChunk: (id, chunkId, data) => http.post(`/documents/${id}/curate/chunks/${chunkId}/edit`, data),
   dropChunk: (id, chunkId) => http.post(`/documents/${id}/curate/chunks/${chunkId}/drop`),
-  keepChunk: (id, chunkId) => http.post(`/documents/${id}/curate/chunks/${chunkId}/keep`)
+  keepChunk: (id, chunkId) => http.post(`/documents/${id}/curate/chunks/${chunkId}/keep`),
+  mergeChunk: (id, data) => http.post(`/documents/${id}/curate/chunks/merge`, data)
 }
 
 export const reviewApi = {

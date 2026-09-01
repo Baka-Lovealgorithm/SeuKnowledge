@@ -19,6 +19,8 @@
         <el-button type="success" :loading="acting" @click="accept">接受并进入精修</el-button>
       </template>
       <template v-else-if="auth.canWrite && status === 'ACCEPTED'">
+        <el-button type="primary" :disabled="!canMerge" :loading="acting" title="勾选两块相邻（|seq差|=1）分块后合并"
+                   @click="openMerge">合并{{ selectedRows.length ? ` (${selectedRows.length})` : '' }}</el-button>
         <el-button type="success" :loading="acting" @click="confirm">确认完成并向量化</el-button>
       </template>
     </div>
@@ -31,7 +33,8 @@
       <el-alert v-else-if="status === 'ACCEPTED'" type="warning" :closable="false" class="hint"
                 :title="`已接受：后悔通道已关闭（不可再编辑 md/重新分块）。可逐块编辑/保留/删除；「确认完成」后统一向量化。${suspectCount > 0 ? `仍有 ${suspectCount} 个 SUSPECT 未处置，确认后它们不进向量库（可在清洗复核页补处理）。` : ''}`" />
 
-      <el-table :data="chunks" v-loading="loading" border size="small">
+      <el-table :data="chunks" v-loading="loading" border size="small" @selection-change="onSelectionChange">
+        <el-table-column v-if="status === 'ACCEPTED'" type="selection" width="40" :selectable="selectableForMerge" />
         <el-table-column prop="seq" label="序号" width="70" />
         <el-table-column prop="pageNum" label="页码" width="70" />
         <el-table-column prop="title" label="所属标题" min-width="130" show-overflow-tooltip />
@@ -92,6 +95,22 @@
 
     <!-- chunk 详情（只读，完整内容） -->
     <ChunkDetail v-model="detailVisible" :row="detailRow" />
+
+    <!-- 合并相邻 chunk：选择保留的目标块 -->
+    <el-dialog v-model="mergeVisible" title="合并相邻 chunk（选择目标）" width="720px" :close-on-click-modal="false">
+      <el-alert type="info" :closable="false" class="merge-tip"
+                title="将两块内容按文档顺序拼接（seq 小者在前）写入目标块；目标块保留原 id/序号，并置回 SUSPECT 待审核（确认前不向量化）；另一块将被删除（记录保留）。请选择哪一块作为合并后的目标：" />
+      <el-radio-group v-model="mergeTargetId" class="merge-opts">
+        <el-radio v-for="c in mergeCandidates" :key="c.chunkId" :value="c.chunkId" class="merge-opt">
+          <div class="merge-opt-title">#{{ c.seq }} {{ c.title || '（无标题）' }}<span v-if="c.pageNum" class="merge-opt-page"> · 第 {{ c.pageNum }} 页</span></div>
+          <div class="merge-opt-content">{{ c.content }}</div>
+        </el-radio>
+      </el-radio-group>
+      <template #footer>
+        <el-button @click="mergeVisible = false">取消</el-button>
+        <el-button type="primary" :loading="mergeSaving" :disabled="!mergeTargetId" @click="doMerge">确认合并</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -126,6 +145,11 @@ const editTitle = ref('')
 const editContent = ref('')
 const detailVisible = ref(false)
 const detailRow = ref(null)
+const selectedRows = ref([])
+const mergeVisible = ref(false)
+const mergeSaving = ref(false)
+const mergeTargetId = ref(null)
+const mergeCandidates = ref([])
 
 const status = computed(() => info.value.curateStatus)
 const suspectCount = computed(() => info.value.suspectCount ?? 0)
@@ -141,6 +165,50 @@ const cleanTagText = (row) => row.cleanStatus || 'KEEP'
 
 const statusText = (s) => (s === 'PREVIEWING' ? '展示门' : s === 'ACCEPTED' ? '待确认' : s || '')
 const docLabel = (d) => `${d.fileName}（${statusText(d.curateStatus)} · SUSPECT ${d.suspectCount ?? 0}）`
+
+/** 合并可用性：精修阶段 + 恰好勾选 2 块 + 同一文档 + 相邻（|seq差|=1） */
+const canMerge = computed(() => {
+  if (status.value !== 'ACCEPTED' || !auth.canWrite) return false
+  if (selectedRows.value.length !== 2) return false
+  const [a, b] = selectedRows.value
+  if (!a || !b || String(a.docId) !== String(b.docId)) return false
+  return Math.abs(a.seq - b.seq) === 1
+})
+
+/** 精修阶段仅允许勾选未删除的 chunk 参与合并 */
+function selectableForMerge(row) {
+  return row.cleanStatus !== 'FILTERED'
+}
+
+function onSelectionChange(rows) {
+  selectedRows.value = rows
+}
+
+function openMerge() {
+  if (!canMerge.value) return
+  // 按文档顺序（seq 升序）展示两个候选，默认选 seq 小者为目标
+  mergeCandidates.value = [...selectedRows.value].sort((x, y) => x.seq - y.seq)
+  mergeTargetId.value = mergeCandidates.value[0]?.chunkId ?? null
+  mergeVisible.value = true
+}
+
+async function doMerge() {
+  const target = mergeCandidates.value.find((c) => c.chunkId === mergeTargetId.value)
+  if (!target) return
+  const source = mergeCandidates.value.find((c) => c.chunkId !== mergeTargetId.value)
+  mergeSaving.value = true
+  try {
+    const r = await curateApi.mergeChunk(docId.value, { sourceId: source.chunkId, targetId: target.chunkId })
+    ElMessage.success(`已合并为 #${r.seq}（目标块已置回 SUSPECT 待审核，确认前不向量化；源块已删除）`)
+    mergeVisible.value = false
+    selectedRows.value = []
+    await load()
+  } catch (e) {
+    /* 拦截器已提示 */
+  } finally {
+    mergeSaving.value = false
+  }
+}
 
 async function load() {
   if (!docId.value) return
@@ -347,4 +415,14 @@ onMounted(init)
 .md-src { flex: 1; }
 .md-src :deep(textarea) { font-family: 'JetBrains Mono', Consolas, monospace; font-size: 13px; line-height: 1.6; }
 .md-preview { flex: 1; overflow: auto; border: 1px solid #e4e7ed; border-radius: 4px; padding: 12px; background: #fff; }
+.merge-tip { margin-bottom: 12px; }
+.merge-opts { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.merge-opt { display: flex; align-items: flex-start; white-space: normal; width: 100%; margin-right: 0; height: auto; padding: 10px 12px; }
+.merge-opt-title { font-weight: 600; margin-bottom: 4px; }
+.merge-opt-page { color: #909399; font-weight: 400; font-size: 12px; }
+.merge-opt-content {
+  max-height: 64px; overflow: hidden; text-overflow: ellipsis;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  white-space: pre-line; word-break: break-all; font-size: 13px; color: #606266;
+}
 </style>
