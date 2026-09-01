@@ -120,6 +120,8 @@ public class QaExecutionService {
                 if (!SseStreamContext.isDeltaSent()) {
                     sendSse(emitter, "delta", answer);
                 }
+                // 最终权威答案：无论是否已流式预览都发送，前端以其整段上屏（与落库一致，覆盖重试/拒答/部分答案场景）
+                sendSse(emitter, "answer", answer);
                 sendSse(emitter, "refs", refs);
             }
 

@@ -48,7 +48,10 @@
         <div v-for="(m, i) in messages" :key="i" class="msg-row" :class="m.role.toLowerCase()">
           <div class="msg-bubble">
             <div class="msg-role">{{ m.role === 'USER' ? '我' : '助手' }}</div>
-            <div class="msg-content"><MdContent :content="m.content" /></div>
+            <div class="msg-content">
+              <MdContent v-if="m.content" :content="m.content" />
+              <span v-else-if="m.role === 'ASSISTANT' && m.pending" class="generating-hint">正在生成…</span>
+            </div>
             <el-tag v-if="m.role === 'ASSISTANT' && m.interrupted" type="info" size="small" style="margin-top:6px">已停止</el-tag>
             <div v-if="m.role === 'ASSISTANT' && refsList[i]" class="msg-refs">
               <div v-for="(r, j) in refsList[i]" :key="j" class="ref-item">
@@ -111,7 +114,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Edit, Delete, Expand, Fold } from '@element-plus/icons-vue'
 import { chatApi, docApi, kbApi } from '../api'
@@ -338,7 +341,7 @@ async function send() {
   messages.value.push({ role: 'USER', content: q })
   refsList.value.push([])
   const idx = messages.value.length
-  messages.value.push({ role: 'ASSISTANT', content: '' })
+  messages.value.push({ role: 'ASSISTANT', content: '', pending: true })
   refsList.value.push([])
   scrollBottom()
   const ctrl = new AbortController()
@@ -359,6 +362,7 @@ async function send() {
     const reader = resp.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    let pendingText = ''          // 严格版：生成期间的 delta 只进缓冲，最终以 answer 事件整段上屏
     let receivedDone = false
     let receivedStop = false
     for (;;) {
@@ -374,7 +378,12 @@ async function send() {
         if (data.type === 'stage') {
           stageStore.set(sentSessionId, { id: data.stage, text: data.content || '', done: false })
         } else if (data.type === 'delta') {
-          if (cur()) { messages.value[idx].content += data.content; scrollBottom() }
+          // 严格版：delta 只累积到缓冲，不上屏（避免自检/重试期间用户看到可能被覆盖的预览）
+          pendingText += data.content || ''
+        } else if (data.type === 'answer') {
+          pendingText = data.content || ''
+          if (cur() && messages.value[idx]) messages.value[idx].pending = false
+          replayAnswer(sentSessionId, idx, pendingText)
         } else if (data.type === 'refs') {
           if (cur()) { refsList.value[idx] = parseRefs(data.content) }
         } else if (data.type === 'done') {
@@ -382,6 +391,13 @@ async function send() {
           stageStore.set(sentSessionId, { id: 'DONE', text: '回答完成', done: true })
         } else if (data.type === 'stopped') {
           receivedStop = true
+          clearReplay(sentSessionId)
+          if (cur() && messages.value[idx]) {
+            messages.value[idx].pending = false
+            messages.value[idx].content = pendingText || messages.value[idx].content
+            messages.value[idx].interrupted = true
+            scrollBottom()
+          }
           stageStore.set(sentSessionId, { id: 'DONE', text: '已停止', done: true })
         } else if (data.type === 'error') {
           throw new Error(data.content || '问答失败')
@@ -398,11 +414,16 @@ async function send() {
     if (s) s.messageCount += 2
   } catch (e) {
     stageStore.delete(sentSessionId)
+    clearReplay(sentSessionId)
     const stopped = stoppedSessions.has(sentSessionId) || (e && e.name === 'AbortError')
     if (stopped) {
       stoppedSessions.delete(sentSessionId)
       if (cur() && messages.value[idx]) {
+        messages.value[idx].pending = false
+        // 停止时把已生成的部分答案上屏（严格版 buffer 尚未展示，停止是唯一提前展示通道）
+        messages.value[idx].content = pendingText || messages.value[idx].content
         messages.value[idx].interrupted = true
+        scrollBottom()
       }
       stageStore.set(sentSessionId, { id: 'DONE', text: '已停止', done: true })
       setTimeout(async () => {
@@ -412,6 +433,7 @@ async function send() {
     } else {
       const msg = friendlyError((e && e.message) || '')
       if (cur()) {
+        messages.value[idx].pending = false
         if (!messages.value[idx].content) messages.value[idx].content = msg
         ElMessage.error(msg)
       }
@@ -430,6 +452,42 @@ async function stopCurrent() {
   aborters.get(sid)?.abort()
   chatApi.cancelAsk(sid).catch(() => {})
 }
+
+// ===== 终稿回放：answer 事件到达后快速打字上屏（严格版：生成期间不上屏，用户只看到一个答案）=====
+const replayTimers = new Map()
+
+function replayAnswer(sentSessionId, idx, fullText) {
+  clearReplay(sentSessionId)
+  if (sessionId.value !== sentSessionId) return
+  messages.value[idx].content = ''
+  const total = fullText.length
+  if (!total) { scrollBottom(); return }
+  const step = Math.max(1, Math.ceil(total / 60))   // 约 1.2s 完成（20ms/帧），兼顾长答案
+  let pos = 0
+  const timer = setInterval(() => {
+    if (sessionId.value !== sentSessionId) { clearReplay(sentSessionId); return }
+    pos += step
+    if (pos >= total) {
+      messages.value[idx].content = fullText
+      clearReplay(sentSessionId)
+      scrollBottom()
+    } else {
+      messages.value[idx].content = fullText.slice(0, pos)
+      scrollBottom()
+    }
+  }, 20)
+  replayTimers.set(sentSessionId, timer)
+}
+
+function clearReplay(sentSessionId) {
+  const t = replayTimers.get(sentSessionId)
+  if (t) { clearInterval(t); replayTimers.delete(sentSessionId) }
+}
+
+onBeforeUnmount(() => {
+  for (const t of replayTimers.values()) clearInterval(t)
+  replayTimers.clear()
+})
 
 /** 刷新会话列表（服务端按最后对话时间倒序），用于展示自动生成的标题与最新排序 */
 async function refreshSessions() {
@@ -553,6 +611,7 @@ onMounted(loadKbs)
 /* 不用 pre-wrap：marked 输出的块级 HTML 之间存在源码换行符，pre-wrap 会把它们渲染成多余空行；
    用户输入里的单个换行已由 markdown breaks:true 转成 <br>，这里保持默认空白折叠 */
 .msg-content { word-break: break-word; }
+.generating-hint { color: #909399; font-size: 13px; }
 .msg-refs { margin-top: 10px; border-top: 1px dashed #dcdfe6; padding-top: 8px; }
 .msg-row.user .msg-refs { border-color: rgba(255,255,255,0.4); }
 .ref-item { font-size: 12px; color: #606266; padding: 3px 0; }

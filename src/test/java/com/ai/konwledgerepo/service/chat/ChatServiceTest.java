@@ -450,12 +450,14 @@ class ChatServiceTest {
         service.askStreamAsync(SESSION_ID, USER_ID, "你好", emitter, WS_ID);
 
         assertTrue(contextSetDuringRun.get(), "graph 执行期间 SseStreamContext 应指向当前 emitter");
-        assertEquals(3, emitter.payloads.size(), "未标记 delta 时应补发 delta，事件序列应为 delta/refs/done");
+        assertEquals(4, emitter.payloads.size(), "未标记 delta 时应补发 delta，事件序列应为 delta/answer/refs/done");
         assertEquals("delta", payload(emitter, 0).get("type"));
         assertEquals("答案", payload(emitter, 0).get("content"));
-        assertEquals("refs", payload(emitter, 1).get("type"));
-        assertEquals("[{\"chunkId\":1}]", payload(emitter, 1).get("content"));
-        assertEquals("done", payload(emitter, 2).get("type"));
+        assertEquals("answer", payload(emitter, 1).get("type"));
+        assertEquals("答案", payload(emitter, 1).get("content"));
+        assertEquals("refs", payload(emitter, 2).get("type"));
+        assertEquals("[{\"chunkId\":1}]", payload(emitter, 2).get("content"));
+        assertEquals("done", payload(emitter, 3).get("type"));
         assertTrue(emitter.completed);
 
         verify(messageRepository, times(2)).save(any(ChatMessage.class));
@@ -470,22 +472,25 @@ class ChatServiceTest {
     }
 
     @Test
-    void askStreamAsync_deltaAlreadySent_skipsDuplicateDelta() {
+    void askStreamAsync_deltaAlreadySent_stillSendsFinalAnswer() {
         stubAskBase("你好", kb(KB_ID, "测试库", WS_ID));
         OverAllState state = new OverAllState(Map.of(
-                QaContextKey.ANSWER, "答案",
+                QaContextKey.ANSWER, "重试后的最终答案",
                 QaContextKey.REFS, "[]"));
         CapturingEmitter emitter = new CapturingEmitter();
         when(qaGraphRunner.run(any())).thenAnswer(inv -> {
-            SseStreamContext.markDeltaSent(); // 模拟 graph 节点已流式输出过 delta
+            SseStreamContext.markDeltaSent(); // 模拟 graph 节点首轮已流式输出过 delta（重试场景）
             return state;
         });
 
         service.askStreamAsync(SESSION_ID, USER_ID, "你好", emitter, WS_ID);
 
-        assertEquals(2, emitter.payloads.size(), "已标记 delta 时不应补发 delta");
-        assertEquals("refs", payload(emitter, 0).get("type"));
-        assertEquals("done", payload(emitter, 1).get("type"));
+        // 核心保障：已流式预览过也强制发送 answer 权威事件，前端以它上屏，避免展示与落库不一致
+        assertEquals(3, emitter.payloads.size(), "已标记 delta 时不补发 delta，但 answer 权威事件必须发送");
+        assertEquals("answer", payload(emitter, 0).get("type"));
+        assertEquals("重试后的最终答案", payload(emitter, 0).get("content"));
+        assertEquals("refs", payload(emitter, 1).get("type"));
+        assertEquals("done", payload(emitter, 2).get("type"));
         assertTrue(emitter.completed);
         assertNull(SseStreamContext.get());
     }
