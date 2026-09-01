@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -33,6 +34,14 @@ public class RedisCacheService {
 
     /** Redis 是否处于降级态（任一操作失败即置位，任一次成功复位） */
     private final AtomicBoolean degraded = new AtomicBoolean(false);
+
+    /**
+     * 原子释放持有者锁的 Lua 脚本：GET key 与 ARGV[1] 比对，匹配才 DEL。
+     * 保证「校验持有者 + 删除」原子，避免 {@link TaskLock} TTL 过期后误删被他人重新获取的锁。
+     */
+    private static final DefaultRedisScript<Long> RELEASE_IF_OWNER_SCRIPT = new DefaultRedisScript<>(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+            Long.class);
 
     public RedisCacheService(StringRedisTemplate redis, ObjectMapper objectMapper) {
         this.redis = redis;
@@ -199,6 +208,23 @@ public class RedisCacheService {
         } catch (Exception e) {
             onFailure("setIfAbsent", key, e);
             return null;
+        }
+    }
+
+    /**
+     * 原子释放持有者锁：仅当 key 的值等于 owner 时才删除（Lua 脚本保证 GET+DEL 原子），
+     * 避免 TTL 过期后误删被他人重新获取的锁。返回是否删除成功（Redis 故障返回 false）。
+     * <p>
+     * 用法见 {@link TaskLock#release}：acquire 时记录 owner token，release 时校验匹配才删。
+     */
+    public boolean releaseIfOwner(String key, String owner) {
+        try {
+            Long deleted = redis.execute(RELEASE_IF_OWNER_SCRIPT, List.of(key), owner);
+            onSuccess();
+            return deleted != null && deleted > 0;
+        } catch (Exception e) {
+            onFailure("releaseIfOwner", key, e);
+            return false;
         }
     }
 
