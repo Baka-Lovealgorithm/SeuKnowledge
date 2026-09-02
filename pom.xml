@@ -135,6 +135,16 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- ===== 开发热更新（DevTools）：classpath 变化自动重启，本地开发效率用。
+             仅 dev 环境生效（application-dev.yml 配置开关）；runtime scope + optional，
+             打生产 jar 默认排除，不影响部署。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-devtools</artifactId>
+            <scope>runtime</scope>
+            <optional>true</optional>
+        </dependency>
     </dependencies>
 
     <dependencyManagement>
