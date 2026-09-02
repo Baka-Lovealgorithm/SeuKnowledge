@@ -30,7 +30,7 @@ export const docApi = {
   retry: (id) => http.post(`/documents/${id}/retry`)
 }
 
-/** 文档人工策展（md 清洗 + 展示门）：读（队列/md/chunk）与写（保存 md/接受/确认/chunk 精修） */
+/** 文档初洗/精修（原"文档策展"）：初洗（读队列/md/chunk + 写 md/接受）与精修（edit/drop/keep/unkeep/merge/confirm） */
 export const curateApi = {
   info: (id) => http.get(`/documents/${id}/curate`),
   queue: (kbId) => http.get(`/kb/${kbId}/curate/queue`),
@@ -42,13 +42,16 @@ export const curateApi = {
   editChunk: (id, chunkId, data) => http.post(`/documents/${id}/curate/chunks/${chunkId}/edit`, data),
   dropChunk: (id, chunkId) => http.post(`/documents/${id}/curate/chunks/${chunkId}/drop`),
   keepChunk: (id, chunkId) => http.post(`/documents/${id}/curate/chunks/${chunkId}/keep`),
+  unkeepChunk: (id, chunkId) => http.post(`/documents/${id}/curate/chunks/${chunkId}/unkeep`),
   mergeChunk: (id, data) => http.post(`/documents/${id}/curate/chunks/merge`, data)
 }
 
+/** 文档精修（原"清洗复核"）：待审核（SUSPECT）块 保留/编辑/删除/回退待审核/批量 */
 export const reviewApi = {
   suspectQueue: (kbId) => http.get(`/kb/${kbId}/chunks/suspect`),
   keep: (id) => http.post(`/chunks/${id}/review/keep`),
   drop: (id) => http.post(`/chunks/${id}/review/drop`),
+  unkeep: (id) => http.post(`/chunks/${id}/review/unkeep`),
   edit: (id, data) => http.post(`/chunks/${id}/edit`, data),
   batch: (ids, action) => http.post('/chunks/review/batch', { ids, action })
 }

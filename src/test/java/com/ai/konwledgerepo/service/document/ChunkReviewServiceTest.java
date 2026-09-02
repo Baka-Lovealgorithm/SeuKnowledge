@@ -30,8 +30,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 清洗人工审核服务测试：SUSPECT 队列 / 保留（DEFER 后触发向量化）/ 编辑（内容+重索引+审计）/
- * 删除（FILTERED+ES 移除+审计）/ 批量 / 幂等与边界。
+ * 文档精修服务测试：SUSPECT 队列 / 保留（DEFER 后触发向量化）/ 编辑（内容+重索引+审计）/
+ * 删除（FILTERED+ES 移除+审计）/ 已审核回退待审核（KEEP→SUSPECT+ES 移除）/ 批量 / 幂等与边界。
  */
 class ChunkReviewServiceTest {
 
@@ -179,6 +179,66 @@ class ChunkReviewServiceTest {
         verify(vectorIngestionService, never()).deleteByChunkId(anyLong());
     }
 
+    // ===== unkeep（已审核回退待审核） =====
+
+    @Test
+    void unkeep_keepChunkWithEsId_marksSuspectAndDeletesEs() {
+        Chunk c = suspectChunk(10L, 1L, null, "正文", "C3");
+        c.setCleanStatus("KEEP");
+        c.setEsId("es_10");
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(c));
+
+        ChunkReviewResponse resp = service.unkeep(10L, 99L);
+
+        assertEquals("SUSPECT", c.getCleanStatus());
+        verify(vectorIngestionService).deleteByChunkId(10L);
+        verify(reviewLogRepository).save(any(ChunkReviewLog.class));
+        assertEquals(10L, resp.chunkId());
+    }
+
+    @Test
+    void unkeep_keepChunkWithoutEsId_skipsEsDelete() {
+        Chunk c = suspectChunk(10L, 1L, null, "正文", "C3");
+        c.setCleanStatus("KEEP");
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(c));
+
+        service.unkeep(10L, 99L);
+
+        assertEquals("SUSPECT", c.getCleanStatus());
+        verify(vectorIngestionService, never()).deleteByChunkId(anyLong());
+    }
+
+    @Test
+    void unkeep_normalNullCleanStatus_marksSuspect() {
+        Chunk c = suspectChunk(10L, 1L, null, "正文", "C3");
+        c.setCleanStatus(null);
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(c));
+
+        service.unkeep(10L, 99L);
+
+        assertEquals("SUSPECT", c.getCleanStatus());
+        verify(vectorIngestionService, never()).deleteByChunkId(anyLong());
+    }
+
+    @Test
+    void unkeep_nonKeep_rejected() {
+        Chunk c = suspectChunk(10L, 1L, null, "正文", "C3");
+        c.setCleanStatus("SUSPECT");
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(c));
+
+        assertThrows(BizException.class, () -> service.unkeep(10L, 99L));
+    }
+
+    @Test
+    void unkeep_curatingDoc_rejected() {
+        Chunk c = suspectChunk(10L, 1L, null, "正文", "C3");
+        c.setCleanStatus("KEEP");
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(c));
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(curatingDoc(1L)));
+
+        assertThrows(BizException.class, () -> service.unkeep(10L, 99L));
+    }
+
     // ===== batch =====
 
     @Test
@@ -237,6 +297,14 @@ class ChunkReviewServiceTest {
         d.setId(id);
         d.setKbId(7L);
         d.setFileName(name);
+        return d;
+    }
+
+    /** 处于精修（ACCEPTED）流程中的文档：常规精修接口应拒绝 */
+    private Document curatingDoc(long id) {
+        Document d = doc(id, "策展中.pdf");
+        d.setCurateRequired(true);
+        d.setCurateStatus(Document.CURATE_ACCEPTED);
         return d;
     }
 }

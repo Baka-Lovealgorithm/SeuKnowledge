@@ -35,8 +35,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 文档人工策展服务测试：md 切页 / 初始落库 / 保存 md 重分块 / 接受与确认状态流转 /
- * chunk 精修（编辑/删除/保留，确认前不触 ES）/ 边界与审计。
+ * 文档初洗/精修服务测试：md 切页 / 初始落库 / 保存 md 重分块 / 接受与确认状态流转 /
+ * chunk 精修（编辑/删除/保留/回退，确认前不触 ES；确认需全部已审核）/ 边界与审计。
  */
 class DocumentCurateServiceTest {
 
@@ -217,8 +217,9 @@ class DocumentCurateServiceTest {
     // ===== confirm =====
 
     @Test
-    void confirm_fromAccepted_clearsStatusAndTriggersIngest() {
+    void confirm_fromAccepted_allKept_clearsStatusAndTriggersIngest() {
         when(documentRepository.findById(1L)).thenReturn(Optional.of(doc(1L, Document.CURATE_ACCEPTED)));
+        when(chunkRepository.findByDocIdOrderBySeqAsc(1L)).thenReturn(List.of(chunk(10L, 1L, "KEEP")));
         service.confirm(1L, 9L);
         // 状态清空（save 的实体 curateStatus=null）——通过 ArgumentCaptor 校验
         ArgumentCaptor<Document> saved = ArgumentCaptor.forClass(Document.class);
@@ -227,6 +228,37 @@ class DocumentCurateServiceTest {
         // 触发异步 ingest
         verify(afterCommitExecutor).runAfterCommit(any(Runnable.class));
         verify(curateLogRepository).save(any(DocumentCurateLog.class));
+    }
+
+    @Test
+    void confirm_withSuspectChunks_blocked() {
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc(1L, Document.CURATE_ACCEPTED)));
+        when(chunkRepository.findByDocIdOrderBySeqAsc(1L))
+                .thenReturn(List.of(chunk(10L, 1L, "KEEP"), chunk(11L, 1L, "SUSPECT")));
+
+        BizException e = assertThrows(BizException.class, () -> service.confirm(1L, 9L));
+
+        assertTrue(e.getMessage().contains("待审核"));
+        verify(documentRepository, never()).save(any());
+        verify(afterCommitExecutor, never()).runAfterCommit(any());
+    }
+
+    @Test
+    void confirm_allFiltered_blocked() {
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc(1L, Document.CURATE_ACCEPTED)));
+        when(chunkRepository.findByDocIdOrderBySeqAsc(1L)).thenReturn(List.of(chunk(10L, 1L, "FILTERED")));
+
+        assertThrows(BizException.class, () -> service.confirm(1L, 9L));
+
+        verify(afterCommitExecutor, never()).runAfterCommit(any());
+    }
+
+    @Test
+    void confirm_normalChunksNullCleanStatus_allowed() {
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc(1L, Document.CURATE_ACCEPTED)));
+        when(chunkRepository.findByDocIdOrderBySeqAsc(1L)).thenReturn(List.of(chunk(10L, 1L, null)));
+        service.confirm(1L, 9L);
+        verify(afterCommitExecutor).runAfterCommit(any(Runnable.class));
     }
 
     @Test
@@ -300,6 +332,48 @@ class DocumentCurateServiceTest {
         service.keepChunk(10L, 9L);
 
         verify(chunkRepository, never()).save(any());
+    }
+
+    // ===== unkeepChunk（已审核回退待审核） =====
+
+    @Test
+    void unkeepChunk_keepMarksSuspectWithoutEs() {
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc(1L, Document.CURATE_ACCEPTED)));
+        Chunk c = chunk(10L, 1L, "KEEP");
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(c));
+
+        ChunkReviewResponse r = service.unkeepChunk(10L, 9L);
+
+        assertEquals("SUSPECT", c.getCleanStatus());
+        verify(vectorIngestionService, never()).deleteByChunkId(anyLong());
+        verify(reviewLogRepository).save(any());
+        assertEquals(10L, r.chunkId());
+    }
+
+    @Test
+    void unkeepChunk_normalNullCleanStatus_marksSuspect() {
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc(1L, Document.CURATE_ACCEPTED)));
+        Chunk c = chunk(10L, 1L, null);
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(c));
+
+        service.unkeepChunk(10L, 9L);
+
+        assertEquals("SUSPECT", c.getCleanStatus());
+        verify(vectorIngestionService, never()).deleteByChunkId(anyLong());
+    }
+
+    @Test
+    void unkeepChunk_nonKeep_rejected() {
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc(1L, Document.CURATE_ACCEPTED)));
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(chunk(10L, 1L, "SUSPECT")));
+        assertThrows(BizException.class, () -> service.unkeepChunk(10L, 9L));
+    }
+
+    @Test
+    void unkeepChunk_notAccepted_rejected() {
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc(1L, Document.CURATE_PREVIEWING)));
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(chunk(10L, 1L, "KEEP")));
+        assertThrows(BizException.class, () -> service.unkeepChunk(10L, 9L));
     }
 
     // ===== getMd =====

@@ -18,10 +18,10 @@
           <el-icon><MagicStick /></el-icon><span>AI 抽取</span>
         </el-menu-item>
         <el-menu-item v-if="auth.canWrite" index="/review">
-          <el-icon><Checked /></el-icon><span>清洗复核</span>
+          <el-icon><Checked /></el-icon><span>文档精修</span>
         </el-menu-item>
         <el-menu-item v-if="auth.canWrite" index="/curate">
-          <el-icon><EditPen /></el-icon><span>文档策展</span>
+          <el-icon><EditPen /></el-icon><span>文档初洗</span>
         </el-menu-item>
         <el-menu-item v-if="auth.isAdmin" index="/models">
           <el-icon><Cpu /></el-icon><span>模型配置</span>

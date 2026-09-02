@@ -36,17 +36,17 @@ const routes = [
   {
     path: '/review',
     component: () => import('../views/Review.vue'),
-    meta: { auth: true, title: '清洗复核' }
+    meta: { auth: true, title: '文档精修' }
   },
   {
     path: '/curate',
     component: () => import('../views/CurateGate.vue'),
-    meta: { auth: true, title: '文档策展' }
+    meta: { auth: true, title: '文档初洗' }
   },
   {
     path: '/curate/:docId',
     component: () => import('../views/CurateGate.vue'),
-    meta: { auth: true, title: '文档策展' }
+    meta: { auth: true, title: '文档初洗' }
   },
   {
     path: '/models',

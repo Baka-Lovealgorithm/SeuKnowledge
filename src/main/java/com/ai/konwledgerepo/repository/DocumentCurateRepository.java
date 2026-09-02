@@ -8,7 +8,7 @@ import org.springframework.data.repository.query.Param;
 import java.util.List;
 
 /**
- * 文档策展 md 分页版本存储。
+ * 文档初洗 md 分页版本存储。
  */
 public interface DocumentCurateRepository extends JpaRepository<DocumentCurate, Long> {
 
@@ -22,7 +22,7 @@ public interface DocumentCurateRepository extends JpaRepository<DocumentCurate, 
     @Query("select coalesce(max(c.version), 0) from DocumentCurate c where c.docId = :docId")
     int maxVersion(@Param("docId") Long docId);
 
-    /** 文档是否存在任意策展版本 */
+    /** 文档是否存在任意初洗版本 */
     boolean existsByDocId(Long docId);
 
     /** 文档删除/替换时整删（含全部版本） */

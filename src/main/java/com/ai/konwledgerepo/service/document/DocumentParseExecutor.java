@@ -16,8 +16,8 @@ import java.util.Optional;
 /**
  * 文档异步解析执行器：提取文本 → 分块 → 写入 MySQL chunk → 向量化入 ES。
  * <p>
- * 策展门分支：curateRequired=true 且类型为 LlamaParse 产物（pdf/docx）时，解析到逐页 md
- * 落库（v1）→ 分块 → 落 chunk 后停在展示门（PREVIEWING，不向量化），等待人工决断
+ * 初洗门分支：curateRequired=true 且类型为 LlamaParse 产物（pdf/docx）时，解析到逐页 md
+ * 落库（v1）→ 分块 → 落 chunk 后停在初洗（PREVIEWING，不向量化），等待人工决断
  * （编辑 md 重分块 / 接受后精修 / 确认后统一向量化）；其余照旧自动链路。
  * <p>
  * 并发安全增强（F-1 / F-2 / F-7）：
@@ -94,7 +94,7 @@ public class DocumentParseExecutor {
         }
     }
 
-    /** 策展门路径：LlamaParse 逐页 md → 落库 v1 → 分块 → 落 chunk 停在展示门（不向量化） */
+    /** 初洗门路径：LlamaParse 逐页 md → 落库 v1 → 分块 → 落 chunk 停在初洗（不向量化） */
     private void parseGated(Document doc) {
         List<LlamaParseService.PageMarkdown> pages = parserService.parseToPages(doc);
         curateService.saveInitialMd(doc.getId(), pages, doc.getCreatedBy());
@@ -104,7 +104,7 @@ public class DocumentParseExecutor {
         // ---- 收尾：事务内重读 + chunk 批量写入 + SUCCESS + PREVIEWING（不 ingest，等人工决断） ----
         boolean ok = parseTx.finalizeSuccessGated(doc.getId(), clean.kept(), clean.outcomes());
         if (ok) {
-            log.info("文档 {} 解析完成并进入展示门（清洗前 {}，AUTO-DROP {}，SUSPECT {}），等待人工决断",
+            log.info("文档 {} 解析完成并进入初洗（清洗前 {}，AUTO-DROP {}，SUSPECT {}），等待人工决断",
                     doc.getFileName(), pieces.size(),
                     clean.outcomes().stream().filter(o -> o.disposition() == DocumentCleanService.Disposition.AUTO_DROP).count(),
                     clean.outcomes().stream().filter(o -> o.disposition() == DocumentCleanService.Disposition.SUSPECT).count());
@@ -130,7 +130,7 @@ public class DocumentParseExecutor {
                 clean.outcomes().stream().filter(o -> o.disposition() == DocumentCleanService.Disposition.SUSPECT).count());
     }
 
-    /** 策展门仅对 LlamaParse 产物（pdf/docx）有意义；txt/md/pptx/xlsx 无逐页 md，回退照旧链路 */
+    /** 初洗门仅对 LlamaParse 产物（pdf/docx）有意义；txt/md/pptx/xlsx 无逐页 md，回退照旧链路 */
     private static boolean isLlamaParseType(String fileType) {
         if (fileType == null) {
             return false;

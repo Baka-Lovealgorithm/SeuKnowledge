@@ -5,7 +5,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
 
 /**
- * 文档人工清洗（md 策展）内容：分页分段 + append-only 版本行。
+ * 文档初洗 md 内容：分页分段 + append-only 版本行。
  * <p>
  * 每次整篇保存插入新版本的全部页行（version 递增），最新 = max(version)；
  * 版本行即审计（相邻版本按页对比即 diff），历史版本保留最近 N 版（清理随保存动作执行）。

@@ -5,7 +5,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
 
 /**
- * 文档级策展动作审计（save_md / accept / confirm / edit_chunk / drop_chunk / keep_chunk）。
+ * 文档级初洗/精修动作审计（save_md / accept / confirm / edit_chunk / drop_chunk / keep_chunk / unkeep）。
  * <p>
  * chunk 级编辑的内容留痕（before/after 全文）仍写 chunk_review_log；
  * 本表仅记文档级动作与前后摘要（如 md 保存前后页数/字符数），供"谁在什么时候做了什么"审计。

@@ -6,7 +6,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import java.util.List;
 
 /**
- * 文档策展动作审计。
+ * 文档初洗/精修动作审计。
  */
 public interface DocumentCurateLogRepository extends JpaRepository<DocumentCurateLog, Long> {
 

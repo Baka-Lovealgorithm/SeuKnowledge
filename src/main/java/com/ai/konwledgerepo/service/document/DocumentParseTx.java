@@ -23,8 +23,8 @@ import java.util.Optional;
  * <p>
  * 使用方：{@link DocumentParseExecutor}（@Async 方法自身不挂事务）。
  * <p>
- * 策展门支持：{@link #finalizeSuccessGated} 落 chunk 同时置 curateStatus=PREVIEWING（不向量化）；
- * {@link #finalizeRechunk} 供 md 清洗后重分块（事务内删旧 chunk 重建，保持 SUCCESS）。
+ * 初洗门支持：{@link #finalizeSuccessGated} 落 chunk 同时置 curateStatus=PREVIEWING（不向量化）；
+ * {@link #finalizeRechunk} 供初洗 md 清洗后重分块（事务内删旧 chunk 重建，保持 SUCCESS）。
  */
 @Component
 public class DocumentParseTx {
@@ -74,7 +74,7 @@ public class DocumentParseTx {
     }
 
     /**
-     * 解析成功收尾（含 P1 清洗结果）：照旧自动链路（不进入策展门）。
+     * 解析成功收尾（含 P1 清洗结果）：照旧自动链路（不进入初洗门）。
      */
     @Transactional
     public boolean finalizeSuccess(Long docId, List<ChunkPiece> kept, List<DocumentCleanService.CleanOutcome> outcomes) {
@@ -82,7 +82,7 @@ public class DocumentParseTx {
     }
 
     /**
-     * 解析成功收尾（策展门）：落 chunk + SUCCESS + curateStatus=PREVIEWING（不向量化，
+     * 解析成功收尾（初洗门）：落 chunk + SUCCESS + curateStatus=PREVIEWING（不向量化，
      * 由 {@code DocumentParseExecutor} 跳过 ingest，等待人工决断）。
      */
     @Transactional
@@ -92,8 +92,8 @@ public class DocumentParseTx {
     }
 
     /**
-     * 策展重分块收尾：事务内删除旧 chunk 并以新结果重建（md 清洗后调用）。
-     * 文档状态保持 SUCCESS、curateStatus 保持 PREVIEWING（仍在展示门）。
+     * 初洗重分块收尾：事务内删除旧 chunk 并以新结果重建（md 清洗后调用）。
+     * 文档状态保持 SUCCESS、curateStatus 保持 PREVIEWING（仍在初洗中）。
      * 返回 false 表示文档已被删除（静默中止）。
      */
     @Transactional
@@ -117,11 +117,11 @@ public class DocumentParseTx {
     }
 
     /**
-     * 解析成功收尾（含 P1 清洗结果 + 可选策展状态）：
+     * 解析成功收尾（含 P1 清洗结果 + 可选初洗/精修状态）：
      * <ul>
      *   <li>kept 中的 chunk → status=EMBEDDING（其中 SUSPECT 判定项附加 clean_status=SUSPECT + clean_reason）；</li>
      *   <li>outcomes 中 AUTO-DROP 的 chunk → status=FILTERED + clean_status=FILTERED + clean_reason（记录保留但永不向量化）；</li>
-     *   <li>curateStatus 非空时文档置该状态（策展门：PREVIEWING，不向量化）。</li>
+     *   <li>curateStatus 非空时文档置该状态（初洗门：PREVIEWING，不向量化）。</li>
      * </ul>
      */
     private boolean finalize(Long docId, List<ChunkPiece> kept, List<DocumentCleanService.CleanOutcome> outcomes,

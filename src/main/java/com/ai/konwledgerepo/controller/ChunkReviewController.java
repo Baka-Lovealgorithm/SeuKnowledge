@@ -19,8 +19,9 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 
 /**
- * 清洗人工审核接口：SUSPECT 队列查询（读：MEMBER+）、保留/编辑/删除/批量（写：EDITOR+）。
- * 审核动作按 chunk 归属文档做空间与 ACL 校验。
+ * 文档精修接口（原"清洗人工审核"）：待审核（SUSPECT）队列查询（读：MEMBER+）、
+ * 保留/编辑/删除/回退待审核/批量（写：EDITOR+）。
+ * 精修动作按 chunk 归属文档做空间与 ACL 校验。
  */
 @RestController
 @RequestMapping("/api")
@@ -62,6 +63,16 @@ public class ChunkReviewController {
                                                  @RequestAttribute("workspaceId") Long workspaceId) {
         requireDocAccess(id, workspaceId, userId);
         return ApiResponse.ok(reviewService.drop(id, userId));
+    }
+
+    /** 已审核回退待审核（KEEP→SUSPECT，已向量化则移出 ES 恢复 DEFER） */
+    @PostMapping("/chunks/{id}/review/unkeep")
+    @EditorOrAbove
+    public ApiResponse<ChunkReviewResponse> unkeep(@PathVariable Long id,
+                                                   @RequestAttribute("userId") Long userId,
+                                                   @RequestAttribute("workspaceId") Long workspaceId) {
+        requireDocAccess(id, workspaceId, userId);
+        return ApiResponse.ok(reviewService.unkeep(id, userId));
     }
 
     @PostMapping("/chunks/{id}/edit")

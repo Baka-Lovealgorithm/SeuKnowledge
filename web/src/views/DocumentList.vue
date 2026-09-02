@@ -3,7 +3,7 @@
     <div class="toolbar">
       <el-button @click="goBack">← 返回知识库</el-button>
       <el-checkbox v-model="curateOn" :disabled="!auth.canWrite" style="margin-left: 8px">
-        解析后人工确认分段（策展门）
+        解析后人工确认分段（初洗门）
       </el-checkbox>
       <el-upload
         v-if="auth.canWrite"
@@ -152,7 +152,7 @@ async function doUpload({ file }) {
     } else {
       await docApi.upload(kbId, [file], false, false, curateOn.value)
     }
-    ElMessage.success(`上传 ${file.name} 成功${curateOn.value ? '，已启用策展门，请到左侧「文档策展」页处理' : ''}`)
+    ElMessage.success(`上传 ${file.name} 成功${curateOn.value ? '，已启用初洗门，请到左侧「文档初洗」页处理' : ''}`)
     load()
   } catch (e) {
     // 拦截器已提示；用户取消覆盖询问时静默跳过

@@ -22,10 +22,12 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * 清洗人工审核（P3 闭环）：对 P1 规则清洗打标的 SUSPECT chunk 提供保留/编辑/删除/批量操作。
+ * 文档精修（原"清洗人工审核"）：对 P1 规则清洗打标的待审核（SUSPECT）chunk 提供
+ * 保留/编辑/删除/回退待审核/批量操作。
  * <p>
  * DEFER 决策：SUSPECT chunk 审核前不进 ES（VectorIngestionService.ingest 已跳过）；
  * 审核通过（keep/edit）后由本服务触发单 chunk 向量化（{@link VectorIngestionService#reindexChunk}）。
+ * 已审核回退待审核（unkeep）时若已进 ES 则移出（恢复 DEFER）。
  * 所有动作写入 {@link ChunkReviewLog} 审计（编辑前后内容留痕）。
  * <p>
  * 红线：只允许改 content/title，pageNum/docId/seq/chunkId 不可变（证据展示溯源稳定）。
@@ -74,7 +76,7 @@ public class ChunkReviewService {
     /**
      * 保留：clean_status SUSPECT→KEEP 并触发单 chunk 向量化（DEFER 后首次进 ES）。
      * 非 SUSPECT chunk 幂等返回（已处理过，不重复操作）。
-     * 策展流程中的文档（展示门/已接受）拒绝在此处理（须走策展页，确认前不触 ES）。
+     * 初洗/精修流程中的文档（PREVIEWING/ACCEPTED）拒绝在此处理（须在精修页按文件处理，确认前不触 ES）。
      */
     @Transactional
     public ChunkReviewResponse keep(Long chunkId, Long userId) {
@@ -137,6 +139,26 @@ public class ChunkReviewService {
     }
 
     /**
+     * 已审核回退待审核：clean_status（KEEP 或正常 null）→SUSPECT，并移出 ES（恢复 DEFER：
+     * SUSPECT 不进向量库，需重新保留才会再次向量化）。仅已审核分块可回退；初洗/精修流程中的文档拒绝在此处理。
+     */
+    @Transactional
+    public ChunkReviewResponse unkeep(Long chunkId, Long userId) {
+        Chunk chunk = requireChunk(chunkId);
+        requireNotCurating(chunk.getDocId());
+        if (CLEAN_SUSPECT.equals(chunk.getCleanStatus()) || CLEAN_FILTERED.equals(chunk.getCleanStatus())) {
+            throw new BizException("仅已审核（KEEP）分块可回退待审核（当前 " + chunk.getCleanStatus() + "）");
+        }
+        chunk.setCleanStatus(CLEAN_SUSPECT);
+        chunkRepository.save(chunk);
+        if (chunk.getEsId() != null) {
+            vectorIngestionService.deleteByChunkId(chunkId);
+        }
+        recordLog(chunk, "unkeep", CLEAN_KEEP, CLEAN_SUSPECT, userId);
+        return ChunkReviewResponse.of(chunk, docName(chunk.getDocId()));
+    }
+
+    /**
      * 批量审核：逐条 keep/drop，返回每条的结果（部分失败不整体回滚，失败项 reason 说明）。
      * 编辑类批量操作不在此接口（编辑需逐条提供内容，走单个 edit）。
      */
@@ -171,12 +193,12 @@ public class ChunkReviewService {
                 .orElseThrow(() -> new BizException("chunk 不存在: " + chunkId));
     }
 
-    /** 策展流程中的文档（展示门/已接受）拒绝在常规审核页处理（须走策展页，确认前不触 ES） */
+    /** 初洗/精修流程中的文档（PREVIEWING/ACCEPTED）拒绝在常规精修接口处理（须走精修页，确认前不触 ES） */
     private void requireNotCurating(Long docId) {
         Document doc = documentRepository.findById(docId).orElse(null);
         if (doc != null && DocumentCurateService.isCurating(doc)) {
-            throw new BizException("该文档处于策展流程（" + doc.getCurateStatus()
-                    + "），请在策展页处理；确认向量化后可在此复核剩余 SUSPECT");
+            throw new BizException("该文档处于初洗/精修流程（" + doc.getCurateStatus()
+                    + "），请在精修页处理；确认向量化后可在此复核剩余待审核分块");
         }
     }
 

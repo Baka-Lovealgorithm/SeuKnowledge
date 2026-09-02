@@ -4,37 +4,28 @@
       <el-select v-model="kbId" placeholder="选择知识库" style="width: 200px" filterable clearable @change="onKbChange">
         <el-option v-for="kb in kbs" :key="kb.id" :label="kb.name" :value="kb.id" />
       </el-select>
-      <el-select v-model="docId" placeholder="选择文档（策展中）" style="width: 320px" filterable
+      <el-select v-model="docId" placeholder="选择文档（初洗中）" style="width: 320px" filterable
                  :disabled="!kbId || !docs.length" @change="onDocChange">
         <el-option v-for="d in docs" :key="d.docId" :label="docLabel(d)" :value="d.docId" />
       </el-select>
       <template v-if="status">
-        <el-tag v-if="status === 'PREVIEWING'" type="warning">展示门 · 待决断</el-tag>
-        <el-tag v-else-if="status === 'ACCEPTED'" type="warning">已接受 · 待确认</el-tag>
-        <span class="stat">共 {{ chunks.length }} chunk ｜ SUSPECT {{ suspectCount }}</span>
+        <el-tag type="warning">初洗中 · 待决断</el-tag>
+        <span class="stat">共 {{ chunks.length }} chunk ｜ 待审核 {{ suspectCount }}</span>
       </template>
       <div class="spacer" />
       <template v-if="auth.canWrite && status === 'PREVIEWING'">
         <el-button type="primary" :loading="mdLoading" @click="openMd">编辑 md（清洗后重新分块）</el-button>
         <el-button type="success" :loading="acting" @click="accept">接受并进入精修</el-button>
       </template>
-      <template v-else-if="auth.canWrite && status === 'ACCEPTED'">
-        <el-button type="primary" :disabled="!canMerge" :loading="acting" title="勾选两块相邻（|seq差|=1）分块后合并"
-                   @click="openMerge">合并{{ selectedRows.length ? ` (${selectedRows.length})` : '' }}</el-button>
-        <el-button type="success" :loading="acting" @click="confirm">确认完成并向量化</el-button>
-      </template>
     </div>
 
-    <el-empty v-if="!loading && !docId" :description="kbId ? '该知识库暂无策展中的文档' : '请选择知识库（上传文档时勾选「策展门」后，文档会出现在这里）'" />
+    <el-empty v-if="!loading && !docId" :description="kbId ? '该知识库暂无初洗中的文档' : '请选择知识库（上传文档时勾选「初洗门」后，文档会出现在这里）'" />
 
     <template v-else>
       <el-alert v-if="status === 'PREVIEWING'" type="info" :closable="false" class="hint"
-                title="展示门：分块结果已生成但未向量化。可「编辑 md」在线清洗后重新分块（可反复），或「接受」进入逐块精修；未决断前不会进入向量库。" />
-      <el-alert v-else-if="status === 'ACCEPTED'" type="warning" :closable="false" class="hint"
-                :title="`已接受：后悔通道已关闭（不可再编辑 md/重新分块）。可逐块编辑/保留/删除；「确认完成」后统一向量化。${suspectCount > 0 ? `仍有 ${suspectCount} 个 SUSPECT 未处置，确认后它们不进向量库（可在清洗复核页补处理）。` : ''}`" />
+                title="初洗中：分块结果已生成但未向量化。此阶段所有 chunk 只读，不可编辑/修改/合并；可「编辑 md」在线清洗后重新分块（可反复），或「接受」进入文档精修。未决断前不会进入向量库。" />
 
-      <el-table :data="chunks" v-loading="loading" border size="small" @selection-change="onSelectionChange">
-        <el-table-column v-if="status === 'ACCEPTED'" type="selection" width="40" :selectable="selectableForMerge" />
+      <el-table :data="chunks" v-loading="loading" border size="small">
         <el-table-column prop="seq" label="序号" width="70" />
         <el-table-column prop="pageNum" label="页码" width="70" />
         <el-table-column prop="title" label="所属标题" min-width="130" show-overflow-tooltip />
@@ -51,21 +42,16 @@
             <el-tag v-else :type="cleanTagType(row)" size="small">{{ cleanTagText(row) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="280" fixed="right">
+        <el-table-column label="操作" width="90" fixed="right">
           <template #default="{ row }">
             <el-button link type="info" @click="openDetail(row)">详情</el-button>
-            <template v-if="auth.canWrite && status === 'ACCEPTED'">
-              <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
-              <el-button v-if="row.cleanStatus === 'SUSPECT'" link type="success" @click="keep(row)">保留</el-button>
-              <el-button link type="danger" @click="drop(row)">删除</el-button>
-            </template>
           </template>
         </el-table-column>
       </el-table>
     </template>
 
     <!-- md 在线编辑（分屏：左源码右渲染预览） -->
-    <el-dialog v-model="mdVisible" title="清洗 md（整篇编辑，保存后重新分块，仍停在展示门）" width="94%" top="3vh">
+    <el-dialog v-model="mdVisible" title="初洗 md（整篇编辑，保存后重新分块，仍停在初洗中）" width="94%" top="3vh">
       <div class="md-split">
         <el-input v-model="mdText" type="textarea" :rows="26" resize="none" class="md-src"
                   placeholder="编辑 markdown 原文。&#10;&#10;<!-- PAGE N --> 为页标记：可移动/删除（删标记的段落并入前一页），整篇无标记将归为第 1 页。&#10;保存后自动重新分块并重新运行清洗规则（页眉页脚/碎片/重复）。" />
@@ -77,53 +63,22 @@
       </template>
     </el-dialog>
 
-    <!-- chunk 精修编辑 -->
-    <el-dialog v-model="editVisible" :title="`编辑 chunk #${editRow?.seq || ''}（${editRow?.docName || ''}）`" width="760px">
-      <el-form label-width="60px">
-        <el-form-item label="标题">
-          <el-input v-model="editTitle" maxlength="255" placeholder="所属小节标题（可空）" />
-        </el-form-item>
-        <el-form-item label="内容">
-          <el-input v-model="editContent" type="textarea" :rows="14" resize="none" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="editVisible = false">取消</el-button>
-        <el-button type="primary" :loading="editSaving" @click="saveEdit">保存</el-button>
-      </template>
-    </el-dialog>
-
     <!-- chunk 详情（只读，完整内容） -->
     <ChunkDetail v-model="detailVisible" :row="detailRow" />
-
-    <!-- 合并相邻 chunk：选择保留的目标块 -->
-    <el-dialog v-model="mergeVisible" title="合并相邻 chunk（选择目标）" width="720px" :close-on-click-modal="false">
-      <el-alert type="info" :closable="false" class="merge-tip"
-                title="将两块内容按文档顺序拼接（seq 小者在前）写入目标块；目标块保留原 id/序号，并置回 SUSPECT 待审核（确认前不向量化）；另一块将被删除（记录保留）。请选择哪一块作为合并后的目标：" />
-      <el-radio-group v-model="mergeTargetId" class="merge-opts">
-        <el-radio v-for="c in mergeCandidates" :key="c.chunkId" :value="c.chunkId" class="merge-opt">
-          <div class="merge-opt-title">#{{ c.seq }} {{ c.title || '（无标题）' }}<span v-if="c.pageNum" class="merge-opt-page"> · 第 {{ c.pageNum }} 页</span></div>
-          <div class="merge-opt-content">{{ c.content }}</div>
-        </el-radio>
-      </el-radio-group>
-      <template #footer>
-        <el-button @click="mergeVisible = false">取消</el-button>
-        <el-button type="primary" :loading="mergeSaving" :disabled="!mergeTargetId" @click="doMerge">确认合并</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { curateApi, kbApi } from '../api'
 import { renderMarkdown } from '../utils/markdown'
 import { useAuthStore } from '../stores/auth'
 import ChunkDetail from '../components/ChunkDetail.vue'
 
 const route = useRoute()
+const router = useRouter()
 const auth = useAuthStore()
 
 const kbs = ref([])
@@ -138,18 +93,8 @@ const mdLoading = ref(false)
 const mdVisible = ref(false)
 const mdSaving = ref(false)
 const mdText = ref('')
-const editVisible = ref(false)
-const editSaving = ref(false)
-const editRow = ref(null)
-const editTitle = ref('')
-const editContent = ref('')
 const detailVisible = ref(false)
 const detailRow = ref(null)
-const selectedRows = ref([])
-const mergeVisible = ref(false)
-const mergeSaving = ref(false)
-const mergeTargetId = ref(null)
-const mergeCandidates = ref([])
 
 const status = computed(() => info.value.curateStatus)
 const suspectCount = computed(() => info.value.suspectCount ?? 0)
@@ -161,54 +106,10 @@ const cleanTagType = (row) => {
   if (row.cleanStatus === 'FILTERED') return 'info'
   return 'success'
 }
-const cleanTagText = (row) => row.cleanStatus || 'KEEP'
+const cleanTagText = (row) => (row.cleanStatus === 'SUSPECT' ? '待审核' : row.cleanStatus === 'FILTERED' ? '已删除' : '正常')
 
-const statusText = (s) => (s === 'PREVIEWING' ? '展示门' : s === 'ACCEPTED' ? '待确认' : s || '')
-const docLabel = (d) => `${d.fileName}（${statusText(d.curateStatus)} · SUSPECT ${d.suspectCount ?? 0}）`
-
-/** 合并可用性：精修阶段 + 恰好勾选 2 块 + 同一文档 + 相邻（|seq差|=1） */
-const canMerge = computed(() => {
-  if (status.value !== 'ACCEPTED' || !auth.canWrite) return false
-  if (selectedRows.value.length !== 2) return false
-  const [a, b] = selectedRows.value
-  if (!a || !b || String(a.docId) !== String(b.docId)) return false
-  return Math.abs(a.seq - b.seq) === 1
-})
-
-/** 精修阶段仅允许勾选未删除的 chunk 参与合并 */
-function selectableForMerge(row) {
-  return row.cleanStatus !== 'FILTERED'
-}
-
-function onSelectionChange(rows) {
-  selectedRows.value = rows
-}
-
-function openMerge() {
-  if (!canMerge.value) return
-  // 按文档顺序（seq 升序）展示两个候选，默认选 seq 小者为目标
-  mergeCandidates.value = [...selectedRows.value].sort((x, y) => x.seq - y.seq)
-  mergeTargetId.value = mergeCandidates.value[0]?.chunkId ?? null
-  mergeVisible.value = true
-}
-
-async function doMerge() {
-  const target = mergeCandidates.value.find((c) => c.chunkId === mergeTargetId.value)
-  if (!target) return
-  const source = mergeCandidates.value.find((c) => c.chunkId !== mergeTargetId.value)
-  mergeSaving.value = true
-  try {
-    const r = await curateApi.mergeChunk(docId.value, { sourceId: source.chunkId, targetId: target.chunkId })
-    ElMessage.success(`已合并为 #${r.seq}（目标块已置回 SUSPECT 待审核，确认前不向量化；源块已删除）`)
-    mergeVisible.value = false
-    selectedRows.value = []
-    await load()
-  } catch (e) {
-    /* 拦截器已提示 */
-  } finally {
-    mergeSaving.value = false
-  }
-}
+const statusText = (s) => (s === 'PREVIEWING' ? '初洗中' : s === 'ACCEPTED' ? '精修中' : s || '')
+const docLabel = (d) => `${d.fileName}（${statusText(d.curateStatus)} · 待审核 ${d.suspectCount ?? 0}）`
 
 async function load() {
   if (!docId.value) return
@@ -222,8 +123,11 @@ async function load() {
   }
 }
 
+/** 初洗队列：仅展示初洗中（PREVIEWING）文档；原始队列保留用于深链状态判定 */
 async function loadQueue() {
-  docs.value = kbId.value ? await curateApi.queue(kbId.value) : []
+  const full = kbId.value ? await curateApi.queue(kbId.value) : []
+  docs.value = full.filter((d) => d.curateStatus === 'PREVIEWING')
+  return full
 }
 
 /** 选中队列中的第一个文档；无则清空详情 */
@@ -250,21 +154,27 @@ async function init() {
   kbs.value = await kbApi.list()
   const preferDocId = route.params.docId
   if (preferDocId) {
-    // 深链接直达：定位文档所在 KB 并加载
+    // 深链直达：定位文档所在 KB 并加载
     for (const kb of kbs.value) {
       kbId.value = kb.id
-      await loadQueue()
-      const found = docs.value.find((d) => String(d.docId) === String(preferDocId))
+      const full = await loadQueue()
+      const found = full.find((d) => String(d.docId) === String(preferDocId))
       if (found) {
+        if (found.curateStatus === 'ACCEPTED') {
+          // 已进入精修：跳到文档精修页处理
+          ElMessage.info('该文档已进入精修阶段，已跳转到「文档精修」页')
+          router.replace(`/review?docId=${found.docId}`)
+          return
+        }
         docId.value = found.docId
         await load()
         return
       }
     }
-    // 文档不在策展流程（已确认/已删除/未启用）
+    // 文档不在初洗流程（已确认/已删除/未启用）
     kbId.value = null
     docs.value = []
-    ElMessage.warning('该文档不在策展流程中，已回到策展工作台')
+    ElMessage.warning('该文档不在初洗流程中，已回到初洗工作台')
     await selectFirstKb()
     return
   }
@@ -296,7 +206,7 @@ async function saveMd() {
   mdSaving.value = true
   try {
     const r = await curateApi.saveMd(docId.value, mdText.value)
-    ElMessage.success(`已保存 v${r.version} 并重新分块：${r.chunkCount} chunk（SUSPECT ${r.suspect}）`)
+    ElMessage.success(`已保存 v${r.version} 并重新分块：${r.chunkCount} chunk（待审核 ${r.suspect}）`)
     mdVisible.value = false
     await load()
   } catch (e) {
@@ -310,86 +220,12 @@ async function accept() {
   acting.value = true
   try {
     await curateApi.accept(docId.value)
-    ElMessage.success('已接受，进入逐块精修（后悔通道已关闭）')
-    await load()
+    ElMessage.success('已接受，md 不可再编辑，分块进入「文档精修」')
+    router.push(`/review?docId=${docId.value}`)
   } catch (e) {
     /* 拦截器已提示 */
   } finally {
     acting.value = false
-  }
-}
-
-async function confirm() {
-  let tip = '确认完成后将统一向量化全部通过 chunk，文档回到常规状态，之后不可再编辑。'
-  if (suspectCount.value > 0) {
-    tip = `仍有 ${suspectCount.value} 个 SUSPECT 未处置，确认后它们不会进入向量库（可在清洗复核页补处理）。` + tip
-  }
-  try {
-    await ElMessageBox.confirm(tip, '确认完成并向量化', { type: 'warning', confirmButtonText: '确认', cancelButtonText: '取消' })
-  } catch {
-    return
-  }
-  acting.value = true
-  try {
-    await curateApi.confirm(docId.value)
-    ElMessage.success('已触发向量化，文档已回到常规状态')
-    // 队列刷新：确认过的文档已离开队列，自动切到下一个
-    await loadQueue()
-    await selectFirstDoc()
-  } catch (e) {
-    /* 拦截器已提示 */
-  } finally {
-    acting.value = false
-  }
-}
-
-function openEdit(row) {
-  editRow.value = row
-  editTitle.value = row.title || ''
-  editContent.value = row.content || ''
-  editVisible.value = true
-}
-
-async function saveEdit() {
-  if (!editContent.value || !editContent.value.trim()) {
-    ElMessage.warning('内容不能为空')
-    return
-  }
-  editSaving.value = true
-  try {
-    await curateApi.editChunk(docId.value, editRow.value.chunkId, { content: editContent.value, title: editTitle.value })
-    ElMessage.success('已保存（确认后统一向量化）')
-    editVisible.value = false
-    await load()
-  } catch (e) {
-    /* 拦截器已提示 */
-  } finally {
-    editSaving.value = false
-  }
-}
-
-async function keep(row) {
-  try {
-    await curateApi.keepChunk(docId.value, row.chunkId)
-    ElMessage.success('已保留')
-    await load()
-  } catch (e) {
-    /* 拦截器已提示 */
-  }
-}
-
-async function drop(row) {
-  try {
-    await ElMessageBox.confirm(`确定删除 chunk #${row.seq}？删除后该块不进向量库（记录保留）。`, '删除 chunk', { type: 'warning' })
-  } catch {
-    return
-  }
-  try {
-    await curateApi.dropChunk(docId.value, row.chunkId)
-    ElMessage.success('已删除')
-    await load()
-  } catch (e) {
-    /* 拦截器已提示 */
   }
 }
 
@@ -415,14 +251,4 @@ onMounted(init)
 .md-src { flex: 1; }
 .md-src :deep(textarea) { font-family: 'JetBrains Mono', Consolas, monospace; font-size: 13px; line-height: 1.6; }
 .md-preview { flex: 1; overflow: auto; border: 1px solid #e4e7ed; border-radius: 4px; padding: 12px; background: #fff; }
-.merge-tip { margin-bottom: 12px; }
-.merge-opts { display: flex; flex-direction: column; gap: 8px; width: 100%; }
-.merge-opt { display: flex; align-items: flex-start; white-space: normal; width: 100%; margin-right: 0; height: auto; padding: 10px 12px; }
-.merge-opt-title { font-weight: 600; margin-bottom: 4px; }
-.merge-opt-page { color: #909399; font-weight: 400; font-size: 12px; }
-.merge-opt-content {
-  max-height: 64px; overflow: hidden; text-overflow: ellipsis;
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
-  white-space: pre-line; word-break: break-all; font-size: 13px; color: #606266;
-}
 </style>

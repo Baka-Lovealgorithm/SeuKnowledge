@@ -113,28 +113,28 @@ public class DocumentParserService {
     }
 
     /**
-     * 策展门专用：解析到逐页 markdown（页面级清洗 + 缺页补全后），不进入分块。
+     * 初洗门专用：解析到逐页 markdown（页面级清洗 + 缺页补全后），不进入分块。
      * 仅支持会走 LlamaParse 的文档类型（pdf/docx，md 产物）；txt/md/pptx/xlsx 不支持
-     * 策展门（无逐页 md），调用方应据 fileType 判断后回退照旧链路。
+     * 初洗门（无逐页 md），调用方应据 fileType 判断后回退照旧链路。
      *
-     * @throws BizException pdf 未启用 LlamaParse 或类型不支持策展门
+     * @throws BizException pdf 未启用 LlamaParse 或类型不支持初洗门
      */
     public List<LlamaParseService.PageMarkdown> parseToPages(Document doc) {
         Long workspaceId = workspaceIdResolver.resolve(doc.getKbId());
         Path path = Path.of(doc.getFilePath());
         String type = doc.getFileType().toLowerCase();
         if (!"pdf".equals(type) && !"docx".equals(type)) {
-            throw new BizException("策展门仅支持 PDF/DOCX（LlamaParse md 产物）");
+            throw new BizException("初洗门仅支持 PDF/DOCX（LlamaParse md 产物）");
         }
         if ("pdf".equals(type) && !llamaParseService.isConfigured()) {
-            throw new BizException("策展门需要启用 LlamaParse（seuknowledge.document.llamaparse.enabled 且配置 API Key）");
+            throw new BizException("初洗门需要启用 LlamaParse（seuknowledge.document.llamaparse.enabled 且配置 API Key）");
         }
         return pagesFromLlamaParse(path, doc.getFileName(), workspaceId, doc.isReuseCache());
     }
 
     /**
      * 逐页 markdown → 分块片段（跨页 carry 延续，跨页标题继承）。
-     * 初始解析与策展重分块共用：重分块时由调用方先做页面级清洗再传入。
+     * 初始解析与初洗重分块共用：重分块时由调用方先做页面级清洗再传入。
      */
     public List<ChunkPiece> chunkFromPages(List<LlamaParseService.PageMarkdown> pages) {
         // 复制为可变列表再排序（调用方可能返回不可变列表，如测试 mock 的 List.of）
@@ -203,7 +203,7 @@ public class DocumentParserService {
 
     /**
      * LlamaParse 逐页转 Markdown（页面级清洗 + 缺页补全 + 排序），不进入分块。
-     * 供初始解析（parseWithLlamaParse）与策展门（parseToPages）共用。
+     * 供初始解析（parseWithLlamaParse）与初洗门（parseToPages）共用。
      */
     private List<LlamaParseService.PageMarkdown> pagesFromLlamaParse(Path path, String fileName, Long workspaceId,
                                                                      boolean reuseCache) {

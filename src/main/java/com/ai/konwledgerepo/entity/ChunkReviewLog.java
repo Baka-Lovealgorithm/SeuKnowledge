@@ -5,7 +5,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
 
 /**
- * 清洗人工审核审计日志（chunk_review_log）：记录 SUSPECT chunk 的审核动作与编辑前后内容，
+ * 文档精修审计日志（chunk_review_log）：记录 SUSPECT/KEEP chunk 的精修动作与编辑前后内容，
  * 保证清洗决策可追溯（谁在何时对哪个 chunk 做了什么、改了什么）。
  */
 @Entity

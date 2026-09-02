@@ -29,18 +29,18 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * 文档人工策展（md 清洗 + 展示门）：对解析后的逐页 markdown 提供在线编辑、重分块，
- * 以及"分块后、向量化前"的决断门（展示门 PREVIEWING → 已接受 ACCEPTED → 确认后统一向量化）。
+ * 文档初洗与精修（原"文档人工策展"）：对解析后的逐页 markdown 提供在线编辑、重分块，
+ * 以及"分块后、向量化前"的决断门（初洗 PREVIEWING → 精修 ACCEPTED → 确认后统一向量化）。
  * <p>
  * 流程（仅 curateRequired=true 且 LlamaParse 产物 pdf/docx）：
  * <pre>
  * 解析完成 → saveInitialMd（落 md v1）→ finalizeSuccessGated（落 chunk + PREVIEWING）
- * PREVIEWING：展示门只读；saveMd（编辑 md → 重分块，可反复）或 accept
- * ACCEPTED：后悔通道关闭（禁编辑 md/重分块）；editChunk/dropChunk/keepChunk 逐块精修
- * confirm：统一向量化（ingest），curateStatus 清空，文档回到照旧
+ * PREVIEWING（初洗）：chunk 全只读；saveMd（编辑 md → 重分块，可反复）或 accept
+ * ACCEPTED（精修）：后悔通道关闭（禁编辑 md/重分块）；editChunk/dropChunk/keepChunk/unkeepChunk 逐块精修
+ * confirm：校验全部未删除分块已审核（KEEP）后统一向量化（ingest），curateStatus 清空，文档回到照旧
  * </pre>
- * 红线：PREVIEWING 下 chunk 只读；ACCEPTED 下 md 冻结；确认前不触发任何 ES 写入
- * （向量化统一在 confirm；未处置 SUSPECT 由 ingest 的 DEFER 过滤自然不进 ES）。
+ * 红线：初洗（PREVIEWING）下 chunk 只读；精修（ACCEPTED）下 md 冻结；确认前不触发任何 ES 写入
+ * （向量化统一在 confirm；未处置待审核（SUSPECT）由 ingest 的 DEFER 过滤自然不进 ES）。
  */
 @Service
 public class DocumentCurateService {
@@ -85,24 +85,24 @@ public class DocumentCurateService {
 
     // ==================== 查询 ====================
 
-    /** 策展门队列项（文档 + 状态 + chunk/待处理 SUSPECT 计数） */
+    /** 初洗/精修队列项（文档 + 状态 + chunk/待处理 SUSPECT 计数） */
     public record CurateQueueItem(Long docId, Long kbId, String fileName, String curateStatus,
                                   Integer chunkCount, Long suspectCount) {
     }
 
-    /** 单文档策展信息（前端处理页头部） */
+    /** 单文档初洗信息（前端处理页头部） */
     public record CurateDocInfo(Long docId, String fileName, String curateStatus, Integer chunkCount,
                                 Long suspectCount) {
     }
 
-    /** 单文档策展信息（含当前状态，供处理页展示与按钮分支） */
+    /** 单文档初洗信息（含当前状态，供处理页展示与按钮分支） */
     public CurateDocInfo docInfo(Long docId) {
         Document doc = requireDoc(docId);
         return new CurateDocInfo(doc.getId(), doc.getFileName(), doc.getCurateStatus(), doc.getChunkCount(),
                 chunkRepository.countByDocIdAndCleanStatus(docId, "SUSPECT"));
     }
 
-    /** 策展门队列：知识库下所有处于展示门/已接受的文档 */
+    /** 初洗/精修队列：知识库下处于初洗中（PREVIEWING）或精修中（ACCEPTED）的文档（前端各自过滤） */
     public List<CurateQueueItem> queue(Long kbId) {
         List<Document> docs = documentRepository.findByKbIdAndCurateStatusInOrderByIdDesc(
                 kbId, List.of(Document.CURATE_PREVIEWING, Document.CURATE_ACCEPTED));
@@ -116,7 +116,7 @@ public class DocumentCurateService {
                 .toList();
     }
 
-    /** 策展文档全部 chunk（SUSPECT 优先展示，供前端展示门/精修列表） */
+    /** 初洗/精修文档全部 chunk（待审核 SUSPECT 优先展示，供前端列表） */
     public List<ChunkReviewResponse> chunks(Long docId) {
         Document doc = requireDoc(docId);
         List<Chunk> chunks = chunkRepository.findByDocIdOrderBySeqAsc(docId);
@@ -136,7 +136,7 @@ public class DocumentCurateService {
         requireDoc(docId);
         List<DocumentCurate> pages = curateRepository.findByDocIdOrderByVersionDescPageNumAsc(docId);
         if (pages.isEmpty()) {
-            throw new BizException("文档尚无策展 md（可能未启用策展门或解析未完成）");
+            throw new BizException("文档尚无初洗 md（可能未启用初洗门或解析未完成）");
         }
         int version = pages.get(0).getVersion();
         StringBuilder sb = new StringBuilder();
@@ -158,7 +158,7 @@ public class DocumentCurateService {
     @Transactional
     public void saveInitialMd(Long docId, List<LlamaParseService.PageMarkdown> pages, Long userId) {
         if (curateRepository.existsByDocId(docId)) {
-            log.debug("saveInitialMd 跳过：文档 {} 已有策展 md", docId);
+            log.debug("saveInitialMd 跳过：文档 {} 已有初洗 md", docId);
             return;
         }
         List<DocumentCurate> rows = new ArrayList<>();
@@ -175,7 +175,7 @@ public class DocumentCurateService {
             rows.add(row);
         }
         if (rows.isEmpty()) {
-            log.warn("saveInitialMd：文档 {} 解析结果无可用页面，不落策展 md", docId);
+            log.warn("saveInitialMd：文档 {} 解析结果无可用页面，不落初洗 md", docId);
             return;
         }
         curateRepository.saveAll(rows);
@@ -189,15 +189,15 @@ public class DocumentCurateService {
     }
 
     /**
-     * 保存整篇 md（在线编辑）：按页标记切页 → 页面级清洗 → 落新版本（append-only）→
-     * 同步重分块（事务内删旧 chunk 重建，仍 PREVIEWING）。
-     * 仅 PREVIEWING（展示门）允许；ACCEPTED 后悔通道已关闭。
+     * 保存整篇 md（初洗在线编辑）：按页标记切页 → 页面级清洗 → 落新版本（append-only）→
+     * 同步重分块（事务内删旧 chunk 重建，仍 PREVIEWING 初洗中）。
+     * 仅 PREVIEWING（初洗中）允许；ACCEPTED（精修中）后悔通道已关闭。
      */
     @Transactional
     public RechunkResult saveMd(Long docId, String mdText, Long userId) {
         Document doc = requireDoc(docId);
         if (!Document.CURATE_PREVIEWING.equals(doc.getCurateStatus())) {
-            throw new BizException("仅展示门阶段可编辑 md（当前状态 " + doc.getCurateStatus() + "）");
+            throw new BizException("仅初洗中阶段可编辑 md（当前状态 " + doc.getCurateStatus() + "）");
         }
         List<PageEntry> entries = splitPages(mdText);
         List<LlamaParseService.PageMarkdown> pages = entries.stream()
@@ -241,12 +241,12 @@ public class DocumentCurateService {
 
     // ==================== 状态流转 ====================
 
-    /** 接受：PREVIEWING → ACCEPTED（关闭 md 编辑/重分块后悔通道，开放 chunk 精修） */
+    /** 接受：PREVIEWING → ACCEPTED（关闭 md 编辑/重分块后悔通道，chunk 进入精修阶段） */
     @Transactional
     public void accept(Long docId, Long userId) {
         Document doc = requireDoc(docId);
         if (!Document.CURATE_PREVIEWING.equals(doc.getCurateStatus())) {
-            throw new BizException("仅展示门状态可接受（当前状态 " + doc.getCurateStatus() + "）");
+            throw new BizException("仅初洗中状态可接受（当前状态 " + doc.getCurateStatus() + "）");
         }
         doc.setCurateStatus(Document.CURATE_ACCEPTED);
         documentRepository.save(doc);
@@ -254,15 +254,26 @@ public class DocumentCurateService {
     }
 
     /**
-     * 确认完成：ACCEPTED → 清空 curateStatus（回到照旧）并触发统一向量化。
-     * 向量化在事务提交后异步执行（AfterCommitExecutor）；未处置 SUSPECT 由 ingest 的
-     * DEFER 过滤不进 ES（可在现有清洗复核页补处理）。
+     * 确认完成（精修收口）：ACCEPTED → 校验无待审核（SUSPECT）分块 → 清空
+     * curateStatus（回到照旧）并触发统一向量化。
+     * 已审核 = 非待审核且非已删除（正常分块默认已审核，待审核分块保留后为已审核）。
+     * 向量化在事务提交后异步执行（AfterCommitExecutor）。
      */
     @Transactional
     public void confirm(Long docId, Long userId) {
         Document doc = requireDoc(docId);
         if (!Document.CURATE_ACCEPTED.equals(doc.getCurateStatus())) {
-            throw new BizException("仅已接受状态可确认（当前状态 " + doc.getCurateStatus() + "）");
+            throw new BizException("仅精修中状态可确认（当前状态 " + doc.getCurateStatus() + "）");
+        }
+        List<Chunk> chunks = chunkRepository.findByDocIdOrderBySeqAsc(docId);
+        long pending = chunks.stream()
+                .filter(c -> ChunkReviewService.CLEAN_SUSPECT.equals(c.getCleanStatus()))
+                .count();
+        if (pending > 0) {
+            throw new BizException("仍有 " + pending + " 个待审核分块，全部保留（已审核）后才能确认向量化");
+        }
+        if (chunks.stream().noneMatch(c -> !ChunkReviewService.CLEAN_FILTERED.equals(c.getCleanStatus()))) {
+            throw new BizException("无已保留分块，无法确认向量化");
         }
         doc.setCurateStatus(null);
         documentRepository.save(doc);
@@ -274,7 +285,7 @@ public class DocumentCurateService {
 
     // ==================== chunk 级精修（ACCEPTED 后，确认前） ====================
 
-    /** 编辑任意 chunk（SUSPECT 或普通）：仅改 MySQL + 审计，不触 ES（统一在 confirm 向量化） */
+    /** 精修：编辑任意 chunk（SUSPECT 或普通）：仅改 MySQL + 审计，不触 ES（统一在 confirm 向量化） */
     @Transactional
     public ChunkReviewResponse editChunk(Long chunkId, String content, String title, Long userId) {
         if (content == null || content.trim().isEmpty()) {
@@ -303,7 +314,7 @@ public class DocumentCurateService {
         return ChunkReviewResponse.of(chunk, docName(chunk.getDocId()));
     }
 
-    /** 保留 SUSPECT（→KEEP）：确认前处置，非 SUSPECT 幂等返回 */
+    /** 精修：保留 SUSPECT（→KEEP）：确认前处置，非 SUSPECT 幂等返回 */
     @Transactional
     public ChunkReviewResponse keepChunk(Long chunkId, Long userId) {
         Chunk chunk = requireChunk(chunkId);
@@ -317,9 +328,24 @@ public class DocumentCurateService {
         return ChunkReviewResponse.of(chunk, docName(chunk.getDocId()));
     }
 
+    /** 精修：已审核回退待审核（KEEP/正常 → SUSPECT）：仅 ACCEPTED 且确认前；不触 ES（确认后由精修页处置） */
+    @Transactional
+    public ChunkReviewResponse unkeepChunk(Long chunkId, Long userId) {
+        Chunk chunk = requireChunk(chunkId);
+        requireAccepted(chunk.getDocId());
+        if (ChunkReviewService.CLEAN_SUSPECT.equals(chunk.getCleanStatus())
+                || ChunkReviewService.CLEAN_FILTERED.equals(chunk.getCleanStatus())) {
+            throw new BizException("仅已审核分块可回退待审核（当前 " + chunk.getCleanStatus() + "）");
+        }
+        chunk.setCleanStatus(ChunkReviewService.CLEAN_SUSPECT);
+        chunkRepository.save(chunk);
+        recordChunkLog(chunk, "unkeep", "已审核", "待审核", userId);
+        return ChunkReviewResponse.of(chunk, docName(chunk.getDocId()));
+    }
+
     /**
      * 精修：合并相邻 chunk（source 并入 target，保留 target id；确认前不触 ES）。
-     * 合并后 target 置 SUSPECT（回到待审，confirm 后由复核页处置）；source 软删 FILTERED（记录保留）。
+     * 合并后 target 置 SUSPECT（回到待审，确认后由精修/复核页处置）；source 软删 FILTERED（记录保留）。
      * 约束：同文档、|seq差|=1、双方均未进 ES（esId 空且 EMBEDDING）、非 FILTERED、合并后内容非空。
      */
     @Transactional
@@ -338,7 +364,7 @@ public class DocumentCurateService {
         }
         if (source.getEsId() != null || target.getEsId() != null
                 || !ChunkStatus.EMBEDDING.is(source.getStatus()) || !ChunkStatus.EMBEDDING.is(target.getStatus())) {
-            throw new BizException("仅未向量化的分块可合并（已进 ES/已索引的分块请先在清洗复核页处理）");
+            throw new BizException("仅未向量化的分块可合并（已向量化的分块请在精修页按文档处理）");
         }
         if (ChunkStatus.FILTERED.is(source.getStatus()) || ChunkStatus.FILTERED.is(target.getStatus())) {
             throw new BizException("已删除的分块不可参与合并");
@@ -452,7 +478,7 @@ public class DocumentCurateService {
     private void requireAccepted(Long docId) {
         Document doc = requireDoc(docId);
         if (!Document.CURATE_ACCEPTED.equals(doc.getCurateStatus())) {
-            throw new BizException("仅已接受（确认前）可编辑 chunk（当前状态 " + doc.getCurateStatus() + "）");
+            throw new BizException("仅精修中（确认前）可编辑 chunk（当前状态 " + doc.getCurateStatus() + "）");
         }
     }
 
@@ -470,7 +496,7 @@ public class DocumentCurateService {
         return documentRepository.findById(docId).map(Document::getFileName).orElse("");
     }
 
-    /** 文档级动作审计（save_md / accept / confirm / edit_chunk / drop_chunk / keep_chunk） */
+    /** 文档级动作审计（save_md / accept / confirm / edit_chunk / drop_chunk / keep_chunk / unkeep） */
     private void recordLog(Long docId, String action, String before, String after, Long userId) {
         try {
             DocumentCurateLog entry = new DocumentCurateLog();
@@ -481,7 +507,7 @@ public class DocumentCurateService {
             entry.setUserId(userId);
             curateLogRepository.save(entry);
         } catch (Exception e) {
-            log.warn("策展审计写入失败（不影响主操作）docId={} action={}: {}", docId, action, e.getMessage());
+            log.warn("初洗/精修审计写入失败（不影响主操作）docId={} action={}: {}", docId, action, e.getMessage());
         }
     }
 
@@ -508,7 +534,7 @@ public class DocumentCurateService {
         return s.length() > 10000 ? s.substring(0, 10000) : s;
     }
 
-    /** 供其他组件判断文档是否处于策展流程 */
+    /** 供其他组件判断文档是否处于初洗/精修流程（PREVIEWING 或 ACCEPTED） */
     public static boolean isCurating(Document doc) {
         return doc != null && doc.getCurateStatus() != null
                 && (Document.CURATE_PREVIEWING.equals(doc.getCurateStatus())

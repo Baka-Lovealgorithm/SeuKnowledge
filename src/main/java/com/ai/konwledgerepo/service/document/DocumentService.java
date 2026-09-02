@@ -81,7 +81,7 @@ public class DocumentService {
 
     /**
      * 上传文档（可替换同名旧文档）：replace=true 时按 kbId + fileName（大小写不敏感）查同名，
-     * 命中则事务内删除旧文档（MySQL chunk + ES 向量 + 策展 md + 磁盘文件 + 记录）再建新。
+     * 命中则事务内删除旧文档（MySQL chunk + ES 向量 + 初洗 md + 磁盘文件 + 记录）再建新。
      *
      * @param reuseCache 用户是否选择复用解析缓存：true 时解析阶段查文件哈希缓存，
      *                   同内容文件跳过 LlamaParse 复用逐页 markdown；false 全量解析
@@ -93,7 +93,7 @@ public class DocumentService {
     }
 
     /**
-     * 上传文档（含策展门开关）：curateGate=true 时解析分块完成后停在展示门
+     * 上传文档（含初洗门开关）：curateGate=true 时解析分块完成后停在初洗
      * （PREVIEWING，不向量化），人工决断后才向量化；false 完全照旧自动链路。
      */
     @Transactional
@@ -138,13 +138,13 @@ public class DocumentService {
         evictKbCaches(doc.getKbId());
     }
 
-    /** 清理文档全链路数据：MySQL chunk + ES 向量 + 策展 md/审计 + 磁盘文件 + 记录（供删除与同名覆盖共用） */
+    /** 清理文档全链路数据：MySQL chunk + ES 向量 + 初洗 md/审计 + 磁盘文件 + 记录（供删除与同名覆盖共用） */
     private void deleteDoc(Document doc) {
         // 删 MySQL chunk
         chunkRepository.deleteByDocId(doc.getId());
         // 删 ES chunk
         vectorIngestionService.deleteByDocId(doc.getId());
-        // 删策展 md（全部版本）与策展审计
+        // 删初洗 md（全部版本）与初洗/精修审计
         curateRepository.deleteByDocId(doc.getId());
         curateLogRepository.deleteByDocId(doc.getId());
         // 删文件
