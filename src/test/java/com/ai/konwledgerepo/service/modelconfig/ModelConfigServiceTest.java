@@ -4,6 +4,7 @@ import com.ai.konwledgerepo.common.BizException;
 import com.ai.konwledgerepo.common.RedisCacheService;
 import com.ai.konwledgerepo.dto.ModelConfigRequest;
 import com.ai.konwledgerepo.dto.ModelConfigResponse;
+import com.ai.konwledgerepo.dto.ModelConfigTestResponse;
 import com.ai.konwledgerepo.entity.ModelConfig;
 import com.ai.konwledgerepo.model.ModelFactory;
 import com.ai.konwledgerepo.repository.DocumentRepository;
@@ -150,6 +151,24 @@ class ModelConfigServiceTest {
     void test_crossWorkspace_rejected() {
         when(repo.findById(1L)).thenReturn(Optional.of(cfg(1L, 99L)));
         assertThrows(BizException.class, () -> service.test(1L, WS));
+    }
+
+    @Test
+    void test_returnsSuccessWhenConnectionOk() {
+        when(repo.findById(1L)).thenReturn(Optional.of(cfg(1L, WS)));
+        when(factory.testConnection(any())).thenReturn(true);
+        ModelConfigTestResponse resp = service.test(1L, WS);
+        assertEquals(true, resp.success());
+        assertEquals("连接成功", resp.message());
+    }
+
+    @Test
+    void test_returnsFailureWhenConnectionFails() {
+        when(repo.findById(1L)).thenReturn(Optional.of(cfg(1L, WS)));
+        when(factory.testConnection(any())).thenReturn(false);
+        ModelConfigTestResponse resp = service.test(1L, WS);
+        assertEquals(false, resp.success());
+        assertEquals("连接失败，请检查 apiKey / baseUrl / 网络", resp.message());
     }
 
     @Test

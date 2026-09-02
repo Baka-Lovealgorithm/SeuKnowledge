@@ -15,6 +15,8 @@ http.interceptors.request.use((config) => {
   if (wsId) {
     config.headers['X-Workspace-Id'] = wsId
   }
+  // 请求链路 id：后端 access log（reqId）与 app.log/llm.log 的 MDC requestId 一致，便于一次 grep 串起整条链路
+  config.headers['X-Request-Id'] = config.headers['X-Request-Id'] || genRequestId()
   return config
 })
 
@@ -68,6 +70,18 @@ async function handleWorkspaceLost(message) {
       workspaceRecovering = false
     }, 1500)
   }
+}
+
+/** 生成 32 位 hex 请求 id（与后端自生成格式一致）；优先 crypto.randomUUID，老环境兜底 */
+function genRequestId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID().replace(/-/g, '')
+  }
+  return 'xxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0
+    const v = c === 'x' ? r : (r & 0x3) | 0x8
+    return v.toString(16)
+  })
 }
 
 export default http

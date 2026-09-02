@@ -86,14 +86,22 @@ public class RerankClient implements EvidenceReranker {
 
     /** 连通性测试：构造客户端后对 "ping" 打一次分，成功返回 true（未配置 key / 调用失败返回 false） */
     public static boolean testConnection(ModelConfig cfg, SeuRerankProperties props, ObjectMapper mapper) {
+        long start = System.currentTimeMillis();
         try {
             RerankClient client = from(cfg, props, mapper);
             if (!client.isConfigured()) {
+                log.warn("交叉编码器连通性测试失败（未配置 API Key） provider={} model={} 耗时={}ms",
+                        cfg.getProvider(), cfg.getModelName(), System.currentTimeMillis() - start);
                 return false;
             }
             client.rerank("ping", List.of("ping"));
+            log.info("交叉编码器连通性测试成功 provider={} model={} 耗时={}ms",
+                    cfg.getProvider(), cfg.getModelName(), System.currentTimeMillis() - start);
             return true;
         } catch (Exception e) {
+            log.warn("交叉编码器连通性测试失败 provider={} model={} 耗时={}ms 原因={}",
+                    cfg.getProvider(), cfg.getModelName(), System.currentTimeMillis() - start,
+                    e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
             return false;
         }
     }
@@ -130,6 +138,7 @@ public class RerankClient implements EvidenceReranker {
                 .limit(maxDocs)
                 .map(d -> d == null ? "" : (d.length() > maxCharsPerDoc ? d.substring(0, maxCharsPerDoc) : d))
                 .toList();
+        long start = System.currentTimeMillis();
         try {
             ObjectNode body = buildRequestBody(provider, model, query, docs);
             byte[] respBytes = restClient.post()
@@ -142,10 +151,19 @@ public class RerankClient implements EvidenceReranker {
             if (resp == null || resp.isBlank()) {
                 throw new BizException("交叉编码器无响应");
             }
-            return parseScores(resp, docs.size(), objectMapper);
+            List<Double> scores = parseScores(resp, docs.size(), objectMapper);
+            log.info("交叉编码器调用成功 model={} docs={} 耗时={}ms",
+                    model, docs.size(), System.currentTimeMillis() - start);
+            return scores;
         } catch (BizException e) {
+            log.warn("交叉编码器调用失败 model={} docs={} 耗时={}ms 原因={}",
+                    model, docs.size(), System.currentTimeMillis() - start,
+                    e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
             throw e;
         } catch (Exception e) {
+            log.warn("交叉编码器调用失败 model={} docs={} 耗时={}ms 原因={}",
+                    model, docs.size(), System.currentTimeMillis() - start,
+                    e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
             throw new BizException("交叉编码器调用失败: " + e.getMessage());
         }
     }

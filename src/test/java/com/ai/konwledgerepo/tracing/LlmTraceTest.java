@@ -95,4 +95,26 @@ class LlmTraceTest {
 
         assertEquals("delegated", result);
     }
+
+    @Test
+    void withTimeout_returnsResult() {
+        String result = LlmTrace.withTimeout("test", () -> "ok");
+        assertEquals("ok", result);
+    }
+
+    @Test
+    void withTimeout_nullReturnAllowed() {
+        LlmTrace.withTimeout("test", () -> null);
+        // 不应抛异常即通过
+    }
+
+    @Test
+    void withTimeout_executesTaskOnce() {
+        java.util.concurrent.atomic.AtomicBoolean called = new java.util.concurrent.atomic.AtomicBoolean(false);
+        LlmTrace.withTimeout("test", () -> {
+            called.set(true);
+            return 42;
+        });
+        assertTrue(called.get());
+    }
 }

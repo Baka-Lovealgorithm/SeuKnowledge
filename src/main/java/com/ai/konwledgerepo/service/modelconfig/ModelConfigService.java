@@ -9,6 +9,8 @@ import com.ai.konwledgerepo.entity.ModelType;
 import com.ai.konwledgerepo.model.ModelFactory;
 import com.ai.konwledgerepo.repository.ModelConfigRepository;
 import com.ai.konwledgerepo.service.workspace.WorkspaceAccess;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -20,6 +22,8 @@ import java.util.List;
  */
 @Service
 public class ModelConfigService {
+
+    private static final Logger log = LoggerFactory.getLogger(ModelConfigService.class);
 
     private final ModelConfigRepository repository;
     private final ModelFactory modelFactory;
@@ -76,7 +80,11 @@ public class ModelConfigService {
 
     public ModelConfigTestResponse test(Long id, Long workspaceId) {
         ModelConfig cfg = requireInWorkspace(id, workspaceId);
+        long start = System.currentTimeMillis();
         boolean success = modelFactory.testConnection(cfg);
+        log.info("模型连通性测试 modelId={} provider={} type={} model={} 结果={} 耗时={}ms",
+                id, cfg.getProvider(), cfg.getModelType(), cfg.getModelName(),
+                success, System.currentTimeMillis() - start);
         String message = success ? "连接成功" : "连接失败，请检查 apiKey / baseUrl / 网络";
         return new ModelConfigTestResponse(id, success, message);
     }

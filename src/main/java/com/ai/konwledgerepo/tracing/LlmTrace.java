@@ -319,6 +319,15 @@ public final class LlmTrace {
         return response.getMetadata().getUsage();
     }
 
+    /**
+     * 使用默认超时执行一次调用（供未走完整 LlmTrace 链路的调用方复用超时保护，
+     * 如模型连通性测试 testConnection，避免裸调 chat.call() 无上限挂死）。
+     * 超时抛 {@link LlmTimeoutException}。
+     */
+    public static <T> T withTimeout(String category, Callable<T> task) {
+        return awaitWithTimeout(category, task, llmTimeout);
+    }
+
     private LlmTrace() {
     }
 

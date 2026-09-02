@@ -66,7 +66,7 @@ server:
       directory: ${user.dir}/logs           # Tomcat 相对路径基于临时目录，显式指向工作目录下 logs/
       prefix: access
       suffix: .log
-      pattern: '%h %l %u [%{yyyy-MM-dd HH:mm:ss.SSS}t] "%r" %s %b %D ms'
+      pattern: '%h %l %u [%{yyyy-MM-dd HH:mm:ss.SSS}t] reqId=%{X-Request-Id}i "%r" %s %b %D ms'
 
 # ===== API 文档 =====
 springdoc:
