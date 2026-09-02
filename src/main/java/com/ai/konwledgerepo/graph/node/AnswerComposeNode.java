@@ -56,7 +56,7 @@ public class AnswerComposeNode extends QaNodeSupport {
     @Override
     protected Map<String, Object> applyInternal(OverAllState state, Span span) throws Exception {
         SseStreamContext.sendStage("ANSWER_COMPOSE", "答案生成");
-        String question = state.value(QaContextKey.RAW_QUESTION).map(String::valueOf).orElse("");
+        String question = QaContext.effectiveQuestion(state);
         List<ChunkEvidence> current = QaContext.chunks(state.value(QaContextKey.CHUNKS).orElse(List.of()));
         List<ChunkEvidence> accumulated = QaContext.chunks(
                 state.value(QaContextKey.ACCUMULATED_CHUNKS).orElse(List.of()));

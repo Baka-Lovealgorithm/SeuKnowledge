@@ -54,7 +54,7 @@ public class QueryRewriteNode extends QaNodeSupport {
         int retry = QaContext.intValue(state, QaContextKey.RETRY_COUNT, 0);
         SseStreamContext.sendStage("QUERY_REWRITE",
                 retry > 0 ? "问题改写（第 " + retry + " 次重试）" : "问题改写");
-        String rawQuestion = state.value(QaContextKey.RAW_QUESTION).map(String::valueOf).orElse("");
+        String rawQuestion = QaContext.effectiveQuestion(state);
         List<HistoryEntry> history = QaContext.history(state);
         String memorySummary = state.value(QaContextKey.MEMORY_SUMMARY).map(String::valueOf).orElse("");
         String recentJson = QaContext.renderRecentJson(history, 3);

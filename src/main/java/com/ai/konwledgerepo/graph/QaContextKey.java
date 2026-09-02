@@ -8,6 +8,10 @@ import java.util.List;
 public final class QaContextKey {
 
     public static final String RAW_QUESTION = "rawQuestion";
+    /** 多意图拆分后的业务片段聚合文本（意图路由产出；非空时业务链路以其为有效问题） */
+    public static final String BUSINESS_QUESTION = "businessQuestion";
+    /** 多意图拆分后的闲聊片段列表（List<String>，意图路由产出；供闲聊回复与合并节点使用） */
+    public static final String CHITCHAT_FRAGMENTS = "chitchatFragments";
     public static final String KB_ID = "kbId";
     public static final String KB_NAME = "kbName";
     /** 当前工作空间 id（多工作空间隔离，模型解析按空间） */
@@ -49,8 +53,8 @@ public final class QaContextKey {
 
     /** ReplaceStrategy 覆盖的键列表（QaGraphRunner 组装图时使用） */
     public static final List<String> REPLACE_KEYS = List.of(
-            RAW_QUESTION, KB_ID, KB_NAME, WORKSPACE_ID, SESSION_ID, INTENT, INJECTION, QUERIES,
-            CHUNKS, ACCUMULATED_CHUNKS, ANSWER, REFS, PREV_ANSWER,
+            RAW_QUESTION, BUSINESS_QUESTION, CHITCHAT_FRAGMENTS, KB_ID, KB_NAME, WORKSPACE_ID, SESSION_ID, INTENT,
+            INJECTION, QUERIES, CHUNKS, ACCUMULATED_CHUNKS, ANSWER, REFS, PREV_ANSWER,
             VERIFY_SCORE, FAITHFULNESS_SCORE, UNSUPPORTED_CLAIMS, CONTRADICTED_CLAIMS,
             MISSING_INFO, PREV_CHUNK_IDS, NO_IMPROVEMENT, RETRY_COUNT, MAX_RETRY,
             NEXT, HISTORY, CHAT_ONLY_ANSWER, MEMORY_SUMMARY, AGENT);

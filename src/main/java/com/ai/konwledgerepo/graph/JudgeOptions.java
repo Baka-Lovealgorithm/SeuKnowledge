@@ -32,6 +32,8 @@ public final class JudgeOptions {
 
     /** 意图路由输出上限：单标签响应，32 token 足够且防 reasoning 占满 */
     private static final int ROUTER_MAX_TOKENS = 32;
+    /** 意图路由 JSON 模式输出上限：片段列表 JSON 比单标签长，256 覆盖 3~5 个片段且防失控 */
+    private static final int ROUTER_JSON_MAX_TOKENS = 256;
 
     private JudgeOptions() {
     }
@@ -117,6 +119,39 @@ public final class JudgeOptions {
             return b.build();
         }
         return ChatOptions.builder().temperature(0.0).maxTokens(ROUTER_MAX_TOKENS).build();
+    }
+
+    /**
+     * 意图路由 JSON 模式调用选项：温度 0（确定性）+ response_format JSON_OBJECT（DashScope/OpenAI 兼容双路）
+     * + maxTokens 256（片段列表 JSON）。
+     * 多意图路由改造：路由输出为 {@code {"fragments":[...]}} 结构，需要 JSON 约束保证可解析；
+     * 仅 DashScope/OpenAI 兼容 provider 生效，未知 provider 回落温度 0 + maxTokens。
+     */
+    public static ChatOptions routerJson(ChatModel model, ModelConfig cfg) {
+        boolean disableThinking = cfg != null && Boolean.TRUE.equals(cfg.getDisableThinking());
+        if (model != null && model.getDefaultOptions() instanceof OpenAiChatOptions) {
+            OpenAiChatOptions.Builder b = OpenAiChatOptions.builder()
+                    .temperature(0.0)
+                    .maxTokens(ROUTER_JSON_MAX_TOKENS)
+                    .responseFormat(ResponseFormat.builder()
+                            .type(ResponseFormat.Type.JSON_OBJECT).build());
+            if (disableThinking) {
+                b.extraBody(parseThinkingParams(cfg.getThinkingParams()));
+            }
+            return b.build();
+        }
+        if (model != null && model.getDefaultOptions() instanceof DashScopeChatOptions) {
+            DashScopeChatOptions.DashScopeChatOptionsBuilder b = DashScopeChatOptions.builder();
+            b.temperature(0.0);
+            b.maxToken(ROUTER_JSON_MAX_TOKENS);
+            b.responseFormat(DashScopeResponseFormat.builder()
+                    .type(DashScopeResponseFormat.Type.JSON_OBJECT).build());
+            if (disableThinking) {
+                b.enableThinking(false);
+            }
+            return b.build();
+        }
+        return ChatOptions.builder().temperature(0.0).maxTokens(ROUTER_JSON_MAX_TOKENS).build();
     }
 
     /** 解析 thinkingParams JSON 模板；空/非法回退默认 deepseek 格式 {"thinking":{"type":"disabled"}} */

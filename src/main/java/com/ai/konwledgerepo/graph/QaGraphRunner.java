@@ -9,6 +9,7 @@ import com.ai.konwledgerepo.graph.node.AnswerVerifyNode;
 import com.ai.konwledgerepo.graph.node.ChatOnlyNode;
 import com.ai.konwledgerepo.graph.node.IntentRouteNode;
 import com.ai.konwledgerepo.graph.node.KnowledgeRecallNode;
+import com.ai.konwledgerepo.graph.node.MergeAnswerNode;
 import com.ai.konwledgerepo.graph.node.QueryRewriteNode;
 import com.ai.konwledgerepo.graph.node.RerankNode;
 import com.ai.konwledgerepo.graph.node.RetryOrFallbackNode;
@@ -48,8 +49,9 @@ import static com.alibaba.cloud.ai.graph.action.AsyncNodeAction.node_async;
  *
  * 图结构：
  * START → INTENT_ROUTE →(条件) QUERY_REWRITE → KNOWLEDGE_RECALL → RERANK →
- * ANSWER_COMPOSE → ANSWER_VERIFY → RETRY_FALLBACK →(条件) QUERY_REWRITE（重试） | END；
- * INTENT_ROUTE →(闲聊) CHAT_ONLY → END。
+ * ANSWER_COMPOSE → ANSWER_VERIFY → RETRY_FALLBACK →(条件) QUERY_REWRITE（重试） | MERGE_ANSWER；
+ * INTENT_ROUTE →(闲聊) CHAT_ONLY → MERGE_ANSWER；MERGE_ANSWER → TERMINAL → END。
+ * 多意图：INTENT_ROUTE 拆分片段（业务/闲聊/注入），MERGE_ANSWER 统一合并输出。
  */
 @Component
 public class QaGraphRunner {
@@ -70,6 +72,7 @@ public class QaGraphRunner {
                          AnswerVerifyNode answerVerifyNode,
                          RetryOrFallbackNode retryOrFallbackNode,
                          ChatOnlyNode chatOnlyNode,
+                         MergeAnswerNode mergeAnswerNode,
                          TerminalNode terminalNode,
                          QaTracing qaTracing,
                          QaConcurrencyGuard guard,
@@ -81,7 +84,8 @@ public class QaGraphRunner {
         this.qaTimeout = Duration.ofSeconds(Math.max(1, qaProps.qaTimeoutSeconds()));
         try {
             this.compiledGraph = build(intentRouteNode, queryRewriteNode, knowledgeRecallNode,
-                    rerankNode, answerComposeNode, answerVerifyNode, retryOrFallbackNode, chatOnlyNode, terminalNode);
+                    rerankNode, answerComposeNode, answerVerifyNode, retryOrFallbackNode, chatOnlyNode,
+                    mergeAnswerNode, terminalNode);
         } catch (Exception e) {
             throw new IllegalStateException("问答状态图构建失败", e);
         }
@@ -95,6 +99,7 @@ public class QaGraphRunner {
                                        AnswerVerifyNode answerVerifyNode,
                                        RetryOrFallbackNode retryOrFallbackNode,
                                        ChatOnlyNode chatOnlyNode,
+                                       MergeAnswerNode mergeAnswerNode,
                                        TerminalNode terminalNode) throws Exception {
 
         StateGraph workflow = new StateGraph(keyStrategyFactory())
@@ -106,12 +111,13 @@ public class QaGraphRunner {
                 .addNode(QaState.ANSWER_VERIFY.name(), node_async(answerVerifyNode))
                 .addNode(QaState.RETRY_FALLBACK.name(), node_async(retryOrFallbackNode))
                 .addNode(QaState.CHAT_ONLY.name(), node_async(chatOnlyNode))
+                .addNode(QaState.MERGE_ANSWER.name(), node_async(mergeAnswerNode))
                 // graph-core 校验条件边目标必须为已注册节点，故终结目标统一走 TERMINAL → END
                 .addNode(QaState.TERMINAL.name(), node_async(terminalNode));
 
         workflow.addEdge(START, QaState.INTENT_ROUTE.name());
 
-        // 意图路由：业务 → 改写；闲聊 → 兜底
+        // 意图路由：业务 → 改写；闲聊/纯注入 → 兜底
         workflow.addConditionalEdges(QaState.INTENT_ROUTE.name(),
                 edge_async(state -> state.value(QaContextKey.NEXT).map(String::valueOf)
                         .orElse(QaState.CHAT_ONLY.name())),
@@ -124,18 +130,17 @@ public class QaGraphRunner {
         workflow.addEdge(QaState.ANSWER_COMPOSE.name(), QaState.ANSWER_VERIFY.name());
         workflow.addEdge(QaState.ANSWER_VERIFY.name(), QaState.RETRY_FALLBACK.name());
 
-        // 重试与兜底：可回 QUERY_REWRITE 重试，或终结
+        // 重试与兜底：可回 QUERY_REWRITE 重试，或进入 MERGE_ANSWER 合并收口
         workflow.addConditionalEdges(QaState.RETRY_FALLBACK.name(),
                 edge_async(state -> state.value(QaContextKey.NEXT).map(String::valueOf)
-                        .orElse(QaState.TERMINAL.name())),
+                        .orElse(QaState.MERGE_ANSWER.name())),
                 Map.of(QaState.QUERY_REWRITE.name(), QaState.QUERY_REWRITE.name(),
-                        QaState.TERMINAL.name(), QaState.TERMINAL.name()));
+                        QaState.MERGE_ANSWER.name(), QaState.MERGE_ANSWER.name()));
 
-        // 闲聊兜底终态
-        workflow.addConditionalEdges(QaState.CHAT_ONLY.name(),
-                edge_async(state -> QaState.TERMINAL.name()),
-                Map.of(QaState.TERMINAL.name(), QaState.TERMINAL.name()));
+        // 闲聊兜底 → 合并收口（与业务路径统一出口）
+        workflow.addEdge(QaState.CHAT_ONLY.name(), QaState.MERGE_ANSWER.name());
 
+        workflow.addEdge(QaState.MERGE_ANSWER.name(), QaState.TERMINAL.name());
         workflow.addEdge(QaState.TERMINAL.name(), END);
 
         return workflow.compile();
@@ -187,12 +192,17 @@ public class QaGraphRunner {
         int unsupported = 0;
         int contradicted = 0;
         boolean noImprovement = false;
+        int chitchatFragments = 0;
         if (state != null) {
             intent = state.value(QaContextKey.INTENT).map(String::valueOf).orElse(null);
             answer = state.value(QaContextKey.ANSWER).map(String::valueOf).orElse(null);
             Object acc = state.value(QaContextKey.ACCUMULATED_CHUNKS).orElse(null);
             if (acc instanceof List<?> list) {
                 accumulated = list.size();
+            }
+            Object cf = state.value(QaContextKey.CHITCHAT_FRAGMENTS).orElse(null);
+            if (cf instanceof List<?> list) {
+                chitchatFragments = list.size();
             }
             Object retryV = state.value(QaContextKey.RETRY_COUNT).orElse(null);
             if (retryV instanceof Number n) {
@@ -215,10 +225,10 @@ public class QaGraphRunner {
                 noImprovement = b;
             }
         }
-        log.info("问答汇总 sessionId={} kbId={} 耗时={}ms 意图={} 证据池={} 重试={} faithfulness={} 无支撑={} 矛盾={} 无改善={} token(in/out/total)={}/{}/{} 答案字符={}",
+        log.info("问答汇总 sessionId={} kbId={} 耗时={}ms 意图={} 证据池={} 重试={} faithfulness={} 无支撑={} 矛盾={} 无改善={} 闲聊片段={} token(in/out/total)={}/{}/{} 答案字符={}",
                 input.sessionId(), input.kbId(), costMs, intent, accumulated, retry,
                 faithfulness < 0 ? "-" : String.format("%.2f", faithfulness), unsupported, contradicted,
-                noImprovement,
+                noImprovement, chitchatFragments,
                 tokens[0], tokens[1], tokens[2],
                 answer == null ? 0 : answer.length());
     }

@@ -95,7 +95,7 @@ public class AnswerVerifyNode extends QaNodeSupport {
         SseStreamContext.sendStage("ANSWER_VERIFY", "答案自检");
             boolean injection = QaContext.booleanValue(state, QaContextKey.INJECTION, false);
             span.setAttribute("injection", injection);
-            String question = state.value(QaContextKey.RAW_QUESTION).map(String::valueOf).orElse("");
+            String question = QaContext.effectiveQuestion(state);
             String answer = state.value(QaContextKey.ANSWER).map(String::valueOf).orElse("");
             String prevAnswer = state.value(QaContextKey.PREV_ANSWER).map(String::valueOf).orElse("");
             String prevAnswerText = prevAnswer.isBlank() ? "（无，首次评估）" : prevAnswer;

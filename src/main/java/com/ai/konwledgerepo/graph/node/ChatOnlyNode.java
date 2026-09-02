@@ -44,7 +44,7 @@ public class ChatOnlyNode extends QaNodeSupport {
         if (QaContext.booleanValue(state, QaContextKey.INJECTION, false)) {
             span.setAttribute("injection_refused", true);
             return Map.of(QaContextKey.CHAT_ONLY_ANSWER, com.ai.konwledgerepo.common.Defaults.PROMPT_INJECTION_REFUSAL,
-                    QaContextKey.NEXT, QaState.TERMINAL.name());
+                    QaContextKey.NEXT, QaState.MERGE_ANSWER.name());
         }
         String question = state.value(QaContextKey.RAW_QUESTION).map(String::valueOf).orElse("");
         Long workspaceId = QaContext.longValue(state, QaContextKey.WORKSPACE_ID, -1L);
@@ -62,6 +62,6 @@ public class ChatOnlyNode extends QaNodeSupport {
             answer = LlmTrace.call(qaTracing, chat, prompt);
         }
         span.setAttribute("answer_length", answer == null ? 0 : answer.length());
-        return Map.of(QaContextKey.CHAT_ONLY_ANSWER, answer, QaContextKey.NEXT, QaState.TERMINAL.name());
+        return Map.of(QaContextKey.CHAT_ONLY_ANSWER, answer, QaContextKey.NEXT, QaState.MERGE_ANSWER.name());
     }
 }

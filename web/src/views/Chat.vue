@@ -162,6 +162,7 @@ const STAGES = [
   { id: 'RERANK', label: '证据重排' },
   { id: 'ANSWER_COMPOSE', label: '答案生成' },
   { id: 'ANSWER_VERIFY', label: '自检' },
+  { id: 'MERGE_ANSWER', label: '答案整合' },
   { id: 'DONE', label: '完成' }
 ]
 const STAGE_INDEX = Object.fromEntries(STAGES.map((s, i) => [s.id, i]))

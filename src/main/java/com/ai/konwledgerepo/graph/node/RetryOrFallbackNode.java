@@ -52,7 +52,7 @@ public class RetryOrFallbackNode extends QaNodeSupport {
                 return Map.of(
                         QaContextKey.ANSWER, Defaults.INSUFFICIENT_EVIDENCE_ANSWER,
                         QaContextKey.REFS, "[]",
-                        QaContextKey.NEXT, QaState.TERMINAL.name());
+                        QaContextKey.NEXT, QaState.MERGE_ANSWER.name());
             }
 
             double score = QaContext.doubleValue(state, QaContextKey.VERIFY_SCORE, 0.0);
@@ -81,7 +81,7 @@ public class RetryOrFallbackNode extends QaNodeSupport {
                     return Map.of(
                             QaContextKey.ANSWER, buildPartialAnswer(state),
                             QaContextKey.REFS, QaContext.toRefsJson(chunks, objectMapper),
-                            QaContextKey.NEXT, QaState.TERMINAL.name());
+                            QaContextKey.NEXT, QaState.MERGE_ANSWER.name());
                 }
                 if (noImprovement) {
                     SseStreamContext.sendStage("RETRY_FALLBACK", "自检未通过（得分 " + Math.round(score * 100)
@@ -98,14 +98,14 @@ public class RetryOrFallbackNode extends QaNodeSupport {
                 return Map.of(
                         QaContextKey.ANSWER, Defaults.INSUFFICIENT_EVIDENCE_REFUSAL,
                         QaContextKey.REFS, QaContext.toRefsJson(chunks, objectMapper),
-                        QaContextKey.NEXT, QaState.TERMINAL.name());
+                        QaContextKey.NEXT, QaState.MERGE_ANSWER.name());
             }
             // 有证据且达标：给出当前答案
             SseStreamContext.sendStage("RETRY_FALLBACK", "证据充分，输出最终答案");
             span.setAttribute("action", "answer");
             span.setAttribute("score", score);
             span.setAttribute("retry_count", retry);
-            return Map.of(QaContextKey.NEXT, QaState.TERMINAL.name());
+            return Map.of(QaContextKey.NEXT, QaState.MERGE_ANSWER.name());
     }
 
     /**

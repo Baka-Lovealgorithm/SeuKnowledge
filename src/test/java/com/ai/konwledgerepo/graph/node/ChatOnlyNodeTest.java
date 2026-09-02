@@ -27,7 +27,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 闲聊兜底节点测试：LLM 输出 → CHAT_ONLY_ANSWER 非空 + 字面量 "TERMINAL"；
+ * 闲聊兜底节点测试：LLM 输出 → CHAT_ONLY_ANSWER 非空 + 字面量 "MERGE_ANSWER"；
  * 空输出边界：键仍写入（空串）。
  */
 class ChatOnlyNodeTest {
@@ -62,7 +62,7 @@ class ChatOnlyNodeTest {
 
         String answer = (String) out.get(QaContextKey.CHAT_ONLY_ANSWER);
         assertEquals("你好呀！很高兴和你聊天～", answer);
-        assertEquals("TERMINAL", out.get(QaContextKey.NEXT), "闲聊兜底为终态，使用字面量 TERMINAL");
+        assertEquals("MERGE_ANSWER", out.get(QaContextKey.NEXT), "闲聊兜底后进入合并收口，使用字面量 MERGE_ANSWER");
     }
 
     @Test
@@ -71,7 +71,7 @@ class ChatOnlyNodeTest {
         Map<String, Object> out = node.apply(state("在吗？"));
 
         assertEquals("", out.get(QaContextKey.CHAT_ONLY_ANSWER));
-        assertEquals("TERMINAL", out.get(QaContextKey.NEXT));
+        assertEquals("MERGE_ANSWER", out.get(QaContextKey.NEXT));
     }
 
     @Test
@@ -83,7 +83,7 @@ class ChatOnlyNodeTest {
         Map<String, Object> out = node.apply(new OverAllState(data));
 
         assertEquals(Defaults.PROMPT_INJECTION_REFUSAL, out.get(QaContextKey.CHAT_ONLY_ANSWER));
-        assertEquals("TERMINAL", out.get(QaContextKey.NEXT));
+        assertEquals("MERGE_ANSWER", out.get(QaContextKey.NEXT));
         verify(chat, never()).call(any(Prompt.class));
     }
 }

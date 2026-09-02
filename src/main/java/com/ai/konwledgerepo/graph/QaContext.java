@@ -67,6 +67,17 @@ public final class QaContext {
         return merged;
     }
 
+    /**
+     * 业务链路的有效问题：多意图拆分后为业务片段聚合（BUSINESS_QUESTION），否则为原始问题。
+     * 供改写/生成/自检共用，保证业务链路只针对业务片段（避免闲聊/注入部分干扰自检与生成）。
+     */
+    public static String effectiveQuestion(OverAllState state) {
+        return state.value(QaContextKey.BUSINESS_QUESTION)
+                .map(String::valueOf)
+                .filter(s -> !s.isBlank())
+                .orElseGet(() -> state.value(QaContextKey.RAW_QUESTION).map(String::valueOf).orElse(""));
+    }
+
     public static long longValue(OverAllState state, String key, long def) {
         return state.value(key)
                 .filter(v -> v instanceof Number)
