@@ -25,6 +25,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -54,17 +55,15 @@ class KnowledgeRecallNodeTest {
 
     @Test
     void multiQueryHits_mergeAndDedupAcrossSourcesAndQueries() throws Exception {
+        // searchBySources(kbId, query, chunkTop, sourceTop) 返回 [CHUNK, BUSINESS, QA] 顺序合并结果。
         // q1：CHUNK[1,2] BUSINESS[3] QA[4]；q2：CHUNK[2,5] BUSINESS[] QA[4]（chunk 2 / QA 4 跨查询重复）
-        when(vectorSearchService.search(anyLong(), anyString(), anyInt(), anyList()))
+        when(vectorSearchService.searchBySources(anyLong(), anyString(), anyInt(), anyInt()))
                 .thenAnswer(inv -> {
                     String query = inv.getArgument(1);
-                    String type = ((List<?>) inv.getArgument(3)).get(0).toString();
-                    return switch (query + ":" + type) {
-                        case "q1:CHUNK" -> List.of(ev(1, "CHUNK", 0.9), ev(2, "CHUNK", 0.8));
-                        case "q1:BUSINESS" -> List.of(ev(3, "BUSINESS", 0.7));
-                        case "q1:QA" -> List.of(ev(4, "QA", 0.6));
-                        case "q2:CHUNK" -> List.of(ev(2, "CHUNK", 0.8), ev(5, "CHUNK", 0.5));
-                        case "q2:QA" -> List.of(ev(4, "QA", 0.6));
+                    return switch (query) {
+                        case "q1" -> List.of(ev(1, "CHUNK", 0.9), ev(2, "CHUNK", 0.8),
+                                ev(3, "BUSINESS", 0.7), ev(4, "QA", 0.6));
+                        case "q2" -> List.of(ev(2, "CHUNK", 0.8), ev(5, "CHUNK", 0.5), ev(4, "QA", 0.6));
                         default -> List.of();
                     };
                 });
@@ -79,12 +78,15 @@ class KnowledgeRecallNodeTest {
         assertEquals(5, chunks.size(), "跨查询/跨来源按 sourceType:chunkId 去重后应为 5 条");
         assertEquals(List.of(1L, 2L, 3L, 4L, 5L), chunks.stream().map(ChunkEvidence::chunkId).toList());
         assertEquals(QaState.RERANK.name(), out.get(QaContextKey.NEXT));
+
+        // 关键：每条 query 只触发一次 searchBySources（即每条 query 仅向量化一次，向量在一轮检索内复用）
+        verify(vectorSearchService, times(2)).searchBySources(anyLong(), anyString(), anyInt(), anyInt());
     }
 
     @Test
     void accumulatedEvidence_excludedFromCandidates() throws Exception {
         ChunkEvidence kept = ev(1, "CHUNK", 0.9);
-        when(vectorSearchService.search(anyLong(), anyString(), anyInt(), anyList()))
+        when(vectorSearchService.searchBySources(anyLong(), anyString(), anyInt(), anyInt()))
                 .thenReturn(List.of(kept));
 
         Map<String, Object> data = new HashMap<>();
@@ -109,16 +111,17 @@ class KnowledgeRecallNodeTest {
 
         assertTrue(QaContext.chunks(out.get(QaContextKey.CHUNKS)).isEmpty());
         assertEquals(QaState.RERANK.name(), out.get(QaContextKey.NEXT));
+        verify(vectorSearchService, never()).searchBySources(anyLong(), anyString(), anyInt(), anyInt());
         verify(vectorSearchService, never()).search(anyLong(), anyString(), anyInt(), anyList());
     }
 
     @Test
     void configuredTopK_passedToSearcher() throws Exception {
-        // 证据池扩容：CHUNK 每查询召回 15、BUSINESS/QA 各 8——topK 必须按配置透传
+        // 证据池扩容：CHUNK 每查询召回 15、BUSINESS/QA 各 8——chunkTop/sourceTop 必须按配置透传
         KnowledgeRecallNode expanded = new KnowledgeRecallNode(vectorSearchService, qaTracing,
                 new SeuRecallProperties(15, 8), Executors.newVirtualThreadPerTaskExecutor(),
                 new SeuQaProperties(20, 2, 32, 30, true, false, false, 0.4, false, 60, 200));
-        when(vectorSearchService.search(anyLong(), anyString(), anyInt(), anyList())).thenReturn(List.of());
+        when(vectorSearchService.searchBySources(anyLong(), anyString(), anyInt(), anyInt())).thenReturn(List.of());
 
         Map<String, Object> data = new HashMap<>();
         data.put(QaContextKey.KB_ID, 1L);
@@ -126,8 +129,8 @@ class KnowledgeRecallNodeTest {
 
         expanded.apply(new OverAllState(data));
 
-        verify(vectorSearchService).search(1L, "q1", 15, List.of("CHUNK"));
-        verify(vectorSearchService).search(1L, "q1", 8, List.of("BUSINESS"));
-        verify(vectorSearchService).search(1L, "q1", 8, List.of("QA"));
+        // 每条 query 只调用一次 searchBySources，且 topK 按配置透传（chunkTop=15、sourceTop=8）
+        verify(vectorSearchService).searchBySources(1L, "q1", 15, 8);
+        verify(vectorSearchService, times(1)).searchBySources(anyLong(), anyString(), anyInt(), anyInt());
     }
 }

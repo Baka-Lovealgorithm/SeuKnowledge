@@ -17,4 +17,11 @@ public interface EvidenceSearcher {
      * @param sourceTypes 来源过滤（null 或空 = 全部来源）
      */
     List<ChunkEvidence> search(Long kbId, String query, int topK, List<String> sourceTypes);
+
+    /**
+     * 单查询多来源一次召回：query 只向量化一次，内部按 CHUNK/BUSINESS/QA 分源检索后顺序合并返回。
+     * <p>返回顺序 {@code [CHUNK(<=chunkTop), BUSINESS(<=sourceTop), QA(<=sourceTop)]}；
+     * 未做跨来源/跨查询去重（由调用方统一处理）。
+     */
+    List<ChunkEvidence> searchBySources(Long kbId, String query, int chunkTop, int sourceTop);
 }

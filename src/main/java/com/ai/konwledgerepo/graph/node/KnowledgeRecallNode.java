@@ -112,13 +112,13 @@ public class KnowledgeRecallNode extends QaNodeSupport {
         return Map.of(QaContextKey.CHUNKS, merged, QaContextKey.NEXT, QaState.RERANK.name());
     }
 
-    /** 单一查询按三来源（CHUNK/BUSINESS/QA）检索并汇总为候选列表，保持来源顺序 */
+    /**
+     * 单一查询按三来源（CHUNK/BUSINESS/QA）一次召回并汇总为候选列表。
+     * 检索器内部对 query 只向量化一次，在三个来源过滤间复用同一向量。
+     */
     private List<ChunkEvidence> searchForQuery(Long kbId, String query, Set<String> excludedKeys) {
         List<ChunkEvidence> result = new ArrayList<>();
-        List<ChunkEvidence> chunkHits = evidenceSearcher.search(kbId, query, chunkTop, List.of(SourceType.CHUNK.value()));
-        mergeLocal(result, chunkHits, excludedKeys);
-        mergeLocal(result, evidenceSearcher.search(kbId, query, sourceTop, List.of(SourceType.BUSINESS.value())), excludedKeys);
-        mergeLocal(result, evidenceSearcher.search(kbId, query, sourceTop, List.of(SourceType.QA.value())), excludedKeys);
+        mergeLocal(result, evidenceSearcher.searchBySources(kbId, query, chunkTop, sourceTop), excludedKeys);
         return result;
     }
 

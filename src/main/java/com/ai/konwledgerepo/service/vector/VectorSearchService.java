@@ -77,11 +77,39 @@ public class VectorSearchService implements EvidenceSearcher {
      */
     @Override
     public List<ChunkEvidence> search(Long kbId, String query, int topK, List<String> sourceTypes) {
+        float[] vector = embedQuery(kbId, query);
+        return searchByVector(kbId, query, vector, topK, sourceTypes);
+    }
+
+    /**
+     * 单查询多来源一次召回：query 只向量化一次，内部按 CHUNK/BUSINESS/QA 分源检索后顺序合并返回。
+     * <p>返回顺序 {@code [CHUNK(<=chunkTop), BUSINESS(<=sourceTop), QA(<=sourceTop)]}；
+     * 未做跨来源/跨查询去重（由调用方 {@link com.ai.konwledgerepo.graph.node.KnowledgeRecallNode} 统一处理）。
+     */
+    public List<ChunkEvidence> searchBySources(Long kbId, String query, int chunkTop, int sourceTop) {
+        float[] vector = embedQuery(kbId, query);
+        List<ChunkEvidence> result = new ArrayList<>();
+        result.addAll(searchByVector(kbId, query, vector, chunkTop, List.of(SourceType.CHUNK.value())));
+        result.addAll(searchByVector(kbId, query, vector, sourceTop, List.of(SourceType.BUSINESS.value())));
+        result.addAll(searchByVector(kbId, query, vector, sourceTop, List.of(SourceType.QA.value())));
+        return result;
+    }
+
+    /**
+     * 向量化查询文本（仅计算 query 向量，供一次检索在多个来源过滤间复用）。
+     * 向量值只依赖 query 文本与所用 Embedding 模型，与来源过滤无关。
+     */
+    private float[] embedQuery(Long kbId, String query) throws BizException {
+        // 按知识库归属解析工作空间（快照缓存），模型解析严格限定当前工作空间
+        Long workspaceId = workspaceIdResolver.resolve(kbId);
+        EmbeddingModel embeddingModel = modelFactory.getEmbeddingModelByUsage(ModelUsage.RETRIEVE.value(), workspaceId);
+        return LlmTrace.embed(qaTracing, embeddingModel, query);
+    }
+
+    /** 给定查询向量做一次性多来源混合检索（knn+bm25+RRF），sourceTypes 为空或 null 时检索全部来源。 */
+    private List<ChunkEvidence> searchByVector(Long kbId, String query, float[] vector, int topK,
+                                               List<String> sourceTypes) {
         try {
-            // 按知识库归属解析工作空间（快照缓存），模型解析严格限定当前工作空间
-            Long workspaceId = workspaceIdResolver.resolve(kbId);
-            EmbeddingModel embeddingModel = modelFactory.getEmbeddingModelByUsage(ModelUsage.RETRIEVE.value(), workspaceId);
-            float[] vector = LlmTrace.embed(qaTracing, embeddingModel, query);
             List<Float> queryVector = IntStream.range(0, vector.length)
                     .mapToObj(i -> vector[i])
                     .toList();
