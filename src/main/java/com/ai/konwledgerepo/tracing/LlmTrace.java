@@ -50,6 +50,12 @@ public final class LlmTrace {
     /** 单次 LLM/Embedding 调用超时（可由 {@link #configure(Duration)} 在启动时覆盖） */
     private static volatile Duration llmTimeout = Duration.ofSeconds(60);
 
+    /**
+     * generation span 上 prompt / completion 属性最大长度（字符）。
+     * 超长截断并加省略号，防 OTLP 报文过大被 Langfuse 拒收；完整内容仍见 logs/llm.log（DEBUG 级）。
+     */
+    private static final int MAX_IO_ATTR_LEN = 16000;
+
     /** 超时包装专用虚拟线程执行器（per-task，阻塞让出载体线程，无池化泄漏） */
     private static final ExecutorService LLM_EXECUTOR = Executors.newVirtualThreadPerTaskExecutor();
 
@@ -139,6 +145,7 @@ public final class LlmTrace {
             TokenAccumulator.accumulate(TokenAccumulator.TYPE_TEXT, usage);
             String text = response.getResult() == null || response.getResult().getOutput() == null
                     ? "" : response.getResult().getOutput().getText();
+            writeIoAttrs(span, render(messages), text);
             logDirect("text", QaTracing.modelName(chat), render(messages), text, System.currentTimeMillis() - start, usage);
             return text;
         } catch (Exception e) {
@@ -191,6 +198,7 @@ public final class LlmTrace {
             }, llmTimeout);
             QaTracing.setUsage(span, lastUsage[0]);
             TokenAccumulator.accumulate(TokenAccumulator.TYPE_TEXT, lastUsage[0]);
+            writeIoAttrs(span, render(messages), text);
             logDirect("stream", QaTracing.modelName(chat), render(messages), text, System.currentTimeMillis() - start, lastUsage[0]);
             return text;
         } catch (Exception e) {
@@ -220,6 +228,7 @@ public final class LlmTrace {
             TokenAccumulator.accumulate(TokenAccumulator.TYPE_VISION, usage);
             String text = response.getResult() == null || response.getResult().getOutput() == null
                     ? "" : response.getResult().getOutput().getText();
+            writeIoAttrs(span, prompt, text);
             logDirect("vision", QaTracing.modelName(chat), prompt, text, System.currentTimeMillis() - start, usage);
             return text;
         } catch (Exception e) {
@@ -245,6 +254,8 @@ public final class LlmTrace {
             QaTracing.setUsage(span, usage);
             TokenAccumulator.accumulate(TokenAccumulator.TYPE_EMBEDDING, usage);
             float[] vector = response.getResult().getOutput();
+            // 向量输出不写 span（无可视化意义且巨大）；输入文本写入供排查「向量化的是什么」
+            writeIoAttrs(span, text, null);
             if (LLM_LOG.isDebugEnabled()) {
                 long in = usage == null ? -1 : usage.getPromptTokens();
                 long total = usage == null ? -1 : usage.getTotalTokens();
@@ -310,6 +321,23 @@ public final class LlmTrace {
             return "";
         }
         return s.length() <= max ? s : s.substring(0, max) + "…";
+    }
+
+    /**
+     * 把 LLM 调用输入（prompt）与输出（completion）写入 generation span，
+     * 供 Langfuse 展示「这次调用了什么、模型回了什么」（OTel GenAI 语义属性）。
+     * 两者均可为空（如向量调用无输出）；超长截断（{@link #MAX_IO_ATTR_LEN}）。
+     */
+    private static void writeIoAttrs(Span span, String prompt, String completion) {
+        if (span == null) {
+            return;
+        }
+        if (prompt != null) {
+            span.setAttribute("gen_ai.prompt", truncate(prompt, MAX_IO_ATTR_LEN));
+        }
+        if (completion != null) {
+            span.setAttribute("gen_ai.completion", truncate(completion, MAX_IO_ATTR_LEN));
+        }
     }
 
     private static Usage usageOf(ChatResponse response) {
