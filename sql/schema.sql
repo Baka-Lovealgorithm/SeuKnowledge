@@ -2,7 +2,7 @@
 -- SeuKnowledge 数据库建表脚本（MySQL 8）
 -- ----------------------------------------------------------------------------
 -- 1. 本文件仅含【表结构】与【内置默认账号种子】，不含任何个人/业务数据。
--- 2. 13 张表由 Hibernate schema export 依据实体模型导出（与应用启动时
+-- 2. 19 张表由 Hibernate schema export 依据实体模型导出（与应用启动时
 --    JPA ddl-auto:update 自动建表的效果一致），统一改为 IF NOT EXISTS，
 --    可重复执行。
 -- 3. 应用启动时 AdminInitializer 会按用户名检查内置账号：已存在则自动跳过，
@@ -20,7 +20,7 @@ CREATE DATABASE IF NOT EXISTS seuknowledge DEFAULT CHARACTER SET utf8mb4 COLLATE
 USE seuknowledge;
 
 -- ============================================================================
--- 表结构（14 张）
+-- 表结构（19 张）
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS kb_access (
@@ -33,6 +33,29 @@ CREATE TABLE IF NOT EXISTS kb_access (
     grantee_id bigint not null,
     permission varchar(10) not null,
     primary key (id)
+) engine=InnoDB;
+
+CREATE TABLE IF NOT EXISTS kb_group (
+    id bigint not null auto_increment,
+    workspace_id bigint not null,
+    name varchar(64) not null,
+    description varchar(200),
+    created_at datetime(6),
+    updated_at datetime(6),
+    created_by bigint,
+    primary key (id),
+    constraint uk_group_workspace_name unique (workspace_id, name)
+) engine=InnoDB;
+
+CREATE TABLE IF NOT EXISTS kb_group_member (
+    id bigint not null auto_increment,
+    group_id bigint not null,
+    user_id bigint not null,
+    created_at datetime(6),
+    updated_at datetime(6),
+    created_by bigint,
+    primary key (id),
+    constraint uk_group_member unique (group_id, user_id)
 ) engine=InnoDB;
 
 CREATE TABLE IF NOT EXISTS kb_agent (

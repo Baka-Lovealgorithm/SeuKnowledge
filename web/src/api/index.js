@@ -18,6 +18,17 @@ export const kbApi = {
   setVisibility: (id, visibility) => http.patch(`/kb/${id}/access/visibility`, null, { params: { visibility } })
 }
 
+/** 知识库访问组管理（组级别授权基础；组内成员限当前工作空间成员） */
+export const groupApi = {
+  list: () => http.get('/workspace/groups'),
+  create: (data) => http.post('/workspace/groups', data),
+  rename: (id, data) => http.put(`/workspace/groups/${id}`, data),
+  remove: (id) => http.delete(`/workspace/groups/${id}`),
+  members: (id) => http.get(`/workspace/groups/${id}/members`),
+  addMember: (id, data) => http.post(`/workspace/groups/${id}/members`, data),
+  removeMember: (id, userId) => http.delete(`/workspace/groups/${id}/members/${userId}`)
+}
+
 export const docApi = {
   upload: (kbId, files, replace = false, reuseCache = false, curateGate = false) => {
     const fd = new FormData()

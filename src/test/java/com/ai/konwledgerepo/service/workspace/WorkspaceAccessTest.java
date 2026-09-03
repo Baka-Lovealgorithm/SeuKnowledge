@@ -2,11 +2,15 @@ package com.ai.konwledgerepo.service.workspace;
 
 import com.ai.konwledgerepo.common.BizException;
 import com.ai.konwledgerepo.entity.Document;
+import com.ai.konwledgerepo.entity.GroupMember;
 import com.ai.konwledgerepo.entity.KbAccess;
+import com.ai.konwledgerepo.entity.KbGroup;
 import com.ai.konwledgerepo.entity.KnowledgeBase;
 import com.ai.konwledgerepo.entity.WorkspaceMember;
 import com.ai.konwledgerepo.repository.DocumentRepository;
+import com.ai.konwledgerepo.repository.GroupMemberRepository;
 import com.ai.konwledgerepo.repository.KbAccessRepository;
+import com.ai.konwledgerepo.repository.KbGroupRepository;
 import com.ai.konwledgerepo.repository.KnowledgeBaseRepository;
 import com.ai.konwledgerepo.repository.WorkspaceMemberRepository;
 import org.junit.jupiter.api.AfterEach;
@@ -16,6 +20,7 @@ import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
+import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -41,6 +46,8 @@ class WorkspaceAccessTest {
     private DocumentRepository docRepo;
     private KbAccessRepository accessRepo;
     private WorkspaceMemberRepository memberRepo;
+    private GroupMemberRepository groupMemberRepo;
+    private KbGroupRepository groupRepo;
     private WorkspaceAccess access;
 
     @BeforeEach
@@ -49,7 +56,9 @@ class WorkspaceAccessTest {
         docRepo = mock(DocumentRepository.class);
         accessRepo = mock(KbAccessRepository.class);
         memberRepo = mock(WorkspaceMemberRepository.class);
-        access = new WorkspaceAccess(kbRepo, docRepo, accessRepo, memberRepo);
+        groupMemberRepo = mock(GroupMemberRepository.class);
+        groupRepo = mock(KbGroupRepository.class);
+        access = new WorkspaceAccess(kbRepo, docRepo, accessRepo, memberRepo, groupMemberRepo, groupRepo);
     }
 
     @AfterEach
@@ -278,5 +287,118 @@ class WorkspaceAccessTest {
 
         // 显式读语义：VIEW 授权通过
         assertSame(doc, access.requireDocAccess(7L, WS, USER, false));
+    }
+
+    // ===== 组级别授权（双粒度） =====
+
+    /** 构造一个 GROUP 授权记录（granteeId=组 id，permission 自定义） */
+    private KbAccess groupAcl(long kbId, long groupId, String permission) {
+        KbAccess acl = new KbAccess();
+        acl.setKbId(kbId);
+        acl.setGranteeType("GROUP");
+        acl.setGranteeId(groupId);
+        acl.setPermission(permission);
+        return acl;
+    }
+
+    /** 模拟：组属于当前工作空间 + 用户是组内成员 */
+    private void stubGroupMembership(long groupId, boolean groupInWs, boolean userInGroup) {
+        if (groupInWs) {
+            KbGroup g = new KbGroup();
+            g.setId(groupId);
+            g.setWorkspaceId(WS);
+            when(groupRepo.findByIdAndWorkspaceId(groupId, WS)).thenReturn(Optional.of(g));
+        } else {
+            when(groupRepo.findByIdAndWorkspaceId(groupId, WS)).thenReturn(Optional.empty());
+        }
+        if (userInGroup) {
+            GroupMember gm = new GroupMember();
+            gm.setGroupId(groupId);
+            gm.setUserId(USER);
+            when(groupMemberRepo.findByGroupIdAndUserId(groupId, USER)).thenReturn(Optional.of(gm));
+        } else {
+            when(groupMemberRepo.findByGroupIdAndUserId(groupId, USER)).thenReturn(Optional.empty());
+        }
+    }
+
+    @Test
+    void restrictedKb_groupGrant_viewMember_readOk_writeRejected() {
+        when(kbRepo.findById(1L)).thenReturn(Optional.of(restrictedKb(1L, WS, 99L)));
+        when(memberRepo.findByWorkspaceIdAndUserId(WS, USER)).thenReturn(Optional.of(member("MEMBER")));
+        when(accessRepo.findByKbIdAndGranteeTypeAndGranteeId(1L, "USER", USER)).thenReturn(Optional.empty());
+        when(accessRepo.findByKbIdAndGranteeType(1L, "GROUP"))
+                .thenReturn(List.of(groupAcl(1L, 20L, "VIEW")));
+        stubGroupMembership(20L, true, true);
+
+        // 读通过（组 VIEW）
+        request("GET", USER);
+        assertSame(1L, access.requireKb(1L, WS).getId());
+
+        // 写拒绝（组 VIEW 不足）
+        request("POST", USER);
+        BizException ex = assertThrows(BizException.class, () -> access.requireKb(1L, WS));
+        assertEquals(403, ex.getCode());
+    }
+
+    @Test
+    void restrictedKb_groupEditGrant_writeOk() {
+        when(kbRepo.findById(1L)).thenReturn(Optional.of(restrictedKb(1L, WS, 99L)));
+        when(memberRepo.findByWorkspaceIdAndUserId(WS, USER)).thenReturn(Optional.of(member("MEMBER")));
+        when(accessRepo.findByKbIdAndGranteeTypeAndGranteeId(1L, "USER", USER)).thenReturn(Optional.empty());
+        when(accessRepo.findByKbIdAndGranteeType(1L, "GROUP"))
+                .thenReturn(List.of(groupAcl(1L, 20L, "EDIT")));
+        stubGroupMembership(20L, true, true);
+
+        request("POST", USER);
+        assertSame(1L, access.requireKb(1L, WS).getId());
+    }
+
+    @Test
+    void restrictedKb_userViewPlusGroupEdit_effectiveEdit() {
+        // 双粒度取高：user VIEW + 组 EDIT → 写通过
+        when(kbRepo.findById(1L)).thenReturn(Optional.of(restrictedKb(1L, WS, 99L)));
+        when(memberRepo.findByWorkspaceIdAndUserId(WS, USER)).thenReturn(Optional.of(member("MEMBER")));
+        KbAccess userAcl = new KbAccess();
+        userAcl.setKbId(1L);
+        userAcl.setGranteeType("USER");
+        userAcl.setGranteeId(USER);
+        userAcl.setPermission("VIEW");
+        when(accessRepo.findByKbIdAndGranteeTypeAndGranteeId(1L, "USER", USER)).thenReturn(Optional.of(userAcl));
+        when(accessRepo.findByKbIdAndGranteeType(1L, "GROUP"))
+                .thenReturn(List.of(groupAcl(1L, 20L, "EDIT")));
+        stubGroupMembership(20L, true, true);
+
+        request("POST", USER);
+        assertSame(1L, access.requireKb(1L, WS).getId());
+    }
+
+    @Test
+    void restrictedKb_groupGrant_notMember_rejected() {
+        // 用户不在被授权组内 → 403（组授权不生效）
+        when(kbRepo.findById(1L)).thenReturn(Optional.of(restrictedKb(1L, WS, 99L)));
+        when(memberRepo.findByWorkspaceIdAndUserId(WS, USER)).thenReturn(Optional.of(member("MEMBER")));
+        when(accessRepo.findByKbIdAndGranteeTypeAndGranteeId(1L, "USER", USER)).thenReturn(Optional.empty());
+        when(accessRepo.findByKbIdAndGranteeType(1L, "GROUP"))
+                .thenReturn(List.of(groupAcl(1L, 20L, "EDIT")));
+        stubGroupMembership(20L, true, false); // 用户不在组内
+
+        request("GET", USER);
+        BizException ex = assertThrows(BizException.class, () -> access.requireKb(1L, WS));
+        assertEquals(403, ex.getCode());
+    }
+
+    @Test
+    void restrictedKb_groupGrant_crossWorkspaceGroup_rejected() {
+        // 组属于其它工作空间 → 403（跨空间组授权不生效）
+        when(kbRepo.findById(1L)).thenReturn(Optional.of(restrictedKb(1L, WS, 99L)));
+        when(memberRepo.findByWorkspaceIdAndUserId(WS, USER)).thenReturn(Optional.of(member("MEMBER")));
+        when(accessRepo.findByKbIdAndGranteeTypeAndGranteeId(1L, "USER", USER)).thenReturn(Optional.empty());
+        when(accessRepo.findByKbIdAndGranteeType(1L, "GROUP"))
+                .thenReturn(List.of(groupAcl(1L, 20L, "EDIT")));
+        stubGroupMembership(20L, false, true); // 组不属于当前空间（虽用户“在组内”）
+
+        request("GET", USER);
+        BizException ex = assertThrows(BizException.class, () -> access.requireKb(1L, WS));
+        assertEquals(403, ex.getCode());
     }
 }

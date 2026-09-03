@@ -4,10 +4,13 @@ import com.ai.konwledgerepo.common.BizException;
 import com.ai.konwledgerepo.dto.KbAccessRequest;
 import com.ai.konwledgerepo.dto.KbAccessResponse;
 import com.ai.konwledgerepo.entity.KbAccess;
+import com.ai.konwledgerepo.entity.KbGroup;
 import com.ai.konwledgerepo.entity.KnowledgeBase;
 import com.ai.konwledgerepo.entity.SysUser;
 import com.ai.konwledgerepo.entity.WorkspaceMember;
+import com.ai.konwledgerepo.repository.GroupMemberRepository;
 import com.ai.konwledgerepo.repository.KbAccessRepository;
+import com.ai.konwledgerepo.repository.KbGroupRepository;
 import com.ai.konwledgerepo.repository.KnowledgeBaseRepository;
 import com.ai.konwledgerepo.repository.SysUserRepository;
 import com.ai.konwledgerepo.repository.WorkspaceMemberRepository;
@@ -32,11 +35,13 @@ class KbAccessServiceTest {
     private static final long OPERATOR = 2L;  // 创建者
     private static final long GRANTEE = 3L;   // 目标用户
     private static final long OTHER = 4L;     // 无管理权用户
+    private static final long GROUP = 20L;    // 目标组
 
     private KbAccessRepository accessRepo;
     private KnowledgeBaseRepository kbRepo;
     private WorkspaceMemberRepository memberRepo;
     private SysUserRepository userRepo;
+    private KbGroupRepository groupRepo;
     private KbAccessService service;
 
     @BeforeEach
@@ -45,8 +50,10 @@ class KbAccessServiceTest {
         kbRepo = mock(KnowledgeBaseRepository.class);
         memberRepo = mock(WorkspaceMemberRepository.class);
         userRepo = mock(SysUserRepository.class);
-        WorkspaceAccess workspaceAccess = new WorkspaceAccess(kbRepo, null, accessRepo, memberRepo);
-        service = new KbAccessService(accessRepo, kbRepo, memberRepo, userRepo, workspaceAccess);
+        groupRepo = mock(KbGroupRepository.class);
+        WorkspaceAccess workspaceAccess = new WorkspaceAccess(kbRepo, null, accessRepo, memberRepo,
+                mock(GroupMemberRepository.class), groupRepo);
+        service = new KbAccessService(accessRepo, kbRepo, memberRepo, userRepo, groupRepo, workspaceAccess);
     }
 
     private KnowledgeBase kb(Long createdBy) {
@@ -86,7 +93,8 @@ class KbAccessServiceTest {
 
         List<KbAccessResponse> resp = service.list(KB, WS, OPERATOR);
         assertEquals(1, resp.size());
-        assertEquals("alice", resp.get(0).username());
+        assertEquals("USER", resp.get(0).granteeType());
+        assertEquals("alice", resp.get(0).granteeName());
         assertEquals("VIEW", resp.get(0).permission());
     }
 
@@ -100,17 +108,47 @@ class KbAccessServiceTest {
     }
 
     @Test
-    void grant_adminOk_createsAcl() {
+    void grant_user_adminOk_createsAcl() {
         when(kbRepo.findById(KB)).thenReturn(Optional.of(kb(OPERATOR)));
         when(memberRepo.findByWorkspaceIdAndUserId(WS, OPERATOR)).thenReturn(Optional.of(member(OPERATOR, "ADMIN")));
         when(memberRepo.findByWorkspaceIdAndUserId(WS, GRANTEE)).thenReturn(Optional.of(member(GRANTEE, "MEMBER")));
         when(accessRepo.findByKbIdAndGranteeTypeAndGranteeId(KB, "USER", GRANTEE)).thenReturn(Optional.empty());
         when(accessRepo.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        KbAccessResponse resp = service.grant(KB, WS, OPERATOR, new KbAccessRequest(GRANTEE, "EDIT"));
-        assertEquals(GRANTEE, resp.userId());
+        KbAccessResponse resp = service.grant(KB, WS, OPERATOR, new KbAccessRequest("USER", GRANTEE, "EDIT"));
+        assertEquals("USER", resp.granteeType());
+        assertEquals(GRANTEE, resp.granteeId());
         assertEquals("EDIT", resp.permission());
         verify(accessRepo).save(any());
+    }
+
+    @Test
+    void grant_group_ok_createsGroupAcl() {
+        when(kbRepo.findById(KB)).thenReturn(Optional.of(kb(OPERATOR)));
+        when(memberRepo.findByWorkspaceIdAndUserId(WS, OPERATOR)).thenReturn(Optional.of(member(OPERATOR, "ADMIN")));
+        KbGroup g = new KbGroup();
+        g.setId(GROUP);
+        g.setWorkspaceId(WS);
+        when(groupRepo.findByIdAndWorkspaceId(GROUP, WS)).thenReturn(Optional.of(g));
+        when(accessRepo.findByKbIdAndGranteeTypeAndGranteeId(KB, "GROUP", GROUP)).thenReturn(Optional.empty());
+        when(accessRepo.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        KbAccessResponse resp = service.grant(KB, WS, OPERATOR, new KbAccessRequest("GROUP", GROUP, "VIEW"));
+        assertEquals("GROUP", resp.granteeType());
+        assertEquals(GROUP, resp.granteeId());
+        assertEquals("VIEW", resp.permission());
+        verify(accessRepo).save(any());
+    }
+
+    @Test
+    void grant_group_notInWorkspace_forbidden() {
+        when(kbRepo.findById(KB)).thenReturn(Optional.of(kb(OPERATOR)));
+        when(memberRepo.findByWorkspaceIdAndUserId(WS, OPERATOR)).thenReturn(Optional.of(member(OPERATOR, "MEMBER")));
+        when(groupRepo.findByIdAndWorkspaceId(GROUP, WS)).thenReturn(Optional.empty());
+
+        BizException ex = assertThrows(BizException.class,
+                () -> service.grant(KB, WS, OPERATOR, new KbAccessRequest("GROUP", GROUP, "VIEW")));
+        assertEquals("目标组不存在或不属于当前工作空间", ex.getMessage());
     }
 
     @Test
@@ -119,7 +157,7 @@ class KbAccessServiceTest {
         when(memberRepo.findByWorkspaceIdAndUserId(WS, OPERATOR)).thenReturn(Optional.of(member(OPERATOR, "MEMBER")));
 
         BizException ex = assertThrows(BizException.class,
-                () -> service.grant(KB, WS, OPERATOR, new KbAccessRequest(OPERATOR, "VIEW")));
+                () -> service.grant(KB, WS, OPERATOR, new KbAccessRequest("USER", OPERATOR, "VIEW")));
         assertEquals("不能向自己授权（创建者/管理员始终可访问）", ex.getMessage());
     }
 
@@ -130,7 +168,7 @@ class KbAccessServiceTest {
         when(memberRepo.findByWorkspaceIdAndUserId(WS, GRANTEE)).thenReturn(Optional.empty());
 
         BizException ex = assertThrows(BizException.class,
-                () -> service.grant(KB, WS, OPERATOR, new KbAccessRequest(GRANTEE, "VIEW")));
+                () -> service.grant(KB, WS, OPERATOR, new KbAccessRequest("USER", GRANTEE, "VIEW")));
         assertEquals("目标用户不是当前工作空间成员", ex.getMessage());
     }
 

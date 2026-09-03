@@ -8,13 +8,17 @@ import com.ai.konwledgerepo.dto.KbCreateRequest;
 import com.ai.konwledgerepo.dto.KbResponse;
 import com.ai.konwledgerepo.dto.KbSnapshot;
 import com.ai.konwledgerepo.dto.KbUpdateRequest;
+import com.ai.konwledgerepo.entity.GroupMember;
 import com.ai.konwledgerepo.entity.KbAccess;
+import com.ai.konwledgerepo.entity.KbGroup;
 import com.ai.konwledgerepo.entity.KbStatus;
 import com.ai.konwledgerepo.entity.KbVisibility;
 import com.ai.konwledgerepo.entity.KnowledgeBase;
 import com.ai.konwledgerepo.entity.WorkspaceMember;
 import com.ai.konwledgerepo.repository.DocumentRepository;
+import com.ai.konwledgerepo.repository.GroupMemberRepository;
 import com.ai.konwledgerepo.repository.KbAccessRepository;
+import com.ai.konwledgerepo.repository.KbGroupRepository;
 import com.ai.konwledgerepo.repository.KnowledgeBaseRepository;
 import com.ai.konwledgerepo.repository.WorkspaceMemberRepository;
 import com.ai.konwledgerepo.security.Roles;
@@ -23,6 +27,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -42,6 +47,8 @@ public class KnowledgeBaseService {
     private final WorkspaceAccess workspaceAccess;
     private final KbAccessRepository accessRepository;
     private final WorkspaceMemberRepository memberRepository;
+    private final GroupMemberRepository groupMemberRepository;
+    private final KbGroupRepository groupRepository;
     private final Duration kbTtl;
     private final Duration kbCountTtl;
     private final Duration kbListTtl;
@@ -52,6 +59,8 @@ public class KnowledgeBaseService {
                                 WorkspaceAccess workspaceAccess,
                                 KbAccessRepository accessRepository,
                                 WorkspaceMemberRepository memberRepository,
+                                GroupMemberRepository groupMemberRepository,
+                                KbGroupRepository groupRepository,
                                 SeuCacheProperties cacheProps) {
         this.kbRepository = kbRepository;
         this.documentRepository = documentRepository;
@@ -59,6 +68,8 @@ public class KnowledgeBaseService {
         this.workspaceAccess = workspaceAccess;
         this.accessRepository = accessRepository;
         this.memberRepository = memberRepository;
+        this.groupMemberRepository = groupMemberRepository;
+        this.groupRepository = groupRepository;
         this.kbTtl = Duration.ofSeconds(cacheProps.kbTtlSeconds());
         this.kbCountTtl = Duration.ofSeconds(cacheProps.kbCountTtlSeconds());
         this.kbListTtl = Duration.ofSeconds(cacheProps.kbListTtlSeconds());
@@ -104,14 +115,36 @@ public class KnowledgeBaseService {
         if (Roles.OWNER.equals(role) || Roles.ADMIN.equals(role)) {
             return all;
         }
-        Set<Long> granted = accessRepository.findByGranteeTypeAndGranteeId("USER", userId).stream()
-                .map(KbAccess::getKbId)
-                .collect(Collectors.toSet());
+        Set<Long> granted = grantedKbIds(workspaceId, userId);
         return all.stream()
                 .filter(kb -> !KbVisibility.isRestricted(kb.visibility())
                         || granted.contains(kb.id())
                         || (kb.createdBy() != null && kb.createdBy().equals(userId)))
                 .toList();
+    }
+
+    /**
+     * 用户已授权的知识库 id 集合（双粒度）：user 直授权 + 用户所属组（属当前工作空间）的组授权。
+     */
+    private Set<Long> grantedKbIds(Long workspaceId, Long userId) {
+        Set<Long> granted = new HashSet<>();
+        accessRepository.findByGranteeTypeAndGranteeId("USER", userId).stream()
+                .map(KbAccess::getKbId)
+                .forEach(granted::add);
+        // 用户在当前工作空间内的所属组 → 这些组被授权的知识库
+        Set<Long> workspaceGroupIds = groupRepository.findByWorkspaceIdOrderByIdAsc(workspaceId).stream()
+                .map(KbGroup::getId)
+                .collect(Collectors.toSet());
+        Set<Long> userGroupIds = groupMemberRepository.findByUserId(userId).stream()
+                .map(GroupMember::getGroupId)
+                .filter(workspaceGroupIds::contains)
+                .collect(Collectors.toSet());
+        if (!userGroupIds.isEmpty()) {
+            accessRepository.findByGranteeTypeAndGranteeIdIn("GROUP", userGroupIds).stream()
+                    .map(KbAccess::getKbId)
+                    .forEach(granted::add);
+        }
+        return granted;
     }
 
     public KbResponse create(KbCreateRequest request, Long userId, Long workspaceId) {

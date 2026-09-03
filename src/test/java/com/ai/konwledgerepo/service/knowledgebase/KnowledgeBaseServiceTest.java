@@ -5,11 +5,15 @@ import com.ai.konwledgerepo.common.RedisCacheService;
 import com.ai.konwledgerepo.config.props.SeuCacheProperties;
 import com.ai.konwledgerepo.dto.KbCreateRequest;
 import com.ai.konwledgerepo.dto.KbResponse;
+import com.ai.konwledgerepo.entity.GroupMember;
 import com.ai.konwledgerepo.entity.KbAccess;
+import com.ai.konwledgerepo.entity.KbGroup;
 import com.ai.konwledgerepo.entity.KnowledgeBase;
 import com.ai.konwledgerepo.entity.WorkspaceMember;
 import com.ai.konwledgerepo.repository.DocumentRepository;
+import com.ai.konwledgerepo.repository.GroupMemberRepository;
 import com.ai.konwledgerepo.repository.KbAccessRepository;
+import com.ai.konwledgerepo.repository.KbGroupRepository;
 import com.ai.konwledgerepo.repository.KnowledgeBaseRepository;
 import com.ai.konwledgerepo.repository.WorkspaceMemberRepository;
 import com.ai.konwledgerepo.service.workspace.WorkspaceAccess;
@@ -23,6 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -33,6 +39,8 @@ class KnowledgeBaseServiceTest {
     private RedisCacheService cache;
     private KbAccessRepository accessRepo;
     private WorkspaceMemberRepository memberRepo;
+    private GroupMemberRepository groupMemberRepo;
+    private KbGroupRepository groupRepo;
     private KnowledgeBaseService service;
 
     @BeforeEach
@@ -42,8 +50,12 @@ class KnowledgeBaseServiceTest {
         cache = mock(RedisCacheService.class);
         accessRepo = mock(KbAccessRepository.class);
         memberRepo = mock(WorkspaceMemberRepository.class);
-        WorkspaceAccess workspaceAccess = new WorkspaceAccess(kbRepo, docRepo, accessRepo, memberRepo);
+        groupMemberRepo = mock(GroupMemberRepository.class);
+        groupRepo = mock(KbGroupRepository.class);
+        WorkspaceAccess workspaceAccess = new WorkspaceAccess(kbRepo, docRepo, accessRepo, memberRepo,
+                groupMemberRepo, groupRepo);
         service = new KnowledgeBaseService(kbRepo, docRepo, cache, workspaceAccess, accessRepo, memberRepo,
+                groupMemberRepo, groupRepo,
                 new SeuCacheProperties(300, 600, 600, 300, 300, 60, 60, 600, 86400));
     }
 
@@ -161,5 +173,36 @@ class KnowledgeBaseServiceTest {
         List<KbResponse> resp = service.list(10L, 5L);
         assertEquals(List.of(1L, 2L), resp.stream().map(KbResponse::id).toList(),
                 "管理员可见全部（含私有库）");
+    }
+
+    @Test
+    void list_member_groupGrantedRestricted_visible() {
+        // 双粒度：私有库授权给组，用户是组内成员 → 可见
+        List<KnowledgeBase> all = List.of(
+                kb(1L, "PUBLIC", 9L),
+                kb(2L, "RESTRICTED", 9L),
+                kb(3L, "RESTRICTED", 9L));
+        when(kbRepo.findByWorkspaceIdAndArchivedFalseOrderByIdDesc(10L)).thenReturn(all);
+        when(memberRepo.findByWorkspaceIdAndUserId(10L, 5L)).thenReturn(Optional.of(member(5L, "MEMBER")));
+        when(accessRepo.findByGranteeTypeAndGranteeId("USER", 5L)).thenReturn(List.of());
+        // 组 20 属于当前空间；用户 5 是组 20 成员；组 20 被授权 kb 2
+        KbGroup g = new KbGroup();
+        g.setId(20L);
+        g.setWorkspaceId(10L);
+        when(groupRepo.findByWorkspaceIdOrderByIdAsc(10L)).thenReturn(List.of(g));
+        GroupMember gm = new GroupMember();
+        gm.setGroupId(20L);
+        gm.setUserId(5L);
+        when(groupMemberRepo.findByUserId(5L)).thenReturn(List.of(gm));
+        KbAccess groupAcl = new KbAccess();
+        groupAcl.setKbId(2L);
+        groupAcl.setGranteeType("GROUP");
+        groupAcl.setGranteeId(20L);
+        when(accessRepo.findByGranteeTypeAndGranteeIdIn(eq("GROUP"), anyCollection()))
+                .thenReturn(List.of(groupAcl));
+
+        List<KbResponse> resp = service.list(10L, 5L);
+        assertEquals(List.of(1L, 2L), resp.stream().map(KbResponse::id).toList(),
+                "普通成员可见：公开库 + 所在组被授权的私有库（kb3 无授权仍隐藏）");
     }
 }

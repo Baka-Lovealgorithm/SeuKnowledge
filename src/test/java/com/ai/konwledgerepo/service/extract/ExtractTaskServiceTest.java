@@ -58,7 +58,9 @@ class ExtractTaskServiceTest {
                         new SeuCacheProperties(300, 600, 600, 300, 300, 60, 60, 600, 86400)),
                 new WorkspaceAccess(kbRepository, mock(com.ai.konwledgerepo.repository.DocumentRepository.class),
                         mock(com.ai.konwledgerepo.repository.KbAccessRepository.class),
-                        mock(com.ai.konwledgerepo.repository.WorkspaceMemberRepository.class)));
+                        mock(com.ai.konwledgerepo.repository.WorkspaceMemberRepository.class),
+                        mock(com.ai.konwledgerepo.repository.GroupMemberRepository.class),
+                        mock(com.ai.konwledgerepo.repository.KbGroupRepository.class)));
     }
 
     private ExtractTask task(long id, String status, String docIdsJson, String failedDocIdsJson) {

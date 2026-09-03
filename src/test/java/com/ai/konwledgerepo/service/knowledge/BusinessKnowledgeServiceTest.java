@@ -61,7 +61,9 @@ class BusinessKnowledgeServiceTest {
         service = new BusinessKnowledgeService(repo, kbService, docRepo, sourceIndexer,
                 new WorkspaceAccess(kbRepo, docRepo,
                         mock(com.ai.konwledgerepo.repository.KbAccessRepository.class),
-                        mock(com.ai.konwledgerepo.repository.WorkspaceMemberRepository.class)),
+                        mock(com.ai.konwledgerepo.repository.WorkspaceMemberRepository.class),
+                        mock(com.ai.konwledgerepo.repository.GroupMemberRepository.class),
+                        mock(com.ai.konwledgerepo.repository.KbGroupRepository.class)),
                 new ObjectMapper(), txOps);
     }
 

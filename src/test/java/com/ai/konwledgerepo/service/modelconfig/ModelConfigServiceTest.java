@@ -47,7 +47,9 @@ class ModelConfigServiceTest {
         service = new ModelConfigService(repo, factory,
                 new WorkspaceAccess(mock(KnowledgeBaseRepository.class), mock(DocumentRepository.class),
                         mock(com.ai.konwledgerepo.repository.KbAccessRepository.class),
-                        mock(com.ai.konwledgerepo.repository.WorkspaceMemberRepository.class)));
+                        mock(com.ai.konwledgerepo.repository.WorkspaceMemberRepository.class),
+                        mock(com.ai.konwledgerepo.repository.GroupMemberRepository.class),
+                        mock(com.ai.konwledgerepo.repository.KbGroupRepository.class)));
     }
 
     private ModelConfig cfg(long id, long workspaceId) {

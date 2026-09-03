@@ -8,7 +8,9 @@ import com.ai.konwledgerepo.entity.KbVisibility;
 import com.ai.konwledgerepo.entity.KnowledgeBase;
 import com.ai.konwledgerepo.entity.WorkspaceMember;
 import com.ai.konwledgerepo.repository.DocumentRepository;
+import com.ai.konwledgerepo.repository.GroupMemberRepository;
 import com.ai.konwledgerepo.repository.KbAccessRepository;
+import com.ai.konwledgerepo.repository.KbGroupRepository;
 import com.ai.konwledgerepo.repository.KnowledgeBaseRepository;
 import com.ai.konwledgerepo.repository.WorkspaceMemberRepository;
 import com.ai.konwledgerepo.security.Roles;
@@ -18,7 +20,8 @@ import org.springframework.web.context.request.RequestAttributes;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
-import java.util.Optional;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * 工作空间归属校验 + 知识库对象级权限（ACL）校验：
@@ -30,7 +33,8 @@ import java.util.Optional;
  *   <li>空间 OWNER / ADMIN 始终可访问（管理员兜底，不受 ACL 限制）；</li>
  *   <li>知识库创建者始终可访问（创建者委派管理权）；</li>
  *   <li>PUBLIC 知识库：空间成员按角色访问（现状行为）；</li>
- *   <li>RESTRICTED 知识库：须命中 kb_access 授权（VIEW 可读、EDIT 可读写），否则 403。</li>
+ *   <li>RESTRICTED 知识库：双粒度授权——命中 kb_access 的 user 直授（USER）或所在组
+ *       授权（GROUP）即可访问，取最高权限（EDIT 覆盖 VIEW，仅有 VIEW 则只读），否则 403。</li>
  * </ol>
  * 生效方式：
  * <ul>
@@ -49,15 +53,21 @@ public class WorkspaceAccess {
     private final DocumentRepository documentRepository;
     private final KbAccessRepository accessRepository;
     private final WorkspaceMemberRepository memberRepository;
+    private final GroupMemberRepository groupMemberRepository;
+    private final KbGroupRepository groupRepository;
 
     public WorkspaceAccess(KnowledgeBaseRepository kbRepository,
                            DocumentRepository documentRepository,
                            KbAccessRepository accessRepository,
-                           WorkspaceMemberRepository memberRepository) {
+                           WorkspaceMemberRepository memberRepository,
+                           GroupMemberRepository groupMemberRepository,
+                           KbGroupRepository groupRepository) {
         this.kbRepository = kbRepository;
         this.documentRepository = documentRepository;
         this.accessRepository = accessRepository;
         this.memberRepository = memberRepository;
+        this.groupMemberRepository = groupMemberRepository;
+        this.groupRepository = groupRepository;
     }
 
     /** 校验知识库存在且属于当前工作空间，返回该知识库 */
@@ -129,7 +139,10 @@ public class WorkspaceAccess {
         checkAcl(kb, workspaceId, userId, write);
     }
 
-    /** 核心 ACL 判定：管理员/创建者免检 → PUBLIC 放行 → RESTRICTED 查 kb_access */
+    /**
+     * 核心 ACL 判定：管理员/创建者免检 → PUBLIC 放行 → RESTRICTED 双粒度（user 直授 ∪ 组授权）。
+     * 合并规则 = 取最高权限：任一来源给到 EDIT 即可编辑，只有全部来源都是 VIEW 才算只读。
+     */
     private void checkAcl(KnowledgeBase kb, Long workspaceId, Long userId, boolean write) {
         String role = memberRepository.findByWorkspaceIdAndUserId(workspaceId, userId)
                 .map(WorkspaceMember::getRole).orElse(null);
@@ -142,14 +155,54 @@ public class WorkspaceAccess {
         if (!KbVisibility.isRestricted(kb.getVisibility())) {
             return; // PUBLIC：空间成员按角色访问
         }
-        // RESTRICTED：须命中 kb_access 授权
-        Optional<KbAccess> acl = accessRepository
-                .findByKbIdAndGranteeTypeAndGranteeId(kb.getId(), "USER", userId);
-        if (acl.isEmpty()) {
+        // RESTRICTED：双粒度——user 直授 ∪ 所在组授权，取最高权限
+        String effective = userGrant(kb.getId(), userId);
+        Map<Long, String> groupGrants = kbGroupGrants(kb.getId());
+        for (Long groupId : groupGrants.keySet()) {
+            if (userBelongsToGroupInWorkspace(workspaceId, groupId, userId)) {
+                effective = higher(effective, groupGrants.get(groupId));
+            }
+        }
+        if (effective == null) {
             throw new BizException(ErrorCodes.FORBIDDEN, "无权访问该知识库");
         }
-        if (write && !"EDIT".equals(acl.get().getPermission())) {
+        if (write && !"EDIT".equals(effective)) {
             throw new BizException(ErrorCodes.FORBIDDEN, "无权编辑该知识库（仅授权只读）");
         }
+    }
+
+    /** user 级直授权限（无命中返回 null） */
+    private String userGrant(Long kbId, Long userId) {
+        return accessRepository
+                .findByKbIdAndGranteeTypeAndGranteeId(kbId, "USER", userId)
+                .map(KbAccess::getPermission)
+                .orElse(null);
+    }
+
+    /** 该知识库的 GROUP 授权映射：groupId → permission */
+    private Map<Long, String> kbGroupGrants(Long kbId) {
+        return accessRepository.findByKbIdAndGranteeType(kbId, "GROUP").stream()
+                .collect(Collectors.toMap(KbAccess::getGranteeId, KbAccess::getPermission, (a, b) -> higher(a, b)));
+    }
+
+    /**
+     * 用户是否属于「属于当前工作空间的」组 groupId 的成员。
+     * 先确证组归当前空间（防跨空间授权被误判），再查成员关系。
+     */
+    private boolean userBelongsToGroupInWorkspace(Long workspaceId, Long groupId, Long userId) {
+        boolean groupInWorkspace = groupRepository.findByIdAndWorkspaceId(groupId, workspaceId).isPresent();
+        return groupInWorkspace
+                && groupMemberRepository.findByGroupIdAndUserId(groupId, userId).isPresent();
+    }
+
+    /** 权限取高：EDIT 优先于 VIEW；两者皆空返回 null */
+    private static String higher(String current, String candidate) {
+        if (candidate == null) {
+            return current;
+        }
+        if ("EDIT".equals(candidate)) {
+            return "EDIT";
+        }
+        return current == null ? "VIEW" : current;
     }
 }

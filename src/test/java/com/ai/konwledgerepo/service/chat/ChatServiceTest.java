@@ -105,7 +105,9 @@ class ChatServiceTest {
                 new SeuCacheProperties(300, 600, 600, 300, 300, 60, 60, 600, 86400);
         // WorkspaceAccess 用真实实例（归属校验走真实逻辑），ACL 仓库与成员仓库 mock 空授权（PUBLIC 库不受影响）
         WorkspaceAccess workspaceAccess = new WorkspaceAccess(kbRepository, mock(DocumentRepository.class),
-                mock(KbAccessRepository.class), mock(WorkspaceMemberRepository.class));
+                mock(KbAccessRepository.class), mock(WorkspaceMemberRepository.class),
+                mock(com.ai.konwledgerepo.repository.GroupMemberRepository.class),
+                mock(com.ai.konwledgerepo.repository.KbGroupRepository.class));
         ChatSessionService sessionService = new ChatSessionService(
                 sessionRepository, messageRepository, kbRepository, kbService, workspaceAccess, redisCacheService, cacheProps);
         ChatHistoryService historyService = new ChatHistoryService(messageRepository, redisCacheService, qaProps, cacheProps);

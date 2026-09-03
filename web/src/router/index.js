@@ -59,6 +59,11 @@ const routes = [
     meta: { auth: true, roles: ['OWNER', 'ADMIN'], title: '成员管理' }
   },
   {
+    path: '/groups',
+    component: () => import('../views/GroupManage.vue'),
+    meta: { auth: true, roles: ['OWNER', 'ADMIN'], title: '组管理' }
+  },
+  {
     path: '/chat',
     component: () => import('../views/Chat.vue'),
     meta: { auth: true, title: '智能问答' }
@@ -85,7 +90,7 @@ router.beforeEach((to) => {
     }
     if (!role || !to.meta.roles.includes(role)) {
       // 无权限访问管理页：普通成员回到知识库（只读），其余回首页
-      return to.path === '/members' || to.path === '/models' || to.path === '/prompts' ? '/' : false
+      return to.path === '/members' || to.path === '/groups' || to.path === '/models' || to.path === '/prompts' ? '/' : false
     }
   }
   return true

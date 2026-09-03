@@ -13,7 +13,13 @@ public interface KbAccessRepository extends JpaRepository<KbAccess, Long> {
     /** 知识库对指定用户的授权记录（granteeType=USER） */
     Optional<KbAccess> findByKbIdAndGranteeTypeAndGranteeId(Long kbId, String granteeType, Long granteeId);
 
+    List<KbAccess> findByKbIdAndGranteeType(Long kbId, String granteeType);
+
+    List<KbAccess> findByGranteeTypeAndGranteeIdIn(String granteeType, java.util.Collection<Long> granteeIds);
+
     List<KbAccess> findByGranteeTypeAndGranteeId(String granteeType, Long granteeId);
 
     void deleteByKbId(Long kbId);
+
+    void deleteByGranteeTypeAndGranteeId(String granteeType, Long granteeId);
 }

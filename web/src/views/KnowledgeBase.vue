@@ -48,19 +48,25 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="accessVisible" :title="`共享设置：${accessKb ? accessKb.name : ''}`" width="560px">
+    <el-dialog v-model="accessVisible" :title="`共享设置：${accessKb ? accessKb.name : ''}`" width="620px">
       <el-form label-width="90px">
         <el-form-item label="可见性">
           <el-radio-group v-model="accessVisibility" :disabled="!auth.canWrite">
             <el-radio value="PUBLIC">公开（空间内成员可见）</el-radio>
-            <el-radio value="RESTRICTED">私有（仅授权用户可见）</el-radio>
+            <el-radio value="RESTRICTED">私有（仅授权用户/组可见）</el-radio>
           </el-radio-group>
         </el-form-item>
       </el-form>
       <div v-if="accessVisibility === 'RESTRICTED'" class="access-section">
-        <div class="access-title">授权用户</div>
+        <div class="access-title">授权用户 / 组</div>
         <el-table :data="accessList" border size="small" max-height="260">
-          <el-table-column prop="username" label="用户名" min-width="120" />
+          <el-table-column label="类型" width="80">
+            <template #default="{ row }">
+              <el-tag v-if="row.granteeType === 'GROUP'" type="warning" size="small">组</el-tag>
+              <el-tag v-else type="info" size="small">用户</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="granteeName" label="名称" min-width="120" />
           <el-table-column label="权限" width="140">
             <template #default="{ row }">
               <el-select v-model="row.permission" size="small" :disabled="!auth.canWrite" @change="changePermission(row)">
@@ -76,8 +82,15 @@
           </el-table-column>
         </el-table>
         <div class="access-add">
-          <el-select v-model="newGranteeId" placeholder="选择空间成员" filterable size="default" style="width: 200px">
+          <el-select v-model="newGranteeType" size="default" style="width: 90px">
+            <el-option label="用户" value="USER" />
+            <el-option label="组" value="GROUP" />
+          </el-select>
+          <el-select v-if="newGranteeType === 'USER'" v-model="newGranteeId" placeholder="选择空间成员" filterable size="default" style="width: 200px; margin-left: 8px">
             <el-option v-for="m in memberOptions" :key="m.userId" :label="m.username" :value="m.userId" />
+          </el-select>
+          <el-select v-else v-model="newGranteeId" placeholder="选择组" filterable size="default" style="width: 200px; margin-left: 8px">
+            <el-option v-for="g in groupOptions" :key="g.id" :label="g.name" :value="g.id" />
           </el-select>
           <el-select v-model="newPermission" size="default" style="width: 110px; margin-left: 8px">
             <el-option label="只读" value="VIEW" />
@@ -97,7 +110,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { kbApi, workspaceApi } from '../api'
+import { kbApi, workspaceApi, groupApi } from '../api'
 import { useAuthStore } from '../stores/auth'
 
 const router = useRouter()
@@ -113,12 +126,18 @@ const accessVisible = ref(false)
 const accessKb = ref(null)
 const accessVisibility = ref('PUBLIC')
 const accessList = ref([])
+const newGranteeType = ref('USER')
 const newGranteeId = ref(null)
 const newPermission = ref('VIEW')
 const members = ref([])
+const groups = ref([])
 
 const memberOptions = computed(() =>
-  members.value.filter((m) => !accessList.value.some((a) => a.userId === m.userId))
+  members.value.filter((m) => !accessList.value.some((a) => a.granteeType === 'USER' && a.granteeId === m.userId))
+)
+
+const groupOptions = computed(() =>
+  groups.value.filter((g) => !accessList.value.some((a) => a.granteeType === 'GROUP' && a.granteeId === g.id))
 )
 
 /** 管理权：空间 OWNER/ADMIN 或知识库创建者 */
@@ -198,12 +217,14 @@ async function openAccess(row) {
   accessKb.value = row
   accessVisibility.value = row.visibility || 'PUBLIC'
   accessList.value = []
+  newGranteeType.value = 'USER'
   newGranteeId.value = null
   newPermission.value = 'VIEW'
   accessVisible.value = true
-  const [acls, ms] = await Promise.all([kbApi.accessList(row.id), workspaceApi.members()])
+  const [acls, ms, gs] = await Promise.all([kbApi.accessList(row.id), workspaceApi.members(), groupApi.list()])
   accessList.value = acls
   members.value = ms
+  groups.value = gs
 }
 
 watch(accessVisibility, async (v, old) => {
@@ -215,7 +236,11 @@ watch(accessVisibility, async (v, old) => {
 })
 
 async function grant() {
-  await kbApi.accessGrant(accessKb.value.id, { granteeId: newGranteeId.value, permission: newPermission.value })
+  await kbApi.accessGrant(accessKb.value.id, {
+    granteeType: newGranteeType.value,
+    granteeId: newGranteeId.value,
+    permission: newPermission.value
+  })
   ElMessage.success('已添加授权')
   newGranteeId.value = null
   newPermission.value = 'VIEW'
@@ -223,12 +248,16 @@ async function grant() {
 }
 
 async function changePermission(row) {
-  await kbApi.accessGrant(accessKb.value.id, { granteeId: row.userId, permission: row.permission })
+  await kbApi.accessGrant(accessKb.value.id, {
+    granteeType: row.granteeType,
+    granteeId: row.granteeId,
+    permission: row.permission
+  })
   ElMessage.success('已更新权限')
 }
 
 async function revoke(row) {
-  await ElMessageBox.confirm(`移除「${row.username}」的访问权限？`, '提示', { type: 'warning' })
+  await ElMessageBox.confirm(`移除「${row.granteeName}」的访问权限？`, '提示', { type: 'warning' })
   await kbApi.accessRevoke(accessKb.value.id, row.id)
   ElMessage.success('已移除')
   accessList.value = await kbApi.accessList(accessKb.value.id)
