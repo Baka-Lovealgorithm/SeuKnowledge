@@ -37,7 +37,7 @@ class ChatSummaryServiceTest {
     void setUp() {
         redis = mock(RedisCacheService.class);
         PromptCatalog catalog = mock(PromptCatalog.class);
-        when(catalog.get("summary-memory")).thenReturn("旧摘要：%s\n\n最近对话：%s");
+        when(catalog.render(eq("summary-memory"), any())).thenReturn("旧摘要：{{oldSummary}}\n\n最近对话：{{historyJson}}");
         ModelFactory modelFactory = mock(ModelFactory.class);
         ChatModel chat = mock(ChatModel.class);
         when(chat.call(anyString())).thenReturn("新摘要内容");

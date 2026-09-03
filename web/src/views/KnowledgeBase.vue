@@ -23,7 +23,6 @@
       <el-table-column label="操作" width="340" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="enterDocs(row)">文档</el-button>
-          <el-button link type="primary" @click="enterAgent(row)">Agent</el-button>
           <el-button v-if="canManage(row)" link type="primary" @click="openAccess(row)">共享</el-button>
           <el-button v-if="auth.canWrite" link type="primary" @click="openEdit(row)">编辑</el-button>
           <el-button v-if="auth.canWrite" link :type="row.status === 'DISABLED' ? 'success' : 'warning'" @click="toggleStatus(row)">
@@ -191,10 +190,6 @@ async function remove(row) {
 
 function enterDocs(row) {
   router.push(`/kb/${row.id}/documents`)
-}
-
-function enterAgent(row) {
-  router.push({ path: `/kb/${row.id}/agent`, query: { kbName: row.name } })
 }
 
 // ===== 共享设置 =====

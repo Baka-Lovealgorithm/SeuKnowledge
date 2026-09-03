@@ -15,6 +15,7 @@ public final class RedisKeys {
     public static String modelDefault(Long workspaceId, String modelType) { return ModelRedisKeys.defaultConfig(workspaceId, modelType); }
     public static String modelConfig(Long id) { return ModelRedisKeys.config(id); }
     public static String agent(Long kbId) { return AgentRedisKeys.agent(kbId); }
+    public static String promptTemplate(String key) { return PromptRedisKeys.template(key); }
     public static String kb(Long id) { return KbRedisKeys.kb(id); }
     public static String kbList(Long workspaceId) { return KbRedisKeys.kbList(workspaceId); }
     public static String kbCount(Long kbId) { return KbRedisKeys.kbCount(kbId); }

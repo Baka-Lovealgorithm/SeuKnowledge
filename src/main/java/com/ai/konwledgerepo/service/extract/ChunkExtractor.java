@@ -28,7 +28,7 @@ public abstract class ChunkExtractor<T> {
 
     /** 抽取单个 chunk，返回入库条数 */
     public int extract(ChatModel chat, Long kbId, Document doc, Chunk chunk) {
-        String prompt = promptCatalog.get(promptKey()).formatted(chunk.getContent());
+        String prompt = promptCatalog.render(promptKey(), Map.of("chunkContent", chunk.getContent()));
         String response = LlmTrace.call(qaTracing, chat, prompt);
         List<Map<String, Object>> items = jsonParser.parseArray(response);
         int count = 0;

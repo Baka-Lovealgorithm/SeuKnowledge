@@ -107,7 +107,7 @@ public class MergeAnswerNode extends QaNodeSupport {
     /** 闲聊回复生成：逐片段用 chat-only 模板（GENERATE/chitchat 模型），失败返回空串 */
     private String generateChitchatReply(ChatModel chat, List<String> fragments) {
         String question = String.join("\n", fragments);
-        String prompt = promptCatalog.get("chat-only").formatted(question);
+        String prompt = promptCatalog.render("chat-only", Map.of("question", question));
         try {
             return LlmTrace.call(qaTracing, chat, prompt);
         } catch (Exception e) {
@@ -119,7 +119,8 @@ public class MergeAnswerNode extends QaNodeSupport {
     /** LLM 合并：merge-answer 模板（chitchat 模型），失败/空返回 null（触发结构化兜底） */
     private String merge(ChatModel chat, String chitchatReply, String businessAnswer) {
         try {
-            String prompt = promptCatalog.get("merge-answer").formatted(chitchatReply, businessAnswer);
+            String prompt = promptCatalog.render("merge-answer", Map.of(
+                    "chitchatReply", chitchatReply, "businessAnswer", businessAnswer));
             String out = LlmTrace.call(qaTracing, chat, prompt);
             return out == null || out.isBlank() ? null : out.trim();
         } catch (Exception e) {

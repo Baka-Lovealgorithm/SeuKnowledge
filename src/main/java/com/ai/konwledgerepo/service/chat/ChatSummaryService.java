@@ -17,6 +17,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
@@ -92,8 +93,8 @@ public class ChatSummaryService {
                 List<HistoryEntry> valid = ChatHistoryService.filterInterrupted(allHistory);
                 String historyJson = mapper.writeValueAsString(valid);
                 String oldSummary = prev.text();
-                String prompt = promptCatalog.get("summary-memory").formatted(
-                        oldSummary.isBlank() ? "（无）" : oldSummary, historyJson);
+                String prompt = promptCatalog.render("summary-memory", Map.of(
+                        "oldSummary", oldSummary.isBlank() ? "（无）" : oldSummary, "historyJson", historyJson));
                 ChatModel model = modelFactory.getMemoryChatModel(workspaceId);
                 String newSummary = model.call(prompt);
                 if (newSummary != null) {

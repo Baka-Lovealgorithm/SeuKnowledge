@@ -49,7 +49,7 @@ public class ChatOnlyNode extends QaNodeSupport {
         String question = state.value(QaContextKey.RAW_QUESTION).map(String::valueOf).orElse("");
         Long workspaceId = QaContext.longValue(state, QaContextKey.WORKSPACE_ID, -1L);
         ChatModel chat = modelFactory.getChatModelByUsage(ModelUsage.GENERATE.value(), workspaceId);
-        String prompt = promptCatalog.get("chat-only").formatted(question);
+        String prompt = promptCatalog.render("chat-only", Map.of("question", question));
         String answer;
         SseEmitter emitter = SseStreamContext.get();
         java.util.concurrent.atomic.AtomicBoolean cancelled = SseStreamContext.cancelFlag();

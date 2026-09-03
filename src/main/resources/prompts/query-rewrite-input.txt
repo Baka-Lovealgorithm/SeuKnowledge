@@ -1,7 +1,7 @@
 会话摘要（更早对话的要点）：
-%s
+{{summaryText}}
 
 最近对话（JSON 数组，role 为 user/assistant）：
-%s
-用户问题：%s
-%s
+{{recentJson}}
+用户问题：{{rawQuestion}}
+{{hint}}

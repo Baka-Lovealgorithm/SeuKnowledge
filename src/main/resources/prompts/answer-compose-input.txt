@@ -1,3 +1,3 @@
 证据（JSON 数组，每条含 index/sourceType/docName/page/title/content；index 即引用编号）：
-%s
-问题：%s
+{{evidenceJson}}
+问题：{{question}}

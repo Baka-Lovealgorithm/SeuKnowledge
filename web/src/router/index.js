@@ -14,11 +14,6 @@ const routes = [
     meta: { auth: true, title: '文档管理' }
   },
   {
-    path: '/kb/:kbId/agent',
-    component: () => import('../views/AgentConfig.vue'),
-    meta: { auth: true, title: 'Agent 配置' }
-  },
-  {
     path: '/bk',
     component: () => import('../views/BusinessKnowledge.vue'),
     meta: { auth: true, title: '业务知识管理' }
@@ -54,6 +49,11 @@ const routes = [
     meta: { auth: true, roles: ['OWNER', 'ADMIN'], title: '模型配置' }
   },
   {
+    path: '/prompts',
+    component: () => import('../views/PromptManage.vue'),
+    meta: { auth: true, roles: ['OWNER', 'ADMIN'], title: '提示词管理' }
+  },
+  {
     path: '/members',
     component: () => import('../views/MemberManage.vue'),
     meta: { auth: true, roles: ['OWNER', 'ADMIN'], title: '成员管理' }
@@ -85,7 +85,7 @@ router.beforeEach((to) => {
     }
     if (!role || !to.meta.roles.includes(role)) {
       // 无权限访问管理页：普通成员回到知识库（只读），其余回首页
-      return to.path === '/members' || to.path === '/models' ? '/' : false
+      return to.path === '/members' || to.path === '/models' || to.path === '/prompts' ? '/' : false
     }
   }
   return true

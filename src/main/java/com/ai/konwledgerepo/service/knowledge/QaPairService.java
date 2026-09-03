@@ -29,6 +29,7 @@ import org.springframework.transaction.support.TransactionOperations;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -202,7 +203,7 @@ public class QaPairService {
     public QaPairResponse normalize(Long id, Long workspaceId) {
         QaPair pair = requireInWorkspace(id, workspaceId);
         ChatModel chat = modelFactory.getChatModelByUsage("EXTRACT", workspaceId);
-        String prompt = promptCatalog.get("normalize-qa").formatted(pair.getQuestion());
+        String prompt = promptCatalog.render("normalize-qa", Map.of("question", pair.getQuestion()));
         String response = LlmTrace.call(qaTracing, chat, prompt);
 
         NormalizeResult result = parseNormalize(response);

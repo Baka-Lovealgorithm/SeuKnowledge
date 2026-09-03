@@ -27,3 +27,9 @@ final class AgentRedisKeys {
     private AgentRedisKeys() {}
     static String agent(Long kbId) { return RedisKeys.PREFIX + "agent:" + kbId; }
 }
+
+/** 提示词模板域 Redis 键常量 */
+final class PromptRedisKeys {
+    private PromptRedisKeys() {}
+    static String template(String key) { return RedisKeys.PREFIX + "prompt:" + key; }
+}

@@ -79,7 +79,9 @@ public class IntentRouteNode extends QaNodeSupport {
         if (recentJson.isBlank() || "[]".equals(recentJson)) {
             recentJson = "（无）";
         }
-        String prompt = promptCatalog.get("intent-route").formatted(kbName, agentPrompt, recentJson, question);
+        String prompt = promptCatalog.render("intent-route", Map.of(
+                "kbName", kbName, "agentPrompt", agentPrompt,
+                "recentJson", recentJson, "question", question));
 
         List<RouteFragment> fragments = null;
         String response = null;
