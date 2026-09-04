@@ -131,7 +131,7 @@ const META = {
   'answer-faithfulness-rules': { name: '事实一致性规则', desc: '阶段二断言级事实校验（SUPPORTED/CONTRADICTED/UNSUPPORTED）', vars: ['agentPrompt'] },
   'answer-faithfulness-input': { name: '事实一致性输入', desc: '阶段二数据区：证据 / 问题 / 回答', vars: ['evidence', 'question', 'answer'] },
   'chat-only': { name: '闲聊回复', desc: '闲聊节点（问候/无关话题/情绪表达）的回复模板', vars: ['question'] },
-  'merge-answer': { name: '答案合并', desc: '混合场景（业务+闲聊）合并为一条最终回答（引用保护）', vars: ['chitchatReply', 'businessAnswer'] },
+  'merge-answer': { name: '答案合并', desc: '混合场景（业务+闲聊）合并为一条最终回答（业务回答原文保留）', vars: ['chitchatReply', 'businessAnswer'] },
   'extract-business': { name: '业务知识抽取', desc: 'AI 抽取：从 chunk 抽取业务知识（术语/规则/关系）', vars: ['chunkContent'] },
   'extract-qa': { name: '问答对抽取', desc: 'AI 抽取：从 chunk 抽取高频问答对', vars: ['chunkContent'] },
   'normalize-qa': { name: '问答归一化', desc: '问答对 AI 归一化 + 同义问法扩展', vars: ['question'] },

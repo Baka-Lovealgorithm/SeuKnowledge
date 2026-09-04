@@ -28,8 +28,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 答案合并节点测试：纯业务透传（不调 LLM）、纯闲聊透传、混合合并（引用保护）、
- * 合并失败/改写 → 结构化兜底（业务答案与引用零损坏）。
+ * 答案合并节点测试：纯业务透传（不调 LLM）、纯闲聊透传、混合合并（输出非空即采纳，保真靠提示词约束）、
+ * 合并调用失败/空输出 → 结构化兜底。
  */
 class MergeAnswerNodeTest {
 
@@ -97,11 +97,13 @@ class MergeAnswerNodeTest {
     }
 
     @Test
-    void mixed_mergeRewritesBusiness_fallsBackStructural() throws Exception {
+    void mixed_mergeRewritesBusiness_stillAccepted() throws Exception {
+        // 无代码级校验：合并输出（即使未逐字保留业务答案）非空即采纳，保真由 merge-answer 提示词约束
         stubLlm("我无法替你选择颜色。", "改写后的答案，没有引用[1]了");
         Map<String, Object> out = node.apply(state(BUSINESS_ANSWER, List.of("你喜欢什么颜色？"), null));
-        assertEquals("我无法替你选择颜色。\n\n" + BUSINESS_ANSWER, out.get(QaContextKey.ANSWER),
-                "合并改写业务答案时应回退结构化拼接，引用零损坏");
+        assertEquals(QaState.TERMINAL.name(), out.get(QaContextKey.NEXT));
+        assertEquals("改写后的答案，没有引用[1]了", out.get(QaContextKey.ANSWER),
+                "合并输出非空即直接采纳，不因未保留业务答案原文而回退");
     }
 
     @Test
