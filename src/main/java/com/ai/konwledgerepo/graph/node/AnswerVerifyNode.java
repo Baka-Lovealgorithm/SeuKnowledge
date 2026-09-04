@@ -96,6 +96,10 @@ public class AnswerVerifyNode extends QaNodeSupport {
             boolean injection = QaContext.booleanValue(state, QaContextKey.INJECTION, false);
             span.setAttribute("injection", injection);
             String question = QaContext.effectiveQuestion(state);
+            // 对照问题（消歧前）：与主问题一致时留空；不同时供阶段一对照原问题、防改写丢子问题
+            String originalCandidate = QaContext.preRewriteQuestion(state);
+            String originalQuestion = originalCandidate.isBlank() || originalCandidate.equals(question)
+                    ? "" : originalCandidate;
             String answer = state.value(QaContextKey.ANSWER).map(String::valueOf).orElse("");
             String prevAnswer = state.value(QaContextKey.PREV_ANSWER).map(String::valueOf).orElse("");
             String prevAnswerText = prevAnswer.isBlank() ? "（无，首次评估）" : prevAnswer;
@@ -145,7 +149,8 @@ public class AnswerVerifyNode extends QaNodeSupport {
                             String phase1Rules = buildVerifyRules(agentPrompt, injection);
                             String phase1Input = promptCatalog.render("answer-verify-input", Map.of(
                                     "prevContext", prevContext, "prevAnswerText", prevAnswerText,
-                                    "evidence", evidence, "question", question, "answer", answer));
+                                    "evidence", evidence, "question", question, "answer", answer,
+                                    "originalQuestion", originalQuestion));
                             List<Message> phase1Messages = List.of(new SystemMessage(phase1Rules), new UserMessage(phase1Input));
                             String phase1Resp = LlmTrace.call(qaTracing, phase1Chat, phase1Messages,
                                     JudgeOptions.of(phase1Chat, phase1Cfg, MAX_VERIFY_TOKENS, jsonMode));
@@ -212,7 +217,8 @@ public class AnswerVerifyNode extends QaNodeSupport {
                 String rules = buildVerifyRules(agentPrompt, injection);
                 String input = promptCatalog.render("answer-verify-input", Map.of(
                         "prevContext", prevContext, "prevAnswerText", prevAnswerText,
-                        "evidence", evidence, "question", question, "answer", answer));
+                        "evidence", evidence, "question", question, "answer", answer,
+                        "originalQuestion", originalQuestion));
                 List<Message> messages = List.of(new SystemMessage(rules), new UserMessage(input));
                 String response = LlmTrace.call(qaTracing, chat, messages, JudgeOptions.of(chat, cfg, MAX_VERIFY_TOKENS, jsonMode));
                 result = parseResult(response);

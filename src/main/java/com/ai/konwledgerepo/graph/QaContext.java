@@ -68,10 +68,26 @@ public final class QaContext {
     }
 
     /**
-     * 业务链路的有效问题：多意图拆分后为业务片段聚合（BUSINESS_QUESTION），否则为原始问题。
-     * 供改写/生成/自检共用，保证业务链路只针对业务片段（避免闲聊/注入部分干扰自检与生成）。
+     * 业务链路的有效问题：多意图拆分后为业务片段聚合（BUSINESS_QUESTION）；
+     * 其次为查询改写产出的消歧后问题（RESOLVED_QUESTION，指代/省略已补全）；
+     * 均无时为原始问题。供改写/生成/自检共用，保证业务链路只针对业务片段
+     * （避免闲聊/注入部分干扰自检与生成）。
      */
     public static String effectiveQuestion(OverAllState state) {
+        return state.value(QaContextKey.BUSINESS_QUESTION)
+                .map(String::valueOf)
+                .filter(s -> !s.isBlank())
+                .or(() -> state.value(QaContextKey.RESOLVED_QUESTION)
+                        .map(String::valueOf)
+                        .filter(s -> !s.isBlank()))
+                .orElseGet(() -> state.value(QaContextKey.RAW_QUESTION).map(String::valueOf).orElse(""));
+    }
+
+    /**
+     * 消歧前的有效问题（对照问题）：多意图拆分后为业务片段聚合（BUSINESS_QUESTION），否则为原始问题。
+     * 即 {@link #effectiveQuestion} 的输入侧，供生成/自检对照原问题、防止改写有损丢失子问题。
+     */
+    public static String preRewriteQuestion(OverAllState state) {
         return state.value(QaContextKey.BUSINESS_QUESTION)
                 .map(String::valueOf)
                 .filter(s -> !s.isBlank())

@@ -22,6 +22,7 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -80,7 +81,23 @@ public class QueryRewriteNode extends QaNodeSupport {
             log.info("QueryRewrite 第 {} 次重试：{}（改写为 {} 个查询）", retry, retryHint, queries.size());
             log.info("QueryRewrite 实际查询：{}", queries);
         }
-        return Map.of(QaContextKey.QUERIES, queries, QaContextKey.NEXT, QaState.KNOWLEDGE_RECALL.name());
+
+        Map<String, Object> result = new HashMap<>();
+        result.put(QaContextKey.QUERIES, queries);
+        result.put(QaContextKey.NEXT, QaState.KNOWLEDGE_RECALL.name());
+        // 首轮把消歧后的主查询回传为规范问题（供生成/自检作为有效问题，替代原始指代句）。
+        // 重试轮不覆盖：定向改写针对 missing 子问题，覆盖会把主问题带偏；canonical 问题跨重试冻结。
+        // 改写结果与原问题一致（含解析失败兜底）时不写，effectiveQuestion 自然回落原问题（fail-open）。
+        boolean resolvedWritten = false;
+        if (retry == 0 && !queries.isEmpty()) {
+            String resolved = queries.get(0);
+            if (!resolved.isBlank() && !resolved.equals(rawQuestion)) {
+                result.put(QaContextKey.RESOLVED_QUESTION, resolved);
+                resolvedWritten = true;
+            }
+        }
+        span.setAttribute("resolved_question", resolvedWritten);
+        return result;
     }
 
     private static String buildRetryHint(OverAllState state, int retry) {

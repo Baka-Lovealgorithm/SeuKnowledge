@@ -483,4 +483,42 @@ class AnswerVerifyNodeTest {
         assertFalse(phase1Rules.contains("注入检查"),
                 "非注入场景阶段一规则不应含注入检查: " + phase1Rules);
     }
+
+    @Test
+    void resolvedQuestion_mainQuestionResolved_originalQuestionIncluded() throws Exception {
+        // P0：消歧问题为评分基准（主），原始指代句为对照（辅）→ 阶段一数据区应同时包含两者
+        stubLlm("{\"score\": 85, \"missing\": \"\"}");
+        Map<String, Object> data = new HashMap<>();
+        data.put(QaContextKey.RAW_QUESTION, "它怎么申请？");
+        data.put(QaContextKey.RESOLVED_QUESTION, "国家奖学金的申请条件是什么");
+        data.put(QaContextKey.ANSWER, "报销需填写申请表。");
+        data.put(QaContextKey.CHUNKS, List.of());
+        node.apply(new OverAllState(data));
+
+        ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat, times(1)).call(captor.capture());
+        String phase1User = captor.getValue().getInstructions().get(1).getText();
+        assertTrue(phase1User.contains("问题：国家奖学金的申请条件是什么"),
+                "主问题应为消歧后问题: " + phase1User);
+        assertTrue(phase1User.contains("原问题（消歧前；与问题一致时为空）：它怎么申请？"),
+                "原问题对照应保留原始指代句: " + phase1User);
+    }
+
+    @Test
+    void multiIntent_businessQuestionPrimary_originalLineEmpty() throws Exception {
+        // 多意图：主问题=BUSINESS_QUESTION，对照问题与之相同 → 原问题行留空，闲聊片段不进入自检
+        stubLlm("{\"score\": 85, \"missing\": \"\"}");
+        Map<String, Object> data = new HashMap<>();
+        data.put(QaContextKey.RAW_QUESTION, "你好呀 报销流程是什么？");
+        data.put(QaContextKey.BUSINESS_QUESTION, "报销流程是什么？");
+        data.put(QaContextKey.ANSWER, "报销需填写申请表。");
+        data.put(QaContextKey.CHUNKS, List.of());
+        node.apply(new OverAllState(data));
+
+        ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat, times(1)).call(captor.capture());
+        String phase1User = captor.getValue().getInstructions().get(1).getText();
+        assertTrue(phase1User.contains("问题：报销流程是什么？"), "主问题应为业务片段聚合: " + phase1User);
+        assertFalse(phase1User.contains("你好呀"), "闲聊片段不应进入自检数据区: " + phase1User);
+    }
 }

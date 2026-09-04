@@ -5,4 +5,5 @@
 证据（JSON 数组，每条含 index/sourceType/docName/page/title/content；index 即引用编号）：
 {{evidence}}
 问题：{{question}}
+原问题（消歧前；与问题一致时为空）：{{originalQuestion}}
 回答：{{answer}}

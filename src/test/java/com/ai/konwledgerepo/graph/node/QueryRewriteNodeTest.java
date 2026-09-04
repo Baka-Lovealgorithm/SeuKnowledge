@@ -93,6 +93,43 @@ class QueryRewriteNodeTest {
         Map<String, Object> out = node.apply(state("如何申请报销？", 0, null));
         assertEquals(List.of("如何申请报销？"), queries(out), "空输出应回退原始问题作为兜底查询");
         assertEquals(QaState.KNOWLEDGE_RECALL.name(), out.get(QaContextKey.NEXT));
+        assertEquals(null, out.get(QaContextKey.RESOLVED_QUESTION),
+                "改写兜底与原问题一致时不应写 RESOLVED_QUESTION（fail-open 回落原问题）");
+    }
+
+    @Test
+    void firstRound_disambiguatedFirstQuery_writtenAsResolvedQuestion() throws Exception {
+        // P0：首轮改写的第一行（消歧后完整问题）回传为规范问题，供生成/自检替代原始指代句
+        stubLlm("国家奖学金的申请条件是什么\n国奖 申请 条件\n国家奖学金评定办法");
+        Map<String, Object> data = new HashMap<>();
+        data.put(QaContextKey.RAW_QUESTION, "它怎么申请？");
+        data.put(QaContextKey.RETRY_COUNT, 0);
+        data.put(QaContextKey.HISTORY, List.of(
+                new HistoryEntry("user", "国家奖学金有哪些？"),
+                new HistoryEntry("assistant", "有国家奖学金、国家励志奖学金等。")));
+
+        Map<String, Object> out = node.apply(new OverAllState(data));
+
+        assertEquals("国家奖学金的申请条件是什么", out.get(QaContextKey.RESOLVED_QUESTION),
+                "首轮消歧后的主查询应写为 RESOLVED_QUESTION");
+        assertEquals(QaState.KNOWLEDGE_RECALL.name(), out.get(QaContextKey.NEXT));
+    }
+
+    @Test
+    void retryRound_doesNotWriteResolvedQuestion() throws Exception {
+        // 重试轮定向改写针对 missing 子问题：不得再写 RESOLVED_QUESTION；
+        // 图状态合并（键缺省即保留）使首轮 canonical 问题跨重试冻结
+        stubLlm("本科生能否申请国家奖学金");
+        Map<String, Object> data = new HashMap<>();
+        data.put(QaContextKey.RAW_QUESTION, "它怎么申请？");
+        data.put(QaContextKey.RETRY_COUNT, 1);
+        data.put(QaContextKey.MISSING_INFO, "本科生申请条件");
+
+        Map<String, Object> out = node.apply(new OverAllState(data));
+
+        assertFalse(queries(out).isEmpty());
+        assertFalse(out.containsKey(QaContextKey.RESOLVED_QUESTION),
+                "重试轮不应写 RESOLVED_QUESTION（首轮消歧问题由图状态保留，不被定向改写覆盖）");
     }
 
     @Test

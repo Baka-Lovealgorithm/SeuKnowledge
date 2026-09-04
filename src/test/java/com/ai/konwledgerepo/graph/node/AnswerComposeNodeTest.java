@@ -161,4 +161,25 @@ class AnswerComposeNodeTest {
         assertTrue(userText.contains("报销制度.pdf"), "证据应包含 docName: " + userText);
         assertTrue(userText.contains("如何申请报销？"), "数据区应包含用户问题: " + userText);
     }
+
+    @Test
+    void resolvedQuestion_primaryAndOriginalIncluded() throws Exception {
+        // P0：消歧问题为生成主问题，原问题（消歧前）对照保留，确保子问题不遗漏
+        stubLlm("根据[1]所述，报销需填写申请表。");
+        ChunkEvidence evidence = ev(11L, "报销制度.pdf", "报销流程");
+
+        Map<String, Object> data = new HashMap<>();
+        data.put(QaContextKey.RAW_QUESTION, "它怎么申请？");
+        data.put(QaContextKey.RESOLVED_QUESTION, "国家奖学金的申请条件是什么");
+        data.put(QaContextKey.CHUNKS, List.of(evidence));
+        node.apply(new OverAllState(data));
+
+        ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat).call(captor.capture());
+        String userText = captor.getValue().getInstructions().get(1).getText();
+        assertTrue(userText.contains("问题：国家奖学金的申请条件是什么"),
+                "生成主问题应为消歧后问题: " + userText);
+        assertTrue(userText.contains("原问题（消歧前，供确保子问题不遗漏；与问题一致时为空）：它怎么申请？"),
+                "原问题对照应保留原始指代句: " + userText);
+    }
 }
