@@ -133,6 +133,26 @@ class QueryRewriteNodeTest {
     }
 
     @Test
+    void retryRound_usesResolvedQuestionAsBase() throws Exception {
+        // 优先级调换后：重试轮改写基准为首轮冻结的消歧问题（RESOLVED），而非业务聚合——
+        // 内容等价（RESOLVED 即 BUSINESS 的消歧形态），但定向改写从规范问题出发
+        stubLlm("国家奖学金的评定标准有哪些");
+        Map<String, Object> data = new HashMap<>();
+        data.put(QaContextKey.RAW_QUESTION, "它怎么申请？");
+        data.put(QaContextKey.RESOLVED_QUESTION, "国家奖学金的申请条件是什么");
+        data.put(QaContextKey.RETRY_COUNT, 1);
+        data.put(QaContextKey.MISSING_INFO, "评定标准");
+
+        Map<String, Object> out = node.apply(new OverAllState(data));
+
+        String prompt = capturedPrompt();
+        assertTrue(prompt.contains("国家奖学金的申请条件是什么"),
+                "重试轮改写基准应为冻结的消歧问题: " + prompt);
+        assertFalse(out.containsKey(QaContextKey.RESOLVED_QUESTION),
+                "重试轮不应覆盖 RESOLVED_QUESTION（canonical 跨重试冻结）");
+    }
+
+    @Test
     void retryWithMissingInfo_promptContainsMissingAndCoveredTitles() throws Exception {
         stubLlm("报销申请材料清单");
         Map<String, Object> data = new HashMap<>();

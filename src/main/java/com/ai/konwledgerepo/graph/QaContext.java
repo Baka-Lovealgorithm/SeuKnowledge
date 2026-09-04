@@ -68,16 +68,20 @@ public final class QaContext {
     }
 
     /**
-     * 业务链路的有效问题：多意图拆分后为业务片段聚合（BUSINESS_QUESTION）；
-     * 其次为查询改写产出的消歧后问题（RESOLVED_QUESTION，指代/省略已补全）；
-     * 均无时为原始问题。供改写/生成/自检共用，保证业务链路只针对业务片段
+     * 业务链路的有效问题：优先取查询改写产出的消歧后问题（RESOLVED_QUESTION，指代/省略已补全，
+     * 是 BUSINESS_QUESTION 消歧后的规范化表达，内容覆盖相同而语义更完整，理应优先）；
+     * 其次为多意图拆分后的业务片段聚合（BUSINESS_QUESTION，改写未触发/兜底时的锚点）；
+     * 均无时为原始问题。供改写/召回精排/生成/自检共用，保证业务链路只针对业务片段
      * （避免闲聊/注入部分干扰自检与生成）。
+     * <p>
+     * 防改写走样（丢子问题）不靠本优先级压制，而由 {@link #preRewriteQuestion} 对照机制兜底：
+     * 主问题取消歧后产物、对照取消歧前聚合，两者不同时生成/自检会提示模型覆盖原问题中的子问题。
      */
     public static String effectiveQuestion(OverAllState state) {
-        return state.value(QaContextKey.BUSINESS_QUESTION)
+        return state.value(QaContextKey.RESOLVED_QUESTION)
                 .map(String::valueOf)
                 .filter(s -> !s.isBlank())
-                .or(() -> state.value(QaContextKey.RESOLVED_QUESTION)
+                .or(() -> state.value(QaContextKey.BUSINESS_QUESTION)
                         .map(String::valueOf)
                         .filter(s -> !s.isBlank()))
                 .orElseGet(() -> state.value(QaContextKey.RAW_QUESTION).map(String::valueOf).orElse(""));

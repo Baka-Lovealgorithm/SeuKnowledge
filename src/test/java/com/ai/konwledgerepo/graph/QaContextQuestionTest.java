@@ -9,9 +9,10 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
- * 有效问题优先级单元测试（P0 消歧回传）：
- * effectiveQuestion = BUSINESS_QUESTION > RESOLVED_QUESTION > RAW_QUESTION；
- * preRewriteQuestion = BUSINESS_QUESTION > RAW_QUESTION（消歧前对照问题）。
+ * 有效问题优先级单元测试：
+ * effectiveQuestion = RESOLVED_QUESTION > BUSINESS_QUESTION > RAW_QUESTION
+ * （RESOLVED 是 BUSINESS 消歧后的规范化表达，内容覆盖相同而语义更完整，理应优先）；
+ * preRewriteQuestion = BUSINESS_QUESTION > RAW_QUESTION（消歧前对照问题，永不取 RESOLVED）。
  */
 class QaContextQuestionTest {
 
@@ -20,22 +21,32 @@ class QaContextQuestionTest {
     }
 
     @Test
-    void effectiveQuestion_businessHighestPriority() {
+    void effectiveQuestion_resolvedHighestPriority() {
         OverAllState s = state(Map.of(
                 QaContextKey.RAW_QUESTION, "你好呀 它怎么申请？",
                 QaContextKey.RESOLVED_QUESTION, "国家奖学金的申请条件是什么",
-                QaContextKey.BUSINESS_QUESTION, "报销流程是什么？"));
-        assertEquals("报销流程是什么？", QaContext.effectiveQuestion(s),
-                "多意图业务片段聚合应为最高优先级（闲聊/注入隔离不变）");
+                QaContextKey.BUSINESS_QUESTION, "它怎么申请？"));
+        assertEquals("国家奖学金的申请条件是什么", QaContext.effectiveQuestion(s),
+                "消歧后问题应为最高优先级（BUSINESS 是其消歧前形态，降为对照）");
     }
 
     @Test
-    void effectiveQuestion_resolvedSecondPriority() {
+    void effectiveQuestion_resolvedBlankFallsToBusiness() {
+        OverAllState s = state(Map.of(
+                QaContextKey.RAW_QUESTION, "你好呀 它怎么申请？",
+                QaContextKey.RESOLVED_QUESTION, "  ",
+                QaContextKey.BUSINESS_QUESTION, "它怎么申请？"));
+        assertEquals("它怎么申请？", QaContext.effectiveQuestion(s),
+                "RESOLVED_QUESTION 为空白时应回落业务片段聚合（fail-open）");
+    }
+
+    @Test
+    void effectiveQuestion_businessOnly() {
         OverAllState s = state(Map.of(
                 QaContextKey.RAW_QUESTION, "它怎么申请？",
-                QaContextKey.RESOLVED_QUESTION, "国家奖学金的申请条件是什么"));
-        assertEquals("国家奖学金的申请条件是什么", QaContext.effectiveQuestion(s),
-                "无多意图拆分时，消歧后问题应优先于原始指代句");
+                QaContextKey.BUSINESS_QUESTION, "它怎么申请？"));
+        assertEquals("它怎么申请？", QaContext.effectiveQuestion(s),
+                "无消歧产物（改写未触发/兜底）时取业务片段聚合锚点");
     }
 
     @Test

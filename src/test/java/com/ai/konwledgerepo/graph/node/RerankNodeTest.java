@@ -11,6 +11,7 @@ import com.ai.konwledgerepo.tracing.QaTracing;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -138,6 +139,27 @@ class RerankNodeTest {
         assertTrue(QaContext.chunks(out.get(QaContextKey.CHUNKS)).isEmpty());
         assertEquals(QaState.ANSWER_COMPOSE.name(), out.get(QaContextKey.NEXT));
         verify(modelFactory, never()).getReranker(anyLong());
+    }
+
+    @Test
+    void rerankQuery_usesEffectiveQuestion() throws Exception {
+        // 精排 query 与召回/生成同源：优先消歧后有效问题，而非原始指代句（指代句打分语义失真）
+        when(modelFactory.getReranker(WS)).thenReturn(Optional.of(reranker));
+        when(reranker.isConfigured()).thenReturn(true);
+        when(reranker.maxDocs()).thenReturn(20);
+        when(reranker.rerank(anyString(), anyList())).thenReturn(List.of(0.5, 0.5));
+
+        Map<String, Object> data = new HashMap<>();
+        data.put(QaContextKey.RAW_QUESTION, "它怎么申请？");
+        data.put(QaContextKey.RESOLVED_QUESTION, "国家奖学金的申请条件是什么");
+        data.put(QaContextKey.WORKSPACE_ID, WS);
+        data.put(QaContextKey.CHUNKS, fiveChunks());
+        node().apply(new OverAllState(data));
+
+        ArgumentCaptor<String> queryCaptor = ArgumentCaptor.forClass(String.class);
+        verify(reranker).rerank(queryCaptor.capture(), anyList());
+        assertEquals("国家奖学金的申请条件是什么", queryCaptor.getValue(),
+                "重排 query 应为消歧后有效问题（effectiveQuestion），而非 RAW_QUESTION");
     }
 
     @Test

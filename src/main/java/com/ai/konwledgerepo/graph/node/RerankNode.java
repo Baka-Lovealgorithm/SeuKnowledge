@@ -29,6 +29,8 @@ import java.util.Optional;
  * 未配置 / 编码器异常 / 超时时自动降级：按 ES 分同配额截断，保证问答链路可用。
  * 条数与来源配额来自全局配置 seuknowledge.rerank.*（Agent 不再提供 topN 与来源权重，
  * 权重机制已废弃并随 agent 表字段一并移除）。
+ * 重排 query 与召回/生成同源（{@link QaContext#effectiveQuestion}，消歧后有效问题）：
+ * 召回候选用消歧查询取得，精排若用原始指代句打分会语义失真，可能挤掉正确证据。
  */
 @Component
 public class RerankNode extends QaNodeSupport {
@@ -64,7 +66,7 @@ public class RerankNode extends QaNodeSupport {
                     QaContextKey.CHUNKS, List.of(),
                     QaContextKey.NEXT, QaState.ANSWER_COMPOSE.name());
         }
-        String question = state.value(QaContextKey.RAW_QUESTION).map(String::valueOf).orElse("");
+        String question = QaContext.effectiveQuestion(state);
         List<ChunkEvidence> chunkGroup = chunks.stream()
                 .filter(c -> SourceType.CHUNK.is(c.sourceType()))
                 .toList();

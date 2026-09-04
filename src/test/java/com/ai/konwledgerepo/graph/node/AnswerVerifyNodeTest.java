@@ -521,4 +521,26 @@ class AnswerVerifyNodeTest {
         assertTrue(phase1User.contains("问题：报销流程是什么？"), "主问题应为业务片段聚合: " + phase1User);
         assertFalse(phase1User.contains("你好呀"), "闲聊片段不应进入自检数据区: " + phase1User);
     }
+
+    @Test
+    void multiIntent_resolvedPrimary_businessAsOriginal() throws Exception {
+        // 优先级调换后：主问题=消歧后问题，对照=消歧前业务聚合 → 原问题行恢复非空（防丢子问题）
+        stubLlm("{\"score\": 85, \"missing\": \"\"}");
+        Map<String, Object> data = new HashMap<>();
+        data.put(QaContextKey.RAW_QUESTION, "你好呀 它怎么申请？");
+        data.put(QaContextKey.BUSINESS_QUESTION, "它怎么申请？");
+        data.put(QaContextKey.RESOLVED_QUESTION, "国家奖学金的申请条件是什么");
+        data.put(QaContextKey.ANSWER, "国家奖学金需在规定期限内提交申请材料。");
+        data.put(QaContextKey.CHUNKS, List.of());
+        node.apply(new OverAllState(data));
+
+        ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat, times(1)).call(captor.capture());
+        String phase1User = captor.getValue().getInstructions().get(1).getText();
+        assertTrue(phase1User.contains("问题：国家奖学金的申请条件是什么"),
+                "自检主问题应为消歧后问题: " + phase1User);
+        assertTrue(phase1User.contains("它怎么申请？"),
+                "对照应保留消歧前业务聚合（触发覆盖子问题提醒）: " + phase1User);
+        assertFalse(phase1User.contains("你好呀"), "闲聊片段不应进入自检数据区: " + phase1User);
+    }
 }
