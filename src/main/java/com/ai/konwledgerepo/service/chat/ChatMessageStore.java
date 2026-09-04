@@ -38,8 +38,10 @@ public class ChatMessageStore {
 
     /**
      * 问答后统一落库：用户/助手消息 + 会话状态（消息数/最后时间），并失效会话列表缓存。
+     * 返回落库后的会话消息总数（单调递增，作为摘要触发增量的基准）。
      * <p>
-     * 标题生成已迁移至 {@link SessionTitleService}（异步补写），本方法不再处理标题。
+     * 标题/摘要的异步补写已剥离：标题生成在 {@link SessionTitleService}（本类仅承载补写事务），
+     * 摘要生成在 {@link ChatSummaryService}（同上）。
      * <p>
      * 并发安全：事务内先对会话行加悲观锁（SELECT ... FOR UPDATE，见
      * {@link ChatSessionRepository#findByIdForUpdate}），使同一会话的落库严格串行——
@@ -47,8 +49,8 @@ public class ChatMessageStore {
      * 跨会话行互不阻塞，保持并行。锁持有时间仅为落库事务时长（毫秒级）。
      */
     @Transactional
-    public void persistAnswer(ChatSession session, Long userId, String question, String answer, String refs,
-                              Long workspaceId) {
+    public int persistAnswer(ChatSession session, Long userId, String question, String answer, String refs,
+                             Long workspaceId) {
         // 悲观锁 + 当前读：以锁查询的最新实体为准，防止并发读-改-写丢失更新
         ChatSession locked = sessionRepository.findByIdForUpdate(session.getId())
                 .orElseThrow(() -> new BizException("会话不存在或已删除"));
@@ -58,6 +60,7 @@ public class ChatMessageStore {
         locked.setLastMessageAt(java.time.LocalDateTime.now());
         sessionRepository.save(locked);
         sessionService.evictSessionList(userId, workspaceId);
+        return locked.getMessageCount();
     }
 
     /** 保存单条消息：落库 + 追加会话记忆缓存 + 失效消息列表缓存 */
@@ -87,11 +90,11 @@ public class ChatMessageStore {
 
     /**
      * 停止生成后持久化部分答案：USER 消息 + ASSISTANT 消息（interrupted=true）。
-     * 与 {@link #persistAnswer} 一致的悲观锁事务。
+     * 与 {@link #persistAnswer} 一致的悲观锁事务，返回落库后的会话消息总数。
      */
     @Transactional
-    public void persistInterruptedAnswer(ChatSession session, Long userId, String question, String partialAnswer,
-                                         Long workspaceId) {
+    public int persistInterruptedAnswer(ChatSession session, Long userId, String question, String partialAnswer,
+                                        Long workspaceId) {
         ChatSession locked = sessionRepository.findByIdForUpdate(session.getId())
                 .orElseThrow(() -> new BizException("会话不存在或已删除"));
         saveMessage(locked.getId(), MessageRole.USER.value(), question, null, false);
@@ -100,5 +103,27 @@ public class ChatMessageStore {
         locked.setLastMessageAt(java.time.LocalDateTime.now());
         sessionRepository.save(locked);
         sessionService.evictSessionList(userId, workspaceId);
+        return locked.getMessageCount();
+    }
+
+    /**
+     * 标题补写（独立短事务）：条件更新 title/titleAuto，原子防覆盖手动 rename。
+     * 供 {@link SessionTitleService} 异步线程跨 bean 调用——事务经代理生效，
+     * 避免 @Transactional 自调用失效（异步线程无事务导致 update 报错）。
+     * 返回受影响行数（0=已被手动重命名，跳过）。
+     */
+    @Transactional
+    public int applyTitleIfAuto(Long sessionId, String title) {
+        return sessionRepository.updateTitleIfAuto(sessionId, title);
+    }
+
+    /**
+     * 滚动摘要落库（独立短事务）：定向更新摘要文本 + message_count 快照，仅触碰摘要两列。
+     * 供 {@link ChatSummaryService} 异步线程跨 bean 调用（事务经代理生效）。
+     * 返回受影响行数（0=会话已删除，调用方应放弃写缓存）。
+     */
+    @Transactional
+    public int persistSummary(Long sessionId, String summary, int summaryMsgCount) {
+        return sessionRepository.updateSummary(sessionId, summary, summaryMsgCount);
     }
 }

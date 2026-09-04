@@ -33,6 +33,14 @@ public class ChatSession extends BaseEntity {
     @Column(name = "message_count")
     private Integer messageCount = 0;
 
+    /** 滚动会话摘要（异步压缩生成）：DB 为事实源，Redis summary:v2:{sessionId} 为读缓存，随会话存亡 */
+    @Column(name = "memory_summary", columnDefinition = "TEXT")
+    private String memorySummary;
+
+    /** 摘要生成时的 message_count 快照（触发增量的单调基准）；null 视为 0（兼容存量行） */
+    @Column(name = "summary_msg_count")
+    private Integer summaryMsgCount;
+
     public Long getKbId() {
         return kbId;
     }
@@ -79,5 +87,21 @@ public class ChatSession extends BaseEntity {
 
     public void setMessageCount(Integer messageCount) {
         this.messageCount = messageCount;
+    }
+
+    public String getMemorySummary() {
+        return memorySummary;
+    }
+
+    public void setMemorySummary(String memorySummary) {
+        this.memorySummary = memorySummary;
+    }
+
+    public Integer getSummaryMsgCount() {
+        return summaryMsgCount;
+    }
+
+    public void setSummaryMsgCount(Integer summaryMsgCount) {
+        this.summaryMsgCount = summaryMsgCount;
     }
 }

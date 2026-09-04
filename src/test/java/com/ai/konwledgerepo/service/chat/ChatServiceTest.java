@@ -296,6 +296,7 @@ class ChatServiceTest {
         verify(sessionRepository).delete(session);
         verify(redisCacheService).delete(RedisKeys.messages(SESSION_ID));
         verify(redisCacheService).delete(RedisKeys.history(SESSION_ID));
+        verify(redisCacheService).delete(RedisKeys.summary(SESSION_ID));
         verify(redisCacheService).delete(RedisKeys.sessionList(USER_ID, WS_ID));
     }
 

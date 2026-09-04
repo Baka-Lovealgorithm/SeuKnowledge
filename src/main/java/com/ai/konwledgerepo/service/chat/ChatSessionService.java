@@ -175,6 +175,7 @@ public class ChatSessionService {
         sessionRepository.delete(session);
         redisCacheService.delete(RedisKeys.messages(sessionId));
         redisCacheService.delete(RedisKeys.history(sessionId));
+        redisCacheService.delete(RedisKeys.summary(sessionId));
         evictSessionList(userId, workspaceId);
     }
 

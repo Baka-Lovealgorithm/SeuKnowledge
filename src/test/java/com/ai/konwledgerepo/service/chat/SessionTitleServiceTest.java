@@ -3,22 +3,12 @@ package com.ai.konwledgerepo.service.chat;
 import com.ai.konwledgerepo.common.RedisCacheService;
 import com.ai.konwledgerepo.common.RedisKeys;
 import com.ai.konwledgerepo.entity.ChatSession;
-import com.ai.konwledgerepo.repository.ChatSessionRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.time.Duration;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
@@ -26,23 +16,23 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 会话标题异步生成服务测试：判定 → SETNX 防重 → 异步生成 → 条件补写。
+ * 会话标题异步生成服务测试：判定 → SETNX 防重 → 异步生成 → 条件补写（补写事务经 ChatMessageStore 跨 bean 生效）。
  */
 class SessionTitleServiceTest {
 
-    private ChatSessionRepository sessionRepository;
     private ChatSessionService sessionService;
+    private ChatMessageStore messageStore;
     private SessionTitleGenerator titleGenerator;
     private RedisCacheService redisCacheService;
     private SessionTitleService titleService;
 
     @BeforeEach
     void setUp() {
-        sessionRepository = mock(ChatSessionRepository.class);
         sessionService = mock(ChatSessionService.class);
+        messageStore = mock(ChatMessageStore.class);
         titleGenerator = mock(SessionTitleGenerator.class);
         redisCacheService = mock(RedisCacheService.class);
-        titleService = new SessionTitleService(sessionRepository, sessionService, titleGenerator,
+        titleService = new SessionTitleService(sessionService, messageStore, titleGenerator,
                 redisCacheService, Runnable::run); // 同步执行，便于测试验证
     }
 
@@ -88,30 +78,30 @@ class SessionTitleServiceTest {
         when(sessionService.needAutoTitle(s)).thenReturn(true);
         when(redisCacheService.setIfAbsent(anyString(), anyString(), any())).thenReturn(true);
         when(titleGenerator.generate("问题", 1L)).thenReturn("生成标题");
-        when(sessionRepository.updateTitleIfAuto(1L, "生成标题")).thenReturn(1);
+        when(messageStore.applyTitleIfAuto(1L, "生成标题")).thenReturn(1);
 
         titleService.submitAutoTitle(s, "问题", 1L);
 
         // 异步执行完成（Runnable::run 同步执行，等待 verify）
         verify(titleGenerator, timeout(1000)).generate("问题", 1L);
-        verify(sessionRepository).updateTitleIfAuto(1L, "生成标题");
+        verify(messageStore).applyTitleIfAuto(1L, "生成标题");
+        verify(sessionService).evictSessionList(999L, 1L);
         verify(redisCacheService).delete(RedisKeys.titleGen(1L));
     }
 
     @Test
-    void applyAutoTitle_manualRename_skips() {
+    void manualRename_skipsEvict() {
         ChatSession s = session(1, true);
-        when(sessionRepository.updateTitleIfAuto(1L, "标题")).thenReturn(0);
-        titleService.applyAutoTitle(1L, "标题", s.getUserId(), 1L);
-        verify(sessionRepository).updateTitleIfAuto(1L, "标题");
-        // 更新 0 行 → 不失效缓存
-    }
+        when(sessionService.needAutoTitle(s)).thenReturn(true);
+        when(redisCacheService.setIfAbsent(anyString(), anyString(), any())).thenReturn(true);
+        when(titleGenerator.generate("问题", 1L)).thenReturn("标题");
+        when(messageStore.applyTitleIfAuto(1L, "标题")).thenReturn(0);
 
-    @Test
-    void applyAutoTitle_updated_evictsCache() {
-        ChatSession s = session(1, true);
-        when(sessionRepository.updateTitleIfAuto(1L, "标题")).thenReturn(1);
-        titleService.applyAutoTitle(1L, "标题", s.getUserId(), 1L);
-        verify(sessionService).evictSessionList(s.getUserId(), 1L);
+        titleService.submitAutoTitle(s, "问题", 1L);
+
+        verify(messageStore).applyTitleIfAuto(1L, "标题");
+        // 更新 0 行（已手动重命名）→ 不失效缓存
+        verify(sessionService, never()).evictSessionList(s.getUserId(), 1L);
+        verify(redisCacheService).delete(RedisKeys.titleGen(1L));
     }
 }

@@ -51,8 +51,8 @@ public class ChatStreamService {
         } catch (GenerationCancelledException e) {
             try {
                 ChatSession session = sessionService.getSession(sessionId, userId, workspaceId);
-                messageStore.persistInterruptedAnswer(session, userId, question, e.getPartial(), workspaceId);
-                summaryService.maybeUpdate(sessionId, workspaceId);
+                int messageCount = messageStore.persistInterruptedAnswer(session, userId, question, e.getPartial(), workspaceId);
+                summaryService.maybeUpdate(sessionId, workspaceId, messageCount);
             } catch (Exception ex) {
                 // 落库失败不影响停止语义
             }

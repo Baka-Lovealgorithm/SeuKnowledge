@@ -39,4 +39,12 @@ public interface ChatSessionRepository extends JpaRepository<ChatSession, Long> 
     @Modifying
     @Query("update ChatSession s set s.title = :title, s.titleAuto = true where s.id = :id and s.titleAuto = true")
     int updateTitleIfAuto(@Param("id") Long id, @Param("title") String title);
+
+    /**
+     * 定向更新滚动摘要（摘要文本 + 生成时的 message_count 快照）：仅触碰摘要两列，
+     * 不影响标题/消息数等其它列。返回受影响行数（0=会话已删除）。
+     */
+    @Modifying
+    @Query("update ChatSession s set s.memorySummary = :summary, s.summaryMsgCount = :count where s.id = :id")
+    int updateSummary(@Param("id") Long id, @Param("summary") String summary, @Param("count") int count);
 }

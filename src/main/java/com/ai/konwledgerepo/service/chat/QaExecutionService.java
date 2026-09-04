@@ -125,8 +125,8 @@ public class QaExecutionService {
                 sendSse(emitter, "refs", refs);
             }
 
-            messageStore.persistAnswer(session, userId, question, answer, refs, workspaceId);
-            summaryService.maybeUpdate(sessionId, workspaceId);
+            int messageCount = messageStore.persistAnswer(session, userId, question, answer, refs, workspaceId);
+            summaryService.maybeUpdate(sessionId, workspaceId, messageCount);
 
             return new QaAskResult(answer, refs, intent);
         } finally {
