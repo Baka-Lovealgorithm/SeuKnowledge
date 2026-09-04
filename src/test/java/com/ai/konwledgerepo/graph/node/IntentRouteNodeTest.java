@@ -189,6 +189,40 @@ class IntentRouteNodeTest {
         assertTrue(promptText.contains("（无）"), "无历史时最近对话应为占位（无）");
     }
 
+    @Test
+    void memorySummary_promptContainsSummary() throws Exception {
+        // P0：路由接入会话摘要，指代超出最近窗口时可借助摘要消歧
+        stubLlm("BUSINESS");
+        Map<String, Object> stateMap = new HashMap<>(Map.of(
+                QaContextKey.RAW_QUESTION, "那申请条件呢？",
+                QaContextKey.MEMORY_SUMMARY, "用户此前咨询过国家奖学金的评定流程。"));
+        node.apply(new OverAllState(stateMap));
+        ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat, times(1)).call(captor.capture());
+        String promptText = captor.getValue().getInstructions().get(0).getText();
+        assertTrue(promptText.contains("国家奖学金的评定流程"), "路由 prompt 应包含会话摘要内容");
+    }
+
+    @Test
+    void routerWindow_threeRounds_fromFourRoundHistory() throws Exception {
+        // P0：路由最近对话窗口 2 → 3 轮；第 4 轮历史只保留最近 3 轮
+        stubLlm("BUSINESS");
+        List<HistoryEntry> history = List.of(
+                new HistoryEntry("user", "第一轮问题A"), new HistoryEntry("assistant", "第一轮答案A"),
+                new HistoryEntry("user", "第二轮问题B"), new HistoryEntry("assistant", "第二轮答案B"),
+                new HistoryEntry("user", "第三轮问题C"), new HistoryEntry("assistant", "第三轮答案C"),
+                new HistoryEntry("user", "第四轮问题D"), new HistoryEntry("assistant", "第四轮答案D"));
+        Map<String, Object> stateMap = new HashMap<>(Map.of(
+                QaContextKey.RAW_QUESTION, "继续", QaContextKey.HISTORY, history));
+        node.apply(new OverAllState(stateMap));
+        ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat, times(1)).call(captor.capture());
+        String promptText = captor.getValue().getInstructions().get(0).getText();
+        assertTrue(promptText.contains("第四轮问题D"), "窗口应包含最近一轮");
+        assertTrue(promptText.contains("第二轮问题B"), "窗口扩到 3 轮应包含倒数第三轮");
+        assertTrue(!promptText.contains("第一轮问题A"), "更早轮次不应进入路由窗口");
+    }
+
     // ===== parseIntent 单元测试 =====
 
     @Test

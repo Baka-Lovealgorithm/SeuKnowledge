@@ -7,6 +7,7 @@ import com.ai.konwledgerepo.graph.QaContextKey;
 import com.ai.konwledgerepo.graph.QaState;
 import com.ai.konwledgerepo.model.ModelFactory;
 import com.ai.konwledgerepo.common.SseStreamContext;
+import com.ai.konwledgerepo.service.chat.HistoryEntry;
 import com.ai.konwledgerepo.tracing.LlmTrace;
 import com.ai.konwledgerepo.tracing.QaTracing;
 import com.alibaba.cloud.ai.graph.OverAllState;
@@ -15,6 +16,7 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -49,7 +51,16 @@ public class ChatOnlyNode extends QaNodeSupport {
         String question = state.value(QaContextKey.RAW_QUESTION).map(String::valueOf).orElse("");
         Long workspaceId = QaContext.longValue(state, QaContextKey.WORKSPACE_ID, -1L);
         ChatModel chat = modelFactory.getChatModelByUsage(ModelUsage.GENERATE.value(), workspaceId);
-        String prompt = promptCatalog.render("chat-only", Map.of("question", question));
+        // 闲聊上下文：最近对话 + 会话摘要（解决连续闲聊失忆；blank 归一化同路由/改写节点）
+        List<HistoryEntry> history = QaContext.history(state);
+        String recentJson = QaContext.renderRecentJson(history, 3);
+        if (recentJson.isBlank() || "[]".equals(recentJson)) {
+            recentJson = "（无）";
+        }
+        String memorySummary = state.value(QaContextKey.MEMORY_SUMMARY).map(String::valueOf).orElse("");
+        String summaryText = memorySummary.isBlank() ? "（无）" : memorySummary;
+        String prompt = promptCatalog.render("chat-only", Map.of(
+                "question", question, "recentJson", recentJson, "summaryText", summaryText));
         String answer;
         SseEmitter emitter = SseStreamContext.get();
         java.util.concurrent.atomic.AtomicBoolean cancelled = SseStreamContext.cancelFlag();

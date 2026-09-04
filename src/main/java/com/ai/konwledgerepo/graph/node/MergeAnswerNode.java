@@ -7,6 +7,7 @@ import com.ai.konwledgerepo.graph.QaContext;
 import com.ai.konwledgerepo.graph.QaContextKey;
 import com.ai.konwledgerepo.graph.QaState;
 import com.ai.konwledgerepo.model.ModelFactory;
+import com.ai.konwledgerepo.service.chat.HistoryEntry;
 import com.ai.konwledgerepo.tracing.LlmTrace;
 import com.ai.konwledgerepo.tracing.QaTracing;
 import com.alibaba.cloud.ai.graph.OverAllState;
@@ -85,7 +86,7 @@ public class MergeAnswerNode extends QaNodeSupport {
         Long workspaceId = QaContext.longValue(state, QaContextKey.WORKSPACE_ID, -1L);
         ChatModel chat = modelFactory.getChatModelByUsage(ModelUsage.GENERATE.value(), workspaceId);
 
-        String chitchatReply = generateChitchatReply(chat, chitchatFragments);
+        String chitchatReply = generateChitchatReply(state, chat, chitchatFragments);
         String merged = merge(chat, chitchatReply, businessAnswer);
         String finalAnswer;
         if (merged != null && mergeVerified(businessAnswer, merged)) {
@@ -104,10 +105,18 @@ public class MergeAnswerNode extends QaNodeSupport {
         return Map.of(QaContextKey.ANSWER, finalAnswer, QaContextKey.NEXT, QaState.TERMINAL.name());
     }
 
-    /** 闲聊回复生成：逐片段用 chat-only 模板（GENERATE/chitchat 模型），失败返回空串 */
-    private String generateChitchatReply(ChatModel chat, List<String> fragments) {
+    /** 闲聊回复生成：逐片段用 chat-only 模板（GENERATE/chitchat 模型），带最近对话与摘要上下文，失败返回空串 */
+    private String generateChitchatReply(OverAllState state, ChatModel chat, List<String> fragments) {
         String question = String.join("\n", fragments);
-        String prompt = promptCatalog.render("chat-only", Map.of("question", question));
+        List<HistoryEntry> history = QaContext.history(state);
+        String recentJson = QaContext.renderRecentJson(history, 3);
+        if (recentJson.isBlank() || "[]".equals(recentJson)) {
+            recentJson = "（无）";
+        }
+        String memorySummary = state.value(QaContextKey.MEMORY_SUMMARY).map(String::valueOf).orElse("");
+        String summaryText = memorySummary.isBlank() ? "（无）" : memorySummary;
+        String prompt = promptCatalog.render("chat-only", Map.of(
+                "question", question, "recentJson", recentJson, "summaryText", summaryText));
         try {
             return LlmTrace.call(qaTracing, chat, prompt);
         } catch (Exception e) {

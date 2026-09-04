@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -85,5 +86,37 @@ class ChatOnlyNodeTest {
         assertEquals(Defaults.PROMPT_INJECTION_REFUSAL, out.get(QaContextKey.CHAT_ONLY_ANSWER));
         assertEquals("MERGE_ANSWER", out.get(QaContextKey.NEXT));
         verify(chat, never()).call(any(Prompt.class));
+    }
+
+    @Test
+    void chitchatWithHistoryAndSummary_promptContainsContext() throws Exception {
+        // P1：闲聊回复接入最近对话 + 会话摘要，解决连续闲聊失忆
+        stubLlm("接着聊～");
+        Map<String, Object> data = new HashMap<>();
+        data.put(QaContextKey.RAW_QUESTION, "那你觉得呢？");
+        data.put(QaContextKey.HISTORY, List.of(
+                new com.ai.konwledgerepo.service.chat.HistoryEntry("user", "今天天气不错"),
+                new com.ai.konwledgerepo.service.chat.HistoryEntry("assistant", "是呀，适合出门走走")));
+        data.put(QaContextKey.MEMORY_SUMMARY, "用户此前聊过周末出游计划。");
+        node.apply(new OverAllState(data));
+
+        org.mockito.ArgumentCaptor<Prompt> captor = org.mockito.ArgumentCaptor.forClass(Prompt.class);
+        verify(chat).call(captor.capture());
+        String promptText = captor.getValue().getInstructions().get(0).getText();
+        assertTrue(promptText.contains("今天天气不错"), "闲聊 prompt 应包含最近对话");
+        assertTrue(promptText.contains("周末出游计划"), "闲聊 prompt 应包含会话摘要");
+    }
+
+    @Test
+    void chitchatWithoutHistory_promptUsesPlaceholder() throws Exception {
+        // 无历史无摘要：占位（无），链路正常
+        stubLlm("你好呀！");
+        Map<String, Object> out = node.apply(state("在吗？"));
+
+        assertEquals("你好呀！", out.get(QaContextKey.CHAT_ONLY_ANSWER));
+        org.mockito.ArgumentCaptor<Prompt> captor = org.mockito.ArgumentCaptor.forClass(Prompt.class);
+        verify(chat).call(captor.capture());
+        String promptText = captor.getValue().getInstructions().get(0).getText();
+        assertTrue(promptText.contains("（无）"), "无历史时上下文应为占位（无）");
     }
 }

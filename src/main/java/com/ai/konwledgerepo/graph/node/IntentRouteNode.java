@@ -44,7 +44,8 @@ public class IntentRouteNode extends QaNodeSupport {
 
     private static final Logger log = LoggerFactory.getLogger(IntentRouteNode.class);
     private static final int ROUTER_MAX_ATTEMPTS = 2;
-    private static final int ROUTER_RECENT_ROUNDS = 2;
+    /** 路由参考的最近对话轮数（与改写节点一致取 3，配合会话摘要覆盖更早的指代消歧） */
+    private static final int ROUTER_RECENT_ROUNDS = 3;
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final Pattern JSON_OBJECT_PATTERN = Pattern.compile("\\{.*}", Pattern.DOTALL);
 
@@ -79,9 +80,11 @@ public class IntentRouteNode extends QaNodeSupport {
         if (recentJson.isBlank() || "[]".equals(recentJson)) {
             recentJson = "（无）";
         }
+        String memorySummary = state.value(QaContextKey.MEMORY_SUMMARY).map(String::valueOf).orElse("");
+        String summaryText = memorySummary.isBlank() ? "（无）" : memorySummary;
         String prompt = promptCatalog.render("intent-route", Map.of(
                 "kbName", kbName, "agentPrompt", agentPrompt,
-                "recentJson", recentJson, "question", question));
+                "summaryText", summaryText, "recentJson", recentJson, "question", question));
 
         List<RouteFragment> fragments = null;
         String response = null;
