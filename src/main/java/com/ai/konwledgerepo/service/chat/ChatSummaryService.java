@@ -4,7 +4,6 @@ import com.ai.konwledgerepo.common.PromptCatalog;
 import com.ai.konwledgerepo.common.RedisCacheService;
 import com.ai.konwledgerepo.common.RedisKeys;
 import com.ai.konwledgerepo.config.props.SeuCacheProperties;
-import com.ai.konwledgerepo.config.props.SeuQaProperties;
 import com.ai.konwledgerepo.entity.ChatSession;
 import com.ai.konwledgerepo.model.ModelFactory;
 import com.ai.konwledgerepo.repository.ChatSessionRepository;
@@ -35,6 +34,11 @@ import java.util.concurrent.Executor;
  * 而非封顶的历史缓存长度——长会话不会因缓存封顶而停止更新；间隔与路由/闲聊节点的最近 3 轮窗口对齐，
  * 摘要覆盖点与近窗起点之间无空洞。
  * <p>
+ * 取数（增量+重叠）：锚点是摘要快照——每次只喂「上次未压缩的增量 + 快照前 2 轮重叠原文 + 旧摘要」，
+ * 不再重复喂已摘要内容；少量重叠原文供提示词"冲突以最近对话为准"规则自我纠错（修正上次压缩损耗）。
+ * 从 DB 直取（不封顶对话缓存窗口），摘要连续失败积压的增量恢复后可一次补压，
+ * 超过 {@link #MAX_DELTA_MESSAGES} 条时截断取最近部分并告警（极端场景显式记录，快照仍推进）。
+ * <p>
  * 模型：优先 MEMORY 用途配置，未配置时回退 ROUTER 模型（便宜且已常见配置）。
  * 注入：问答链路读取摘要注入意图路由/改写/闲聊节点，与最近 3 轮原文共同构成记忆上下文。
  */
@@ -45,6 +49,10 @@ public class ChatSummaryService {
     private static final Duration GEN_TTL = Duration.ofSeconds(120);
     /** 触发间隔：每新增 6 条消息（=3 轮问答）压缩一次，与近窗 3 轮对齐（触发前最大增量 5 < 近窗 6，覆盖无空洞） */
     private static final int TRIGGER_INTERVAL = 6;
+    /** 增量外保留的重叠条数（快照前 2 轮原文）：为"冲突以最近对话为准"规则提供纠错原料，修正上次压缩损耗 */
+    private static final int OVERLAP_MESSAGES = 4;
+    /** 单次压缩的最大增量条数（原始消息口径）：摘要长时间失败恢复时防单次输入过大，超出部分截断并告警 */
+    private static final int MAX_DELTA_MESSAGES = 60;
 
     private final RedisCacheService redisCacheService;
     private final ChatSessionRepository sessionRepository;
@@ -53,7 +61,6 @@ public class ChatSummaryService {
     private final PromptCatalog promptCatalog;
     private final ModelFactory modelFactory;
     private final Executor executor;
-    private final int messageWindow;
     private final Duration summaryTtl;
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -64,7 +71,6 @@ public class ChatSummaryService {
                               PromptCatalog promptCatalog,
                               ModelFactory modelFactory,
                               SeuCacheProperties cacheProps,
-                              SeuQaProperties qaProps,
                               @Qualifier("applicationTaskExecutor") Executor executor) {
         this.redisCacheService = redisCacheService;
         this.sessionRepository = sessionRepository;
@@ -73,7 +79,6 @@ public class ChatSummaryService {
         this.promptCatalog = promptCatalog;
         this.modelFactory = modelFactory;
         this.executor = executor;
-        this.messageWindow = qaProps.messageWindow();
         this.summaryTtl = Duration.ofSeconds(cacheProps.historyTtlSeconds());
         this.mapper.setVisibility(PropertyAccessor.FIELD, JsonAutoDetect.Visibility.ANY);
     }
@@ -120,14 +125,23 @@ public class ChatSummaryService {
         }
         CompletableFuture.runAsync(() -> {
             try {
-                // 重新读取最新有效历史（过滤被中断的 assistant；缓存 miss 时回源 DB）
-                List<HistoryEntry> valid = historyService.cachedHistory(sessionId, messageWindow);
+                // 增量+重叠取数：锚点是摘要快照——只喂上次未压缩的增量与少量纠错重叠原文，
+                // 消除固定窗口重复喂已摘要内容的浪费；DB 直取不受对话缓存窗口封顶，
+                // 失败积压的增量恢复后可一次补压（超上限截断告警，快照仍推进）
+                int delta = messageCount - lastCount;
+                String oldSummary = prev.map(SummaryRecord::text).orElse("");
+                if (delta > MAX_DELTA_MESSAGES) {
+                    log.warn("摘要增量超上限，本次截断取最近部分 sessionId={} delta={} max={}",
+                            sessionId, delta, MAX_DELTA_MESSAGES);
+                }
+                int fetchRaw = Math.min(delta, MAX_DELTA_MESSAGES)
+                        + (oldSummary.isBlank() ? 0 : OVERLAP_MESSAGES);
+                List<HistoryEntry> valid = historyService.loadRecentFromDb(sessionId, fetchRaw);
                 if (valid.isEmpty()) {
                     log.warn("摘要生成中止：无有效历史 sessionId={}", sessionId);
                     return;
                 }
                 String historyJson = mapper.writeValueAsString(valid);
-                String oldSummary = prev.map(SummaryRecord::text).orElse("");
                 String prompt = promptCatalog.render("summary-memory", Map.of(
                         "oldSummary", oldSummary.isBlank() ? "（无）" : oldSummary, "historyJson", historyJson));
                 ChatModel model = modelFactory.getMemoryChatModel(workspaceId);

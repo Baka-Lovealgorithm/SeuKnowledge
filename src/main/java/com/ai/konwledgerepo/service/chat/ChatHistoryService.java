@@ -66,17 +66,35 @@ public class ChatHistoryService {
         List<ChatMessage> recent = new ArrayList<>(
                 messageRepository.findBySessionIdOrderByIdDesc(sessionId, PageRequest.of(0, window)));
         Collections.reverse(recent);
-        List<HistoryEntry> entries = recent.stream()
+        List<HistoryEntry> entries = toEntries(recent);
+        if (entries.size() > messageWindow) {
+            entries = new ArrayList<>(entries.subList(entries.size() - messageWindow, entries.size()));
+        }
+        return entries;
+    }
+
+    /**
+     * 摘要专用读取：从 DB 直取最近 rawCount 条**原始**消息（不封顶 messageWindow、不走缓存、不回填），
+     * 过滤被中断的 assistant 消息。取数条数由调用方按摘要快照计算（增量+重叠），与对话缓存窗口解耦——
+     * 摘要连续失败积压的增量不受 20 条窗口限制，恢复后可一次补压。
+     */
+    public List<HistoryEntry> loadRecentFromDb(Long sessionId, int rawCount) {
+        int count = Math.max(1, rawCount);
+        List<ChatMessage> recent = new ArrayList<>(
+                messageRepository.findBySessionIdOrderByIdDesc(sessionId, PageRequest.of(0, count)));
+        Collections.reverse(recent);
+        return toEntries(recent);
+    }
+
+    /** 消息实体 → 历史条目（携带 interrupted 标记），并过滤被中断的 assistant 消息 */
+    private static List<HistoryEntry> toEntries(List<ChatMessage> messages) {
+        List<HistoryEntry> entries = messages.stream()
                 .map(m -> {
                     Boolean interrupted = m.getInterrupted();
                     return new HistoryEntry(m.getRole(), m.getContent(), interrupted != null && interrupted);
                 })
                 .toList();
-        entries = filterInterrupted(entries);
-        if (entries.size() > messageWindow) {
-            entries = new ArrayList<>(entries.subList(entries.size() - messageWindow, entries.size()));
-        }
-        return entries;
+        return filterInterrupted(entries);
     }
 
     /** 丢弃被中断的 assistant 消息；保留其前面的 user 问题（后续多轮仍在同一会话中操作） */

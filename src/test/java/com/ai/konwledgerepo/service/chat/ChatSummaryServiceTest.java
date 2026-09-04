@@ -4,7 +4,6 @@ import com.ai.konwledgerepo.common.PromptCatalog;
 import com.ai.konwledgerepo.common.RedisCacheService;
 import com.ai.konwledgerepo.common.RedisKeys;
 import com.ai.konwledgerepo.config.props.SeuCacheProperties;
-import com.ai.konwledgerepo.config.props.SeuQaProperties;
 import com.ai.konwledgerepo.entity.ChatSession;
 import com.ai.konwledgerepo.model.ModelFactory;
 import com.ai.konwledgerepo.repository.ChatSessionRepository;
@@ -28,7 +27,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 会话滚动摘要服务测试：触发判定（单调消息总数基准）、防重锁、落库先行、Redis miss 回源 DB。
+ * 会话滚动摘要服务测试：触发判定（单调消息总数基准）、防重锁、增量+重叠取数（B 方案）、
+ * 落库先行、Redis miss 回源 DB。
+ * <p>
+ * 取数断言口径（原始消息，含 interrupted，过滤在 service 侧）：稳态喂入 = 增量 + 4 条重叠；
+ * 首次生成（无旧摘要）不加重叠；增量超上限 60 截断。
  */
 class ChatSummaryServiceTest {
 
@@ -53,13 +56,16 @@ class ChatSummaryServiceTest {
         // 同步执行器，方便测试异步触发
         service = new ChatSummaryService(redis, sessionRepository, messageStore, historyService, catalog, modelFactory,
                 new SeuCacheProperties(300, 600, 600, 300, 300, 60, 60, 600, 86400),
-                new SeuQaProperties(20, 2, 32, 30, true, false, false, 0.4, false, 60, 200),
                 Runnable::run);
     }
 
     private void stubPrevRecord(ChatSummaryService.SummaryRecord record) {
         when(redis.get(eq(RedisKeys.summary(1L)), eq(ChatSummaryService.SummaryRecord.class)))
                 .thenReturn(Optional.of(record));
+    }
+
+    private void stubHistory(int rawCount) {
+        when(historyService.loadRecentFromDb(1L, rawCount)).thenReturn(List.of(new HistoryEntry("user", "问题1")));
     }
 
     private static ChatSession sessionWithSummary(String summary, Integer count) {
@@ -70,19 +76,50 @@ class ChatSummaryServiceTest {
         return s;
     }
 
-    /** 触发判定回归：基准是会话消息总数（单调），冻结场景（lastCount 已到封顶值 20）仍能继续触发 */
+    /** 触发判定回归：基准是会话消息总数（单调），冻结场景（lastCount 已到封顶值 20）仍能继续触发；
+     * 取数 = 增量 6 + 重叠 4（有旧摘要时） */
     @Test
-    void maybeUpdate_deltaReachesSix_triggers() {
+    void maybeUpdate_deltaReachesSix_triggersWithDeltaPlusOverlap() {
         stubPrevRecord(new ChatSummaryService.SummaryRecord("旧摘要", 20));
         when(redis.setIfAbsent(anyString(), anyString(), any())).thenReturn(true);
-        when(historyService.cachedHistory(1L, 20)).thenReturn(List.of(new HistoryEntry("user", "问题1")));
+        stubHistory(10);
         when(messageStore.persistSummary(1L, "新摘要内容", 26)).thenReturn(1);
 
         service.maybeUpdate(1L, 1L, 26);
 
+        verify(historyService).loadRecentFromDb(1L, 10);
         verify(redis).setIfAbsent(eq(RedisKeys.summaryGen(1L)), eq("1"), any());
         verify(messageStore).persistSummary(1L, "新摘要内容", 26);
         verify(redis).set(eq(RedisKeys.summary(1L)), eq(new ChatSummaryService.SummaryRecord("新摘要内容", 26)), any());
+    }
+
+    /** 首次生成（无旧摘要）：只取增量，不加重叠 */
+    @Test
+    void maybeUpdate_firstGeneration_noOverlap() {
+        stubPrevRecord(ChatSummaryService.SummaryRecord.EMPTY);
+        when(redis.setIfAbsent(anyString(), anyString(), any())).thenReturn(true);
+        stubHistory(6);
+        when(messageStore.persistSummary(1L, "新摘要内容", 6)).thenReturn(1);
+
+        service.maybeUpdate(1L, 1L, 6);
+
+        verify(historyService).loadRecentFromDb(1L, 6);
+        verify(messageStore).persistSummary(1L, "新摘要内容", 6);
+        verify(redis).set(eq(RedisKeys.summary(1L)), eq(new ChatSummaryService.SummaryRecord("新摘要内容", 6)), any());
+    }
+
+    /** 增量超上限（摘要长时间失败后恢复）：截断取 60 + 重叠 4，快照仍推进 */
+    @Test
+    void maybeUpdate_deltaBeyondCap_truncates() {
+        stubPrevRecord(new ChatSummaryService.SummaryRecord("旧摘要", 0));
+        when(redis.setIfAbsent(anyString(), anyString(), any())).thenReturn(true);
+        stubHistory(64);
+        when(messageStore.persistSummary(1L, "新摘要内容", 100)).thenReturn(1);
+
+        service.maybeUpdate(1L, 1L, 100);
+
+        verify(historyService).loadRecentFromDb(1L, 64);
+        verify(messageStore).persistSummary(1L, "新摘要内容", 100);
     }
 
     @Test
@@ -90,6 +127,7 @@ class ChatSummaryServiceTest {
         stubPrevRecord(new ChatSummaryService.SummaryRecord("旧摘要", 20));
         service.maybeUpdate(1L, 1L, 25);
         verify(redis, never()).setIfAbsent(anyString(), anyString(), any());
+        verify(historyService, never()).loadRecentFromDb(anyLong(), anyInt());
     }
 
     /** 负增量（如外部重置计数）不触发 */
@@ -98,6 +136,7 @@ class ChatSummaryServiceTest {
         stubPrevRecord(new ChatSummaryService.SummaryRecord("旧摘要", 20));
         service.maybeUpdate(1L, 1L, 8);
         verify(redis, never()).setIfAbsent(anyString(), anyString(), any());
+        verify(historyService, never()).loadRecentFromDb(anyLong(), anyInt());
     }
 
     @Test
@@ -106,6 +145,7 @@ class ChatSummaryServiceTest {
         when(redis.setIfAbsent(anyString(), anyString(), any())).thenReturn(false);
         service.maybeUpdate(1L, 1L, 6);
         verify(redis).setIfAbsent(eq(RedisKeys.summaryGen(1L)), eq("1"), any());
+        verify(historyService, never()).loadRecentFromDb(anyLong(), anyInt());
         verify(messageStore, never()).persistSummary(anyLong(), anyString(), anyInt());
         verify(redis, never()).set(eq(RedisKeys.summary(1L)), any(), any());
     }
@@ -114,7 +154,7 @@ class ChatSummaryServiceTest {
     void maybeUpdate_emptyHistory_aborts() {
         stubPrevRecord(ChatSummaryService.SummaryRecord.EMPTY);
         when(redis.setIfAbsent(anyString(), anyString(), any())).thenReturn(true);
-        when(historyService.cachedHistory(1L, 20)).thenReturn(List.of());
+        when(historyService.loadRecentFromDb(1L, 6)).thenReturn(List.of());
 
         service.maybeUpdate(1L, 1L, 6);
 
@@ -128,7 +168,7 @@ class ChatSummaryServiceTest {
     void maybeUpdate_sessionDeletedDuringGen_skipsCache() {
         stubPrevRecord(ChatSummaryService.SummaryRecord.EMPTY);
         when(redis.setIfAbsent(anyString(), anyString(), any())).thenReturn(true);
-        when(historyService.cachedHistory(1L, 20)).thenReturn(List.of(new HistoryEntry("user", "问题1")));
+        stubHistory(6);
         when(messageStore.persistSummary(1L, "新摘要内容", 6)).thenReturn(0);
 
         service.maybeUpdate(1L, 1L, 6);
