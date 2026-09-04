@@ -207,11 +207,11 @@ npm run dev
 ## 测试
 
 ```bash
-# 纯单元测试（681 个，无需外部依赖，mock 隔离）
+# 纯单元测试（680 个，无需外部依赖，mock 隔离）
 mvn test
 
 # 全量测试（含 2 个 @SpringBootTest 集成测试类 / 4 个用例，需 MySQL/Redis；ES 缺失时 fail-open 降级）
 $env:SPRING_PROFILES_ACTIVE='dev'; .\mvnw.cmd test
 ```
 
-当前 **65 个测试类、685 个用例**（分块器与标题祖先链、LlamaParse 表格解析、Excel 本地解析、文档解析、模型解析/配置、知识库、会话与滚动摘要、抽取任务、多工作空间成员管理、空间组管理与权限取高、重排客户端/节点、标题生成等）。其中 2 个 `@SpringBootTest` 集成测试类（4 个用例）需 MySQL/Redis 环境，纯单元测试 681 个全绿。
+当前 **64 个测试类、684 个用例**（分块器与标题祖先链、LlamaParse 表格解析、Excel 本地解析、文档解析、模型解析/配置、知识库、会话与滚动摘要、抽取任务、多工作空间成员管理、空间组管理与权限取高、重排客户端/节点、标题生成等）。其中 2 个 `@SpringBootTest` 集成测试类（4 个用例）需 MySQL/Redis 环境，纯单元测试 680 个全绿。

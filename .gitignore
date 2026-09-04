@@ -78,3 +78,6 @@ excelTest/
 单团队通用知识库-改造清单.md
 开源就绪度-行动清单.md
 通用知识库改造评估.md
+
+### 临时对比/验证测试（依赖本地 data/ 样本，类注释标注「不入库」）###
+src/test/java/com/ai/konwledgerepo/service/document/DocumentCleanCompareTest.java
