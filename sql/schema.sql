@@ -110,6 +110,8 @@ CREATE TABLE IF NOT EXISTS kb_chat_message (
 
 CREATE TABLE IF NOT EXISTS kb_chat_session (
     message_count integer,
+    memory_summary TEXT,
+    summary_msg_count integer,
     title_auto bit,
     created_at datetime(6),
     id bigint not null auto_increment,
