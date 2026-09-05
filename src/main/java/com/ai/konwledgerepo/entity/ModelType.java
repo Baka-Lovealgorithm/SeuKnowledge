@@ -35,7 +35,7 @@ public enum ModelType {
 
     /**
      * 模型类型与用途绑定是否合法（迁移自 ModelConfigService.validateUsageType）：
-     * CHAT → EXTRACT/GENERATE/VERIFY/ROUTER；EMBEDDING → RETRIEVE；VISION → VISION；RERANK → RERANK；TITLE → TITLE。用途为空（通用）恒合法。
+     * CHAT → EXTRACT/GENERATE/VERIFY/ROUTER/MEMORY/CHITCHAT；EMBEDDING → RETRIEVE；VISION → VISION；RERANK → RERANK；TITLE → TITLE。用途为空（通用）恒合法。
      */
     public boolean validUsage(String usage) {
         if (usage == null || usage.isBlank()) {
@@ -43,7 +43,7 @@ public enum ModelType {
         }
         return switch (this) {
             case CHAT -> ModelUsage.EXTRACT.is(usage) || ModelUsage.GENERATE.is(usage) || ModelUsage.VERIFY.is(usage)
-                    || ModelUsage.ROUTER.is(usage) || ModelUsage.MEMORY.is(usage);
+                    || ModelUsage.ROUTER.is(usage) || ModelUsage.MEMORY.is(usage) || ModelUsage.CHITCHAT.is(usage);
             case EMBEDDING -> ModelUsage.RETRIEVE.is(usage);
             case VISION -> ModelUsage.VISION.is(usage);
             case RERANK -> ModelUsage.RERANK.is(usage);

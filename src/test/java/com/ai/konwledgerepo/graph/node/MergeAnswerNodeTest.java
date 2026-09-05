@@ -1,6 +1,7 @@
 package com.ai.konwledgerepo.graph.node;
 
 import com.ai.konwledgerepo.common.PromptCatalog;
+import com.ai.konwledgerepo.entity.ModelUsage;
 import com.ai.konwledgerepo.graph.QaContextKey;
 import com.ai.konwledgerepo.graph.QaState;
 import com.ai.konwledgerepo.model.ModelFactory;
@@ -94,6 +95,9 @@ class MergeAnswerNodeTest {
         Map<String, Object> out = node.apply(state(BUSINESS_ANSWER, List.of("你喜欢什么颜色？"), null));
         assertEquals(QaState.TERMINAL.name(), out.get(QaContextKey.NEXT));
         assertEquals(merged, out.get(QaContextKey.ANSWER), "合并输出保留业务答案原文与引用时采用 LLM 合并");
+        // 档位拆分：闲聊回复走 CHITCHAT，合并固定 GENERATE（业务答案原文/引用保真不随闲聊档位降级）
+        verify(modelFactory).getChatModelByUsage(ModelUsage.CHITCHAT.value(), -1L);
+        verify(modelFactory).getChatModelByUsage(ModelUsage.GENERATE.value(), -1L);
     }
 
     @Test

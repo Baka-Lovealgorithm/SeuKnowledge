@@ -26,9 +26,10 @@ import java.util.Map;
  * <ul>
  *   <li>无闲聊片段（纯业务 / 纯注入）→ 透传，不调用 LLM（业务答案已完整，注入拒答在 CHAT_ONLY_ANSWER）</li>
  *   <li>有闲聊片段但无业务回答（纯闲聊路径，CHAT_ONLY 已产出回复）→ 透传闲聊回复</li>
- *   <li>混合（业务 + 闲聊）→ 用 chitchat（GENERATE）模型生成闲聊回复，再 LLM 合并；
- *       合并输出非空即采纳——业务回答原文保真由 merge-answer 提示词约束（逐字保留、引用编号不得改动），
- *       代码不做逐字校验；合并调用失败/空输出时回退结构化拼接（闲聊回复 + 业务回答）。</li>
+ *   <li>混合（业务 + 闲聊）→ 用 CHITCHAT 档位模型（未配置回退通用/默认 chat）生成闲聊回复，
+ *       再用 GENERATE 主生成模型 LLM 合并——合并涉及业务答案原文与引用保真（merge-answer 提示词约束），
+ *       固定使用主生成模型，不随闲聊档位降级；
+ *       合并输出非空即采纳，合并调用失败/空输出时回退结构化拼接（闲聊回复 + 业务回答）。</li>
  * </ul>
  */
 @Component
@@ -79,10 +80,12 @@ public class MergeAnswerNode extends QaNodeSupport {
         span.setAttribute("parts", 2);
         span.setAttribute("chitchat_fragments", chitchatFragments.size());
         Long workspaceId = QaContext.longValue(state, QaContextKey.WORKSPACE_ID, -1L);
-        ChatModel chat = modelFactory.getChatModelByUsage(ModelUsage.GENERATE.value(), workspaceId);
+        // 闲聊回复走 CHITCHAT 档位（可绑更便宜的小模型）；合并涉及业务答案原文/引用保真，固定主生成模型
+        ChatModel chitchatChat = modelFactory.getChatModelByUsage(ModelUsage.CHITCHAT.value(), workspaceId);
+        ChatModel mergeChat = modelFactory.getChatModelByUsage(ModelUsage.GENERATE.value(), workspaceId);
 
-        String chitchatReply = generateChitchatReply(state, chat, chitchatFragments);
-        String merged = merge(chat, chitchatReply, businessAnswer);
+        String chitchatReply = generateChitchatReply(state, chitchatChat, chitchatFragments);
+        String merged = merge(mergeChat, chitchatReply, businessAnswer);
         String finalAnswer;
         if (merged != null) {
             // 合并输出非空即采纳：原文保真由 merge-answer 提示词约束，代码不做逐字校验
@@ -97,7 +100,7 @@ public class MergeAnswerNode extends QaNodeSupport {
         return Map.of(QaContextKey.ANSWER, finalAnswer, QaContextKey.NEXT, QaState.TERMINAL.name());
     }
 
-    /** 闲聊回复生成：逐片段用 chat-only 模板（GENERATE/chitchat 模型），带最近对话与摘要上下文，失败返回空串 */
+    /** 闲聊回复生成：逐片段用 chat-only 模板（CHITCHAT 档位模型），带最近对话与摘要上下文，失败返回空串 */
     private String generateChitchatReply(OverAllState state, ChatModel chat, List<String> fragments) {
         String question = String.join("\n", fragments);
         List<HistoryEntry> history = QaContext.history(state);
@@ -118,7 +121,7 @@ public class MergeAnswerNode extends QaNodeSupport {
     }
 
     /**
-     * LLM 合并：merge-answer 模板（chitchat 模型），失败/空返回 null（触发结构化兜底）
+     * LLM 合并：merge-answer 模板（GENERATE 主生成模型，保真不降级），失败/空返回 null（触发结构化兜底）
      */
     private String merge(ChatModel chat, String chitchatReply, String businessAnswer) {
         try {

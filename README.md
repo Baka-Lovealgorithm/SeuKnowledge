@@ -99,7 +99,7 @@ mysql -uroot -p < sql/schema.sql
 
 | 模型类型 | 用途 | 必配？ | 说明 |
 |---|---|---|---|
-| CHAT | GENERATE（答案生成/抽取/闲聊）/ VERIFY（自检校验）/ ROUTER（意图路由/问题改写）/ TITLE（会话标题概括） | **必配**（至少 GENERATE） | 文本模型；不同用途可绑不同模型（如生成用大模型、自检/路由用小模型以省成本），未绑定时回退通用配置 |
+| CHAT | GENERATE（答案生成/抽取）/ VERIFY（自检校验）/ ROUTER（意图路由/问题改写）/ MEMORY（会话记忆摘要）/ CHITCHAT（闲聊回复） | **必配**（至少 GENERATE） | 文本模型；不同用途可绑不同模型（如生成用大模型，自检/路由/记忆/闲聊用小模型以省成本），未绑定时回退通用配置 |
 | EMBEDDING | RETRIEVE（向量检索） | **必配** | 向量模型，维度需与 `KB_ES_DIMENSIONS`（默认 1024）一致 |
 | VISION | VISION（PDF/PPTX 图片页与扫描页转写） | 可选 | 识图模型 |
 | RERANK | RERANK（交叉编码器精排） | 可选 | 重排模型 |
@@ -107,7 +107,7 @@ mysql -uroot -p < sql/schema.sql
 
 **配置步骤**（登录后在「模型配置」页操作）：
 
-1. 新建「文本模型 CHAT」：选供应商（DASHSCOPE / OPENAI_COMPAT）→ 填模型名（如 `deepseek-chat`）→ 填 Base URL（OPENAI_COMPAT 填服务根地址，**不要带 `/v1`**，系统自动拼接）→ 填 API Key → 勾选用途（GENERATE，可同时绑 VERIFY/ROUTER/TITLE 或另建条目）→ 设为默认
+1. 新建「文本模型 CHAT」：选供应商（DASHSCOPE / OPENAI_COMPAT）→ 填模型名（如 `deepseek-chat`）→ 填 Base URL（OPENAI_COMPAT 填服务根地址，**不要带 `/v1`**，系统自动拼接）→ 填 API Key → 勾选用途（GENERATE，可同时绑 VERIFY/ROUTER/MEMORY/CHITCHAT 或另建条目）→ 设为默认
 2. 新建「向量模型 EMBEDDING」：如 DashScope `text-embedding-v4` 或 OpenAI 兼容服务
 3. 可选：VISION 识图模型（PDF 扫描页）、RERANK 重排模型（精排质量，如 `gte-rerank-v2`）
 4. 每条配置点击**连通性测试**，通过后保存

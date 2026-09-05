@@ -18,7 +18,9 @@ public enum ModelUsage {
     /** 意图路由/问题改写（可单独配置更小的路由模型；未配置时回退通用/默认 chat） */
     ROUTER,
     /** 会话记忆摘要/压缩（滚动摘要专用，可配置更便宜的小模型；未配置时回退 ROUTER 模型配置） */
-    MEMORY;
+    MEMORY,
+    /** 闲聊回复（纯闲聊与混合链路的闲聊片段回复，可配置更便宜的小模型；未配置时回退通用/默认 chat） */
+    CHITCHAT;
 
     public String value() {
         return name();

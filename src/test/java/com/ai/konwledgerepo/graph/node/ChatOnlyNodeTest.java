@@ -2,6 +2,7 @@ package com.ai.konwledgerepo.graph.node;
 
 import com.ai.konwledgerepo.common.Defaults;
 import com.ai.konwledgerepo.common.PromptCatalog;
+import com.ai.konwledgerepo.entity.ModelUsage;
 import com.ai.konwledgerepo.graph.QaContextKey;
 import com.ai.konwledgerepo.model.ModelFactory;
 import com.ai.konwledgerepo.tracing.QaTracing;
@@ -64,6 +65,15 @@ class ChatOnlyNodeTest {
         String answer = (String) out.get(QaContextKey.CHAT_ONLY_ANSWER);
         assertEquals("你好呀！很高兴和你聊天～", answer);
         assertEquals("MERGE_ANSWER", out.get(QaContextKey.NEXT), "闲聊兜底后进入合并收口，使用字面量 MERGE_ANSWER");
+    }
+
+    @Test
+    void chitchat_resolvesChitchatModelTier() throws Exception {
+        // 闲聊回复走 CHITCHAT 档位（可单独绑定便宜小模型；未配置时由解析链回退通用/默认 chat）
+        stubLlm("你好呀！");
+        node.apply(state("在吗？"));
+
+        verify(modelFactory).getChatModelByUsage(ModelUsage.CHITCHAT.value(), -1L);
     }
 
     @Test

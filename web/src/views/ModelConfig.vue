@@ -68,6 +68,7 @@
             <el-option v-if="form.modelType === 'CHAT'" label="校验 VERIFY（答案自检/事实核对）" value="VERIFY" />
             <el-option v-if="form.modelType === 'CHAT'" label="路由 ROUTER（意图路由/问题改写）" value="ROUTER" />
             <el-option v-if="form.modelType === 'CHAT'" label="记忆 MEMORY（会话摘要/压缩，未配置复用 ROUTER）" value="MEMORY" />
+            <el-option v-if="form.modelType === 'CHAT'" label="闲聊 CHITCHAT（闲聊回复，未配置复用通用）" value="CHITCHAT" />
             <el-option v-if="form.modelType === 'EMBEDDING'" label="检索 RETRIEVE（向量化/召回）" value="RETRIEVE" />
             <el-option v-if="form.modelType === 'VISION'" label="识图 VISION（PDF 图片/OCR）" value="VISION" />
             <el-option v-if="form.modelType === 'RERANK'" label="重排 RERANK（交叉编码器精排）" value="RERANK" />
@@ -144,12 +145,12 @@ const emptyForm = () => ({
 })
 const form = reactive(emptyForm())
 
-const USAGE = { EXTRACT: '抽取', GENERATE: '生成', RETRIEVE: '检索', VISION: '识图', RERANK: '重排', VERIFY: '校验', TITLE: '标题', ROUTER: '路由', MEMORY: '记忆' }
+const USAGE = { EXTRACT: '抽取', GENERATE: '生成', RETRIEVE: '检索', VISION: '识图', RERANK: '重排', VERIFY: '校验', TITLE: '标题', ROUTER: '路由', MEMORY: '记忆', CHITCHAT: '闲聊' }
 const usageLabel = (u) => USAGE[u] || u
 
 // 模型类型切换时清掉不兼容的用途绑定（如从 CHAT 切到 RERANK 时残留 GENERATE）
 watch(() => form.modelType, (t) => {
-  const valid = { CHAT: ['EXTRACT', 'GENERATE', 'VERIFY', 'ROUTER', 'MEMORY'], EMBEDDING: ['RETRIEVE'], VISION: ['VISION'], RERANK: ['RERANK'], TITLE: ['TITLE'] }[t] || []
+  const valid = { CHAT: ['EXTRACT', 'GENERATE', 'VERIFY', 'ROUTER', 'MEMORY', 'CHITCHAT'], EMBEDDING: ['RETRIEVE'], VISION: ['VISION'], RERANK: ['RERANK'], TITLE: ['TITLE'] }[t] || []
   if (form.usage && !valid.includes(form.usage)) form.usage = ''
 })
 

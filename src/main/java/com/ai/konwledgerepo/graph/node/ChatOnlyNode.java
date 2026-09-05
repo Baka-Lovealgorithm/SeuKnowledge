@@ -21,6 +21,7 @@ import java.util.Map;
 
 /**
  * 闲聊兜底节点：非业务问题直接友好回复，不进入检索链路。有 SSE 上下文时流式输出。
+ * 使用 CHITCHAT 档位模型（可单独绑定更便宜的小模型；未配置时经通用/默认链回退主生成模型）。
  */
 @Component
 public class ChatOnlyNode extends QaNodeSupport {
@@ -50,7 +51,7 @@ public class ChatOnlyNode extends QaNodeSupport {
         }
         String question = state.value(QaContextKey.RAW_QUESTION).map(String::valueOf).orElse("");
         Long workspaceId = QaContext.longValue(state, QaContextKey.WORKSPACE_ID, -1L);
-        ChatModel chat = modelFactory.getChatModelByUsage(ModelUsage.GENERATE.value(), workspaceId);
+        ChatModel chat = modelFactory.getChatModelByUsage(ModelUsage.CHITCHAT.value(), workspaceId);
         // 闲聊上下文：最近对话 + 会话摘要（解决连续闲聊失忆；blank 归一化同路由/改写节点）
         List<HistoryEntry> history = QaContext.history(state);
         String recentJson = QaContext.renderRecentJson(history, 3);
