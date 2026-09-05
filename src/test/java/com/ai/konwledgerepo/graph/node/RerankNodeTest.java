@@ -26,12 +26,14 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
  * 重排节点测试：交叉编码器启用 → 按重排分截断配额；未配置/异常 → 按 ES 分降级截断；
- * 空候选短路；CHUNK 与 业务知识+问答对 分组各取配额；重排模型按工作空间动态解析。
+ * 空候选短路；CHUNK 与 业务知识+问答对 分组各取配额；重排模型按工作空间动态解析；
+ * 组内候选不超配额（且不超 maxDocs）→ 跳过精排按 ES 分全保留。
  */
 class RerankNodeTest {
 
@@ -214,5 +216,75 @@ class RerankNodeTest {
         assertEquals(5, result.size(), "chunk 组 3 条取 2 + other 组 4 条取 3 = 5 条");
         assertEquals(2, result.stream().filter(c -> "CHUNK".equals(c.sourceType())).count());
         assertEquals(3, result.stream().filter(c -> !"CHUNK".equals(c.sourceType())).count());
+    }
+
+    @Test
+    void groupWithinQuota_skipsRerankKeepsAllByEsOrder() throws Exception {
+        // 组内候选不超配额 → 精排不淘汰任何条目，跳过调用按 ES 分降序全保留（省一次精排请求）
+        when(modelFactory.getReranker(WS)).thenReturn(Optional.of(reranker));
+        when(reranker.isConfigured()).thenReturn(true);
+        when(reranker.maxDocs()).thenReturn(20);
+
+        List<ChunkEvidence> three = List.of(
+                ev(1, "CHUNK", 0.7), ev(2, "CHUNK", 0.9), ev(3, "CHUNK", 0.8));
+        Map<String, Object> out = node().apply(state(three));
+
+        List<ChunkEvidence> result = QaContext.chunks(out.get(QaContextKey.CHUNKS));
+        assertEquals(3, result.size(), "不超配额应全保留");
+        assertEquals(2L, result.get(0).chunkId(), "按 ES 分降序");
+        assertEquals(3L, result.get(1).chunkId());
+        assertEquals(1L, result.get(2).chunkId());
+        verify(reranker, never()).rerank(anyString(), anyList());
+        assertEquals(QaState.ANSWER_COMPOSE.name(), out.get(QaContextKey.NEXT));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void mixed_otherGroupWithinQuota_skipsOtherRerankOnly() throws Exception {
+        // chunk 组超配额正常精排，other 组不超配额跳过 → 仅 1 次精排请求且入参不含业务/问答条目
+        when(modelFactory.getReranker(WS)).thenReturn(Optional.of(reranker));
+        when(reranker.isConfigured()).thenReturn(true);
+        when(reranker.maxDocs()).thenReturn(20);
+        when(reranker.rerank(anyString(), anyList())).thenReturn(List.of(0.5, 0.4, 0.3, 0.2, 0.1));
+
+        List<ChunkEvidence> mixed = List.of(
+                ev(1, "CHUNK", 0.9), ev(2, "CHUNK", 0.8), ev(3, "CHUNK", 0.7),
+                ev(4, "CHUNK", 0.6), ev(5, "CHUNK", 0.5),
+                ev(6, "BUSINESS", 0.4), ev(7, "QA", 0.3));
+        Map<String, Object> out = node().apply(state(mixed));
+
+        List<ChunkEvidence> result = QaContext.chunks(out.get(QaContextKey.CHUNKS));
+        assertEquals(6, result.size(), "chunk 组 5 取 4 + other 组 2 全保留 = 6 条");
+        assertEquals(2, result.stream().filter(c -> !"CHUNK".equals(c.sourceType())).count(),
+                "other 组不超配额应全保留");
+        ArgumentCaptor<List<String>> docsCaptor = ArgumentCaptor.forClass((Class) List.class);
+        verify(reranker, times(1)).rerank(anyString(), docsCaptor.capture());
+        assertTrue(docsCaptor.getValue().stream().noneMatch(d -> String.valueOf(d).contains("内容6")
+                        || String.valueOf(d).contains("内容7")),
+                "精排入参只应包含 chunk 组文档");
+        assertEquals(QaState.ANSWER_COMPOSE.name(), out.get(QaContextKey.NEXT));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void groupAboveMaxDocs_evenWithinQuota_stillReranks() throws Exception {
+        // 候选虽不超配额但超 maxDocs → 精排会截断集合，不可跳过（钉死 min(quota, maxDocs) 谓词）
+        when(modelFactory.getReranker(WS)).thenReturn(Optional.of(reranker));
+        when(reranker.isConfigured()).thenReturn(true);
+        when(reranker.maxDocs()).thenReturn(2);
+        when(reranker.rerank(anyString(), anyList())).thenReturn(List.of(0.9, 0.1));
+
+        List<ChunkEvidence> three = List.of(
+                ev(1, "CHUNK", 0.9), ev(2, "CHUNK", 0.8), ev(3, "CHUNK", 0.7));
+        RerankNode maxDocsNode = new RerankNode(modelFactory, qaTracing,
+                new SeuRerankProperties(4, 4, 2, 1500, 10000));
+        Map<String, Object> out = maxDocsNode.apply(state(three));
+
+        List<ChunkEvidence> result = QaContext.chunks(out.get(QaContextKey.CHUNKS));
+        assertEquals(2, result.size(), "maxDocs=2 截断后精排返回 2 条");
+        ArgumentCaptor<List<String>> docsCaptor = ArgumentCaptor.forClass((Class) List.class);
+        verify(reranker, times(1)).rerank(anyString(), docsCaptor.capture());
+        assertEquals(2, docsCaptor.getValue().size(), "精排入参应按 maxDocs 截断为 2 条");
+        assertEquals(1L, result.get(0).chunkId(), "重排分最高者（chunk 1）应排第一");
     }
 }

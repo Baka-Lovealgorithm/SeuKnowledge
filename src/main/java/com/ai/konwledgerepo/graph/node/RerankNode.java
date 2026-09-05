@@ -25,6 +25,7 @@ import java.util.Optional;
 /**
  * 重排节点（交叉编码器精排）：对召回候选按来源分组，用重排模型打分后组内截断——
  * CHUNK（文档 chunk）取 top {chunk-top}，业务知识+问答对合并取 top {other-top}，合并为最终证据。
+ * 组内候选不超配额（且不触发 maxDocs 截断）时精排不淘汰任何条目，直接按 ES 分返回以省一次精排请求。
  * 重排模型按当前工作空间从模型配置体系解析（kb_model_config model_type=RERANK，DASHSCOPE / OpenAI 兼容）；
  * 未配置 / 编码器异常 / 超时时自动降级：按 ES 分同配额截断，保证问答链路可用。
  * 条数与来源配额来自全局配置 seuknowledge.rerank.*（Agent 不再提供 topN 与来源权重，
@@ -82,6 +83,9 @@ public class RerankNode extends QaNodeSupport {
         if (reranked) {
             try {
                 EvidenceReranker reranker = rerankerOpt.get();
+                span.setAttribute("rerank_skipped_groups",
+                        (withinQuota(chunkGroup, chunkTop, reranker) ? 1 : 0)
+                                + (withinQuota(otherGroup, otherTop, reranker) ? 1 : 0));
                 rerankedChunks = rerankAndCut(chunkGroup, question, chunkTop, reranker);
                 rerankedOthers = rerankAndCut(otherGroup, question, otherTop, reranker);
                 log.info("交叉编码器精排成功: query={} 配额(chunk={} other={}) 实际(chunk={} other={})",
@@ -121,11 +125,15 @@ public class RerankNode extends QaNodeSupport {
                 QaContextKey.NEXT, QaState.ANSWER_COMPOSE.name());
     }
 
-    /** 调交叉编码器打分并按分排序取前 quota（候选超 max-docs 时按 ES 分粗筛截断，防单次输入超 30K token） */
+    /** 调交叉编码器打分并按分排序取前 quota（候选超 max-docs 时按 ES 分粗筛截断，防单次输入超 30K token）；
+     *  候选不超配额且不触发 max-docs 截断时精排为纯重排序（集合不变），跳过调用按 ES 分返回 */
     private List<ChunkEvidence> rerankAndCut(List<ChunkEvidence> group, String question, int quota,
                                              EvidenceReranker reranker) {
         if (group.isEmpty() || quota <= 0) {
             return List.of();
+        }
+        if (withinQuota(group, quota, reranker)) {
+            return cutByEsScore(group, quota);
         }
         List<ChunkEvidence> capped = group.stream()
                 .sorted(Comparator.comparingDouble(ChunkEvidence::score).reversed())
@@ -144,6 +152,11 @@ public class RerankNode extends QaNodeSupport {
         }
         scored.sort(Comparator.comparingDouble(ChunkEvidence::score).reversed());
         return scored.stream().limit(quota).toList();
+    }
+
+    /** 候选组是否可跳过精排：条数不超过 min(配额, maxDocs)——此时精排既不淘汰也不截断，结果集合必相同 */
+    private static boolean withinQuota(List<ChunkEvidence> group, int quota, EvidenceReranker reranker) {
+        return group.size() <= Math.min(quota, reranker.maxDocs());
     }
 
     /** 降级：按 ES 分排序取前 quota（无编码器时同配额，保证链路可用） */
