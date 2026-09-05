@@ -29,7 +29,8 @@ import java.util.Map;
  *   <li>混合（业务 + 闲聊）→ 用 CHITCHAT 档位模型（未配置回退通用/默认 chat）生成闲聊回复，
  *       再用 GENERATE 主生成模型 LLM 合并——合并涉及业务答案原文与引用保真（merge-answer 提示词约束），
  *       固定使用主生成模型，不随闲聊档位降级；
- *       合并输出非空即采纳，合并调用失败/空输出时回退结构化拼接（闲聊回复 + 业务回答）。</li>
+ *       合并输出非空即采纳，合并调用失败/空输出时回退结构化拼接（闲聊回复 + 业务回答）；
+ *       闲聊回复为空时跳过合并调用，直接透传业务答案（省一次 GENERATE，防改写保真风险）。</li>
  * </ul>
  */
 @Component
@@ -85,7 +86,9 @@ public class MergeAnswerNode extends QaNodeSupport {
         ChatModel mergeChat = modelFactory.getChatModelByUsage(ModelUsage.GENERATE.value(), workspaceId);
 
         String chitchatReply = generateChitchatReply(state, chitchatChat, chitchatFragments);
-        String merged = merge(mergeChat, chitchatReply, businessAnswer);
+        // 闲聊回复为空时跳过合并调用：merge-answer 模板对空闲聊的唯一正确输出即业务答案原样，
+        // 直接透传等价且省一次 GENERATE，并避免模型改写业务答案被无校验采纳的保真风险
+        String merged = chitchatReply.isBlank() ? null : merge(mergeChat, chitchatReply, businessAnswer);
         String finalAnswer;
         if (merged != null) {
             // 合并输出非空即采纳：原文保真由 merge-answer 提示词约束，代码不做逐字校验

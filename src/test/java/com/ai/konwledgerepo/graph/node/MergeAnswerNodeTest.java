@@ -25,12 +25,13 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
  * 答案合并节点测试：纯业务透传（不调 LLM）、纯闲聊透传、混合合并（输出非空即采纳，保真靠提示词约束）、
- * 合并调用失败/空输出 → 结构化兜底。
+ * 合并调用失败/空输出 → 结构化兜底、闲聊回复为空 → 跳过合并调用直接透传业务答案。
  */
 class MergeAnswerNodeTest {
 
@@ -121,13 +122,24 @@ class MergeAnswerNodeTest {
     }
 
     @Test
-    void mixed_chitchatGenerationFails_mergeStillRunsOnBlankReply() throws Exception {
-        // 闲聊回复生成失败（返回空串）→ 合并仍以空串进行，不崩溃
+    void mixed_chitchatGenerationFails_skipsMerge_keepsBusinessAnswer() throws Exception {
+        // 闲聊回复生成失败（返回空串）→ 跳过合并调用（省一次 GENERATE），仅透传业务答案
         when(chat.call(any(Prompt.class)))
-                .thenThrow(new RuntimeException("chitchat fail"))
-                .thenReturn(new ChatResponse(List.of(new Generation(new AssistantMessage(BUSINESS_ANSWER)))));
+                .thenThrow(new RuntimeException("chitchat fail"));
         Map<String, Object> out = node.apply(state(BUSINESS_ANSWER, List.of("你喜欢什么颜色？"), null));
         assertEquals(QaState.TERMINAL.name(), out.get(QaContextKey.NEXT));
-        assertEquals(BUSINESS_ANSWER, out.get(QaContextKey.ANSWER), "闲聊生成失败应回退仅保留业务答案");
+        assertEquals(BUSINESS_ANSWER, out.get(QaContextKey.ANSWER), "闲聊生成失败应仅保留业务答案");
+        verify(chat, times(1)).call(any(Prompt.class));
+    }
+
+    @Test
+    void mixed_blankChitchatReply_skipsMerge_keepsBusinessAnswer() throws Exception {
+        // 闲聊回复为空白串（模型输出空白，非异常）→ 同样跳过合并调用，透传业务答案
+        when(chat.call(any(Prompt.class)))
+                .thenReturn(new ChatResponse(List.of(new Generation(new AssistantMessage("")))));
+        Map<String, Object> out = node.apply(state(BUSINESS_ANSWER, List.of("你喜欢什么颜色？"), null));
+        assertEquals(QaState.TERMINAL.name(), out.get(QaContextKey.NEXT));
+        assertEquals(BUSINESS_ANSWER, out.get(QaContextKey.ANSWER), "闲聊回复空白应仅保留业务答案");
+        verify(chat, times(1)).call(any(Prompt.class));
     }
 }
