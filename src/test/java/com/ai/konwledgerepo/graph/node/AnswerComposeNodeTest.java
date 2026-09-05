@@ -205,4 +205,58 @@ class AnswerComposeNodeTest {
                 "对照应保留消歧前业务聚合（触发覆盖子问题提醒）: " + userText);
         assertFalse(userText.contains("你好呀"), "闲聊片段不应进入生成数据区: " + userText);
     }
+
+    @Test
+    void retryRound_missingInfoInjectedIntoPrompt() throws Exception {
+        // 重试轮：上一轮自检缺失信息注入生成端（含防幻觉约束），定向补充回答
+        stubLlm("根据[1]所述，报销需填写申请表。");
+        ChunkEvidence evidence = ev(11L, "报销制度.pdf", "报销流程");
+
+        Map<String, Object> data = new HashMap<>();
+        data.put(QaContextKey.RAW_QUESTION, "如何申请报销？");
+        data.put(QaContextKey.CHUNKS, List.of(evidence));
+        data.put(QaContextKey.RETRY_COUNT, 1);
+        data.put(QaContextKey.MISSING_INFO, "缺少报销金额上限");
+        node.apply(new OverAllState(data));
+
+        ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat).call(captor.capture());
+        String userText = captor.getValue().getInstructions().get(1).getText();
+        assertTrue(userText.contains("上一轮自检缺失：缺少报销金额上限"),
+                "重试轮应注入缺失信息: " + userText);
+        assertTrue(userText.contains("未覆盖不得编造"), "注入段应含防幻觉约束: " + userText);
+    }
+
+    @Test
+    void firstRound_missingInfoNotRendered() throws Exception {
+        // 首轮（retry 缺省为 0）：不渲染缺失信息段
+        stubLlm("根据[1]所述，报销需填写申请表。");
+        ChunkEvidence evidence = ev(11L, "报销制度.pdf", "报销流程");
+
+        node.apply(state(List.of(evidence)));
+
+        ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat).call(captor.capture());
+        String userText = captor.getValue().getInstructions().get(1).getText();
+        assertFalse(userText.contains("上一轮自检缺失"), "首轮不应渲染缺失信息段: " + userText);
+    }
+
+    @Test
+    void retryRound_blankMissingInfoNotRendered() throws Exception {
+        // 重试轮但缺口为空：同样不渲染
+        stubLlm("根据[1]所述，报销需填写申请表。");
+        ChunkEvidence evidence = ev(11L, "报销制度.pdf", "报销流程");
+
+        Map<String, Object> data = new HashMap<>();
+        data.put(QaContextKey.RAW_QUESTION, "如何申请报销？");
+        data.put(QaContextKey.CHUNKS, List.of(evidence));
+        data.put(QaContextKey.RETRY_COUNT, 1);
+        data.put(QaContextKey.MISSING_INFO, "");
+        node.apply(new OverAllState(data));
+
+        ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat).call(captor.capture());
+        String userText = captor.getValue().getInstructions().get(1).getText();
+        assertFalse(userText.contains("上一轮自检缺失"), "缺口为空不应渲染缺失信息段: " + userText);
+    }
 }
