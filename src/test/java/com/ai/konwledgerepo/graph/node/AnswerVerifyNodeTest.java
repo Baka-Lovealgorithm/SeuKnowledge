@@ -31,6 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -41,7 +42,7 @@ import org.mockito.ArgumentCaptor;
  * 阶段一：解析严格 JSON 对象 {"score":…,"missing":…}；「无」/空串规范化为空；空输出回退 0 分；
  * 旧「分数 + 缺失：…」两行文本格式仍可回退解析（容错）。
  * 阶段二（事实一致性）：SUPPORTED 占比计 faithfulness，VERIFY_SCORE=min(阶段一, faithfulness)；
- * 无支撑/矛盾断言并入 MISSING_INFO；解析失败/无证据/空答案 fail-open；
+ * 无支撑/矛盾断言并入 MISSING_INFO；解析失败/空答案 fail-open；无召回证据时整体短路（零 LLM 调用）；
  * 两阶段调用均带输出 token 上限（1000 / 2000）。
  */
 class AnswerVerifyNodeTest {
@@ -110,21 +111,23 @@ class AnswerVerifyNodeTest {
 
     @Test
     void scoreAndMissingInfo_parsedFromLlmOutput() throws Exception {
-        // 无证据 → 阶段二跳过（faithfulness fail-open 1.0），仅阶段一生效（JSON 对象格式）
-        stubLlm("{\"score\": 85, \"missing\": \"缺少步骤数据\"}");
-        Map<String, Object> out = node.apply(state("报销需填写申请表。", List.of()));
+        // 带证据（空证据已短路跳过）→ 阶段二全 SUPPORTED（faithfulness=1.0），阶段一 JSON 对象格式
+        stubLlm("{\"score\": 85, \"missing\": \"缺少步骤数据\"}",
+                "[{\"claim\":\"报销需填写申请表\",\"verdict\":\"SUPPORTED\",\"evidence\":1}]");
+        Map<String, Object> out = node.apply(state("报销需填写申请表。", List.of(ev(1, "报销需填写申请表。"))));
 
         assertEquals(0.85, (Double) out.get(QaContextKey.VERIFY_SCORE));
         assertEquals("缺少步骤数据", out.get(QaContextKey.MISSING_INFO));
-        assertEquals(1.0, (Double) out.get(QaContextKey.FAITHFULNESS_SCORE), "无证据时不执行阶段二，fail-open 1.0");
+        assertEquals(1.0, (Double) out.get(QaContextKey.FAITHFULNESS_SCORE), "阶段二全 SUPPORTED → faithfulness 1.0");
         assertEquals(QaState.RETRY_FALLBACK.name(), out.get(QaContextKey.NEXT));
     }
 
     @Test
     void noMissingInfo_normalizedToEmpty() throws Exception {
         // JSON 中 missing 为「无」也应归一为空串
-        stubLlm("{\"score\": 90, \"missing\": \"无\"}");
-        Map<String, Object> out = node.apply(state("报销需填写申请表。", List.of()));
+        stubLlm("{\"score\": 90, \"missing\": \"无\"}",
+                "[{\"claim\":\"报销需填写申请表\",\"verdict\":\"SUPPORTED\",\"evidence\":1}]");
+        Map<String, Object> out = node.apply(state("报销需填写申请表。", List.of(ev(1, "报销需填写申请表。"))));
 
         assertEquals(0.9, (Double) out.get(QaContextKey.VERIFY_SCORE));
         assertEquals("", out.get(QaContextKey.MISSING_INFO));
@@ -134,8 +137,9 @@ class AnswerVerifyNodeTest {
     @Test
     void legacyTextFormat_fallbackStillParsed() throws Exception {
         // 模型不听话输出旧两行文本格式 → 回退解析，保证兼容
-        stubLlm("85\n缺失：缺少步骤数据");
-        Map<String, Object> out = node.apply(state("报销需填写申请表。", List.of()));
+        stubLlm("85\n缺失：缺少步骤数据",
+                "[{\"claim\":\"报销需填写申请表\",\"verdict\":\"SUPPORTED\",\"evidence\":1}]");
+        Map<String, Object> out = node.apply(state("报销需填写申请表。", List.of(ev(1, "报销需填写申请表。"))));
 
         assertEquals(0.85, (Double) out.get(QaContextKey.VERIFY_SCORE));
         assertEquals("缺少步骤数据", out.get(QaContextKey.MISSING_INFO));
@@ -145,11 +149,24 @@ class AnswerVerifyNodeTest {
     @Test
     void blankLlmOutput_scoresZeroWithNoMissingInfo() throws Exception {
         stubLlm("");
-        Map<String, Object> out = node.apply(state("报销需填写申请表。", List.of()));
+        Map<String, Object> out = node.apply(state("报销需填写申请表。", List.of(ev(1, "报销需填写申请表。"))));
 
         assertEquals(0.0, (Double) out.get(QaContextKey.VERIFY_SCORE));
         assertEquals("", out.get(QaContextKey.MISSING_INFO));
         assertEquals(QaState.RETRY_FALLBACK.name(), out.get(QaContextKey.NEXT));
+    }
+
+    @Test
+    void noEvidence_skipsLlmAndShortCircuits() throws Exception {
+        // 无召回证据 → 零 LLM 调用，直接 0 分短路（下游 RetryOrFallback 按 chunks.isEmpty() 兜底，分数不被消费）
+        Map<String, Object> out = node.apply(state("抱歉，知识库中没有找到与该问题相关的资料。", List.of()));
+
+        assertEquals(0.0, (Double) out.get(QaContextKey.VERIFY_SCORE));
+        assertEquals("", out.get(QaContextKey.MISSING_INFO));
+        assertEquals(1.0, (Double) out.get(QaContextKey.FAITHFULNESS_SCORE), "无证据短路时 faithfulness 恒 1.0");
+        assertEquals(QaState.RETRY_FALLBACK.name(), out.get(QaContextKey.NEXT));
+        verify(chat, never()).call(any(Prompt.class));
+        verify(modelFactory, never()).getChatModelByUsage(anyString(), any());
     }
 
     // ===== 阶段二（事实一致性） =====
@@ -474,11 +491,12 @@ class AnswerVerifyNodeTest {
     @Test
     void injectionFalse_phase1RulesWithoutInjectionCheck() throws Exception {
         // 注入标记=false：阶段一规则不含注入检查（回归原有行为）
-        stubLlm("{\"score\": 85, \"missing\": \"\"}");
-        node.apply(stateWithInjection("报销需填写申请表。", List.of(), false));
+        stubLlm("{\"score\": 85, \"missing\": \"\"}",
+                "[{\"claim\":\"报销需填写申请表\",\"verdict\":\"SUPPORTED\",\"evidence\":1}]");
+        node.apply(stateWithInjection("报销需填写申请表。", List.of(ev(1, "报销需填写申请表。")), false));
 
         ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
-        verify(chat, times(1)).call(captor.capture());
+        verify(chat, times(2)).call(captor.capture());
         String phase1Rules = captor.getAllValues().get(0).getInstructions().get(0).getText();
         assertFalse(phase1Rules.contains("注入检查"),
                 "非注入场景阶段一规则不应含注入检查: " + phase1Rules);
@@ -487,17 +505,18 @@ class AnswerVerifyNodeTest {
     @Test
     void resolvedQuestion_mainQuestionResolved_originalQuestionIncluded() throws Exception {
         // P0：消歧问题为评分基准（主），原始指代句为对照（辅）→ 阶段一数据区应同时包含两者
-        stubLlm("{\"score\": 85, \"missing\": \"\"}");
+        stubLlm("{\"score\": 85, \"missing\": \"\"}",
+                "[{\"claim\":\"报销需填写申请表\",\"verdict\":\"SUPPORTED\",\"evidence\":1}]");
         Map<String, Object> data = new HashMap<>();
         data.put(QaContextKey.RAW_QUESTION, "它怎么申请？");
         data.put(QaContextKey.RESOLVED_QUESTION, "国家奖学金的申请条件是什么");
         data.put(QaContextKey.ANSWER, "报销需填写申请表。");
-        data.put(QaContextKey.CHUNKS, List.of());
+        data.put(QaContextKey.CHUNKS, List.of(ev(1, "报销需填写申请表。")));
         node.apply(new OverAllState(data));
 
         ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
-        verify(chat, times(1)).call(captor.capture());
-        String phase1User = captor.getValue().getInstructions().get(1).getText();
+        verify(chat, times(2)).call(captor.capture());
+        String phase1User = captor.getAllValues().get(0).getInstructions().get(1).getText();
         assertTrue(phase1User.contains("问题：国家奖学金的申请条件是什么"),
                 "主问题应为消歧后问题: " + phase1User);
         assertTrue(phase1User.contains("原问题（消歧前；与问题一致时为空）：它怎么申请？"),
@@ -507,17 +526,18 @@ class AnswerVerifyNodeTest {
     @Test
     void multiIntent_businessQuestionPrimary_originalLineEmpty() throws Exception {
         // 多意图：主问题=BUSINESS_QUESTION，对照问题与之相同 → 原问题行留空，闲聊片段不进入自检
-        stubLlm("{\"score\": 85, \"missing\": \"\"}");
+        stubLlm("{\"score\": 85, \"missing\": \"\"}",
+                "[{\"claim\":\"报销需填写申请表\",\"verdict\":\"SUPPORTED\",\"evidence\":1}]");
         Map<String, Object> data = new HashMap<>();
         data.put(QaContextKey.RAW_QUESTION, "你好呀 报销流程是什么？");
         data.put(QaContextKey.BUSINESS_QUESTION, "报销流程是什么？");
         data.put(QaContextKey.ANSWER, "报销需填写申请表。");
-        data.put(QaContextKey.CHUNKS, List.of());
+        data.put(QaContextKey.CHUNKS, List.of(ev(1, "报销需填写申请表。")));
         node.apply(new OverAllState(data));
 
         ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
-        verify(chat, times(1)).call(captor.capture());
-        String phase1User = captor.getValue().getInstructions().get(1).getText();
+        verify(chat, times(2)).call(captor.capture());
+        String phase1User = captor.getAllValues().get(0).getInstructions().get(1).getText();
         assertTrue(phase1User.contains("问题：报销流程是什么？"), "主问题应为业务片段聚合: " + phase1User);
         assertFalse(phase1User.contains("你好呀"), "闲聊片段不应进入自检数据区: " + phase1User);
     }
@@ -525,18 +545,19 @@ class AnswerVerifyNodeTest {
     @Test
     void multiIntent_resolvedPrimary_businessAsOriginal() throws Exception {
         // 优先级调换后：主问题=消歧后问题，对照=消歧前业务聚合 → 原问题行恢复非空（防丢子问题）
-        stubLlm("{\"score\": 85, \"missing\": \"\"}");
+        stubLlm("{\"score\": 85, \"missing\": \"\"}",
+                "[{\"claim\":\"报销需填写申请表\",\"verdict\":\"SUPPORTED\",\"evidence\":1}]");
         Map<String, Object> data = new HashMap<>();
         data.put(QaContextKey.RAW_QUESTION, "你好呀 它怎么申请？");
         data.put(QaContextKey.BUSINESS_QUESTION, "它怎么申请？");
         data.put(QaContextKey.RESOLVED_QUESTION, "国家奖学金的申请条件是什么");
         data.put(QaContextKey.ANSWER, "国家奖学金需在规定期限内提交申请材料。");
-        data.put(QaContextKey.CHUNKS, List.of());
+        data.put(QaContextKey.CHUNKS, List.of(ev(1, "报销需填写申请表。")));
         node.apply(new OverAllState(data));
 
         ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
-        verify(chat, times(1)).call(captor.capture());
-        String phase1User = captor.getValue().getInstructions().get(1).getText();
+        verify(chat, times(2)).call(captor.capture());
+        String phase1User = captor.getAllValues().get(0).getInstructions().get(1).getText();
         assertTrue(phase1User.contains("问题：国家奖学金的申请条件是什么"),
                 "自检主问题应为消歧后问题: " + phase1User);
         assertTrue(phase1User.contains("它怎么申请？"),

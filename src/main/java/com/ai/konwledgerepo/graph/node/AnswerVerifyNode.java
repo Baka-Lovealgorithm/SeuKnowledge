@@ -40,6 +40,7 @@ import com.ai.konwledgerepo.entity.SourceType;
 
 /**
  * 答案自检节点（两阶段）：阶段一评估相关性/完整性，阶段二事实一致性校验。
+ * 无召回证据时跳过全部自检调用（零 LLM），直接 0 分短路，交由 RetryOrFallback 按无证据兜底。
  */
 @Component
 public class AnswerVerifyNode extends QaNodeSupport {
@@ -104,6 +105,22 @@ public class AnswerVerifyNode extends QaNodeSupport {
             String prevAnswer = state.value(QaContextKey.PREV_ANSWER).map(String::valueOf).orElse("");
             String prevAnswerText = prevAnswer.isBlank() ? "（无，首次评估）" : prevAnswer;
             List<ChunkEvidence> chunks = QaContext.chunks(state.value(QaContextKey.CHUNKS).orElse(List.of()));
+
+            // 无召回证据：兜底答案无需自检，直接短路返回 0 分（零 LLM 调用）。
+            // 下游 RetryOrFallback 在读分数前即按 chunks.isEmpty() 确定性兜底，本节点的输出在该路径不被消费。
+            if (chunks.isEmpty()) {
+                span.setAttribute("no_evidence_skip", true);
+                span.setAttribute("score", 0.0);
+                return Map.of(
+                        QaContextKey.VERIFY_SCORE, 0.0,
+                        QaContextKey.MISSING_INFO, "",
+                        QaContextKey.FAITHFULNESS_SCORE, 1.0,
+                        QaContextKey.UNSUPPORTED_CLAIMS, List.of(),
+                        QaContextKey.CONTRADICTED_CLAIMS, List.of(),
+                        QaContextKey.NO_IMPROVEMENT, false,
+                        QaContextKey.PREV_CHUNK_IDS, List.of(),
+                        QaContextKey.NEXT, QaState.RETRY_FALLBACK.name());
+            }
 
             // ===== 提前终止判定：计算本轮新增证据（delta），供阶段一判断"新增证据是否明显帮助" =====
             int retry = QaContext.intValue(state, QaContextKey.RETRY_COUNT, 0);
