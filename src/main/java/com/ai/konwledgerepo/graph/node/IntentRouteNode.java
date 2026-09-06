@@ -27,7 +27,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -36,8 +35,11 @@ import java.util.regex.Pattern;
  * 闲聊片段写入 CHITCHAT_FRAGMENTS 供闲聊回复与合并节点使用；
  * 任一注入片段置 INJECTION=true（业务链路忽略指令 / 纯注入走固定拒答）。
  * <p>输出：有业务片段 → NEXT=QUERY_REWRITE；无业务片段（纯闲聊/纯注入）→ NEXT=CHAT_ONLY。
- * <p>路由输出为 JSON 约束 {@code {"fragments":[{"text":"…","intent":"…"}]}}（见 JudgeOptions.routerJson）；
- * 解析失败回退旧五标签 substring 解析（单片段）；仍无法解析 2 次后整句按 BUSINESS 失败反转（保持历史行为）。
+ * <p>路由输出为 JSON 约束 {@code {"fragments":[{"text":"…","intent":"…"}]}}（见 JudgeOptions.routerJson），
+ * JSON 提取采用括号配平取首个平衡对象（多 JSON 块确定性取第一块，容忍围栏/前后噪声）；
+ * 解析失败回退旧五标签 substring 解析（单片段）；仍无法解析 2 次后按兜底注入把关处理：
+ * 问题命中高精度注入关键词模式 → fail-closed 按纯注入固定拒答（杜绝构造坏输出丢失注入标记的绕过）；
+ * 未命中 → 整句按 BUSINESS 失败反转（保持历史行为）。
  */
 @Component
 public class IntentRouteNode extends QaNodeSupport {
@@ -47,7 +49,17 @@ public class IntentRouteNode extends QaNodeSupport {
     /** 路由参考的最近对话轮数（与改写节点一致取 3，配合会话摘要覆盖更早的指代消歧） */
     private static final int ROUTER_RECENT_ROUNDS = 3;
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final Pattern JSON_OBJECT_PATTERN = Pattern.compile("\\{.*}", Pattern.DOTALL);
+
+    /**
+     * 失败反转兜底的注入关键词模式（高精度、宁缺勿滥）：仅在路由输出解析失败后的兜底路径上把关，
+     * 命中即按纯注入 fail-closed（固定拒答出口）；只置位、不清除——正常解析路径的判定完全不参与本表。
+     * 误伤面被限制在"问题既弄坏路由输出又命中模式"的极罕见场景（此时其中业务内容一并被拒，接受该权衡）。
+     */
+    private static final List<Pattern> INJECTION_FALLBACK_PATTERNS = List.of(
+            Pattern.compile("忽略[\\u4e00-\\u9fa5]{0,6}(指令|约束|提示词|规则)"),
+            Pattern.compile("(输出|打印|显示|泄露|复述|给出)[\\u4e00-\\u9fa5a-zA-Z]{0,8}(系统提示词|系统指令|内部规则|人设|隐藏指令)"),
+            Pattern.compile("ignore\\s+(all\\s+)?(previous|prior|above|earlier)\\s+instructions", Pattern.CASE_INSENSITIVE),
+            Pattern.compile("\\b(reveal|show|print|repeat)\\b.{0,20}system prompt", Pattern.CASE_INSENSITIVE));
 
     private final ModelFactory modelFactory;
     private final PromptCatalog promptCatalog;
@@ -100,12 +112,23 @@ public class IntentRouteNode extends QaNodeSupport {
             }
         }
         if (fragments == null) {
-            // 失败反转：整句按单 BUSINESS 片段（保持历史行为：默认走业务链路）
-            fragments = List.of(new RouteFragment(question, Intent.BUSINESS, false));
-            span.setAttribute("router_fallback", true);
-            log.warn("意图路由 {} 次输出均无法解析，失败反转默认 BUSINESS: response={}",
-                    ROUTER_MAX_ATTEMPTS,
-                    response == null ? "<null>" : response.length() > 100 ? response.substring(0, 100) + "…" : response);
+            if (injectionPatternHit(question)) {
+                // 兜底注入把关（fail-closed）：坏输出 + 高精度注入模式命中 → 按纯注入固定拒答，
+                // 杜绝"构造让路由输出不可解析的 payload → 失败反转 BUSINESS → 注入标记丢失"的绕过
+                fragments = List.of(new RouteFragment(question, Intent.CHITCHAT, true));
+                span.setAttribute("router_fallback", true);
+                span.setAttribute("router_fallback_injection", true);
+                log.warn("意图路由 {} 次输出均无法解析，且问题命中注入模式，fail-closed 按纯注入拒答: question={}",
+                        ROUTER_MAX_ATTEMPTS,
+                        question.length() > 100 ? question.substring(0, 100) + "…" : question);
+            } else {
+                // 失败反转：整句按单 BUSINESS 片段（保持历史行为：默认走业务链路）
+                fragments = List.of(new RouteFragment(question, Intent.BUSINESS, false));
+                span.setAttribute("router_fallback", true);
+                log.warn("意图路由 {} 次输出均无法解析，失败反转默认 BUSINESS: response={}",
+                        ROUTER_MAX_ATTEMPTS,
+                        response == null ? "<null>" : response.length() > 100 ? response.substring(0, 100) + "…" : response);
+            }
         }
 
         // 逐片段聚合：注入标记独立置位；业务片段聚合为有效问题；闲聊片段保留列表
@@ -172,14 +195,14 @@ public class IntentRouteNode extends QaNodeSupport {
         return parseLegacyFragments(response, fallbackQuestion);
     }
 
-    /** JSON 模式解析：容忍前后缀噪声，提取 {@code {"fragments":[...]}}；无有效片段返回 null */
+    /** JSON 模式解析：括号配平提取首个平衡 JSON 对象（容忍围栏/前后噪声），无有效片段返回 null */
     private static List<RouteFragment> parseJsonFragments(String response) {
         try {
-            Matcher matcher = JSON_OBJECT_PATTERN.matcher(response);
-            if (!matcher.find()) {
+            String json = extractFirstJsonObject(response);
+            if (json == null) {
                 return null;
             }
-            JsonNode root = MAPPER.readTree(matcher.group());
+            JsonNode root = MAPPER.readTree(json);
             JsonNode arr = root.get("fragments");
             if (arr == null || !arr.isArray()) {
                 return null;
@@ -213,6 +236,48 @@ public class IntentRouteNode extends QaNodeSupport {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /**
+     * 括号配平提取首个平衡的 JSON 对象子串：字符串感知（引号内花括号不计数、处理 {@code \\"} 转义），
+     * 正确处理嵌套对象；响应含多个 JSON 块时确定性取第一块；容忍 markdown 围栏与前后噪声。
+     * 取代原贪心 DOTALL 正则（{@code \{.*}} 会把多个 JSON 块合并成一个非法解析段）。
+     * 找不到平衡对象返回 null。
+     */
+    static String extractFirstJsonObject(String response) {
+        if (response == null) {
+            return null;
+        }
+        boolean inString = false;
+        boolean escaped = false;
+        int depth = 0;
+        int start = -1;
+        for (int i = 0; i < response.length(); i++) {
+            char c = response.charAt(i);
+            if (inString) {
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == '"') {
+                    inString = false;
+                }
+                continue;
+            }
+            if (c == '"') {
+                inString = true;
+            } else if (c == '{') {
+                if (depth == 0) {
+                    start = i;
+                }
+                depth++;
+            } else if (c == '}') {
+                if (depth > 0 && --depth == 0 && start >= 0) {
+                    return response.substring(start, i + 1);
+                }
+            }
+        }
+        return null;
     }
 
     /** 旧五标签 substring 解析兜底：整句按单个片段（片段文本=原始问题，兼容历史行为与测试） */
@@ -251,6 +316,19 @@ public class IntentRouteNode extends QaNodeSupport {
             return new RouteResult(Intent.CHITCHAT, true);
         }
         return null;
+    }
+
+    /** 兜底注入把关：原始问题是否命中高精度注入关键词模式（仅解析失败后的兜底路径调用；只置位、不清除） */
+    static boolean injectionPatternHit(String text) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        for (Pattern p : INJECTION_FALLBACK_PATTERNS) {
+            if (p.matcher(text).find()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** 兼容包装：仅取意图（旧调用方/测试使用），注入信息见 {@link #parseRoute} */
