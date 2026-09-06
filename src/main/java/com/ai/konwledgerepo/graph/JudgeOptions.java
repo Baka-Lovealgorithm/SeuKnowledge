@@ -22,8 +22,9 @@ import java.util.Map;
  * 配置 disableThinking=true（deepseek 系）时关闭思考：completion 全部用于内容输出，
  * 输出回归紧凑、可解析、耗时大降；参数模板由 thinkingParams 按模型品牌定制。
  * OpenAI 兼容模型传 extraBody；其它 provider（如 DashScope）仅限 maxTokens（不冒险传不认识参数）。
- * <p>jsonMode 开启时叠加 API 级 response_format JSON_OBJECT（DashScope / OpenAI 兼容双路），
- * 同时温度 0 保证打分确定性；默认关闭保持历史行为不变。
+ * <p>jsonMode 开启时叠加 API 级 response_format JSON_OBJECT（DashScope / OpenAI 兼容双路）；
+ * 无论 jsonMode 开关，温度统一 0 保证打分/判断确定性（judge 类调用通行做法），默认关闭仅指不启用
+ * response_format，保持输出自由文本。
  */
 public final class JudgeOptions {
 
@@ -82,15 +83,20 @@ public final class JudgeOptions {
             // 未知 provider：jsonMode 不生效，回落 maxTokens + 温度 0
             return ChatOptions.builder().maxTokens(maxTokens).temperature(0.0).build();
         }
-        // jsonMode=false：保持原逻辑，不改变温度（兼容历史行为）
+        // jsonMode=false：judge 家族（自检打分/标题/摘要）统一温度 0 去随机性（打分稳定性优先于历史默认温度）；
+        // maxTokens 必带防输出失控；关思考参数按 provider 对称处理（OpenAI 兼容走 extraBody，DashScope 走 enableThinking）
         if (!disableThinking) {
-            return ChatOptions.builder().maxTokens(maxTokens).build();
+            return ChatOptions.builder().maxTokens(maxTokens).temperature(0.0).build();
         }
         Map<String, Object> params = parseThinkingParams(cfg.getThinkingParams());
         if (model != null && model.getDefaultOptions() instanceof OpenAiChatOptions) {
-            return OpenAiChatOptions.builder().maxTokens(maxTokens).extraBody(params).build();
+            return OpenAiChatOptions.builder().maxTokens(maxTokens).temperature(0.0).extraBody(params).build();
         }
-        return ChatOptions.builder().maxTokens(maxTokens).build();
+        if (model != null && model.getDefaultOptions() instanceof DashScopeChatOptions) {
+            // 补齐 DashScope 关思考：与 routerJson/jsonMode 分支对称（原非 jsonMode 分支漏掉 enableThinking(false)）
+            return DashScopeChatOptions.builder().maxToken(maxTokens).temperature(0.0).enableThinking(false).build();
+        }
+        return ChatOptions.builder().maxTokens(maxTokens).temperature(0.0).build();
     }
 
     // ===== 意图路由专用 =====

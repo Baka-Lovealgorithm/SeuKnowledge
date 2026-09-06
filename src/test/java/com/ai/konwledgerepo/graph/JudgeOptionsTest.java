@@ -9,6 +9,8 @@ import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.ResponseFormat;
 
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -39,7 +41,7 @@ class JudgeOptionsTest {
         return m;
     }
 
-    // ===== jsonMode=false（保持历史行为）=====
+    // ===== jsonMode=false（judge 家族统一温度 0）=====
 
     @Test
     void jsonModeDisabled_maxTokensOnly() {
@@ -48,6 +50,40 @@ class JudgeOptionsTest {
         assertEquals(1000, (int) opts.getMaxTokens());
         // 无 responseFormat（DashScope 路径）
         assertTrue(opts instanceof ChatOptions);
+    }
+
+    /** 核心 pin：非 jsonMode（自检打分/标题/摘要默认路径）也必须温度 0，打分去随机 */
+    @Test
+    void jsonModeDisabled_temperatureZero_generic() {
+        ChatOptions opts = JudgeOptions.of(unknownMock(), null, 1000);
+        assertEquals(1000, (int) opts.getMaxTokens());
+        assertEquals(0.0, opts.getTemperature(), 0.001);
+    }
+
+    /** OpenAI 兼容 + 关思考：extraBody 保留，温度同步归 0 */
+    @Test
+    void jsonModeDisabled_openAiWithDisableThinking_tempZeroAndExtraBody() {
+        ModelConfig cfg = new ModelConfig();
+        cfg.setDisableThinking(true);
+        ChatOptions opts = JudgeOptions.of(openAiMock(), cfg, 1000);
+        assertTrue(opts instanceof OpenAiChatOptions);
+        OpenAiChatOptions o = (OpenAiChatOptions) opts;
+        assertEquals(0.0, o.getTemperature(), 0.001);
+        assertEquals(1000, (int) o.getMaxTokens());
+        assertEquals(Map.of("thinking", Map.of("type", "disabled")), o.getExtraBody());
+    }
+
+    /** DashScope + 关思考：非 jsonMode 分支同样生效 enableThinking(false)（对称性补齐的回归 pin） */
+    @Test
+    void jsonModeDisabled_dashScopeWithDisableThinking_thinkingOff() {
+        ModelConfig cfg = new ModelConfig();
+        cfg.setDisableThinking(true);
+        ChatOptions opts = JudgeOptions.of(dashScopeMock(), cfg, 1000);
+        assertTrue(opts instanceof DashScopeChatOptions);
+        DashScopeChatOptions d = (DashScopeChatOptions) opts;
+        assertEquals(Boolean.FALSE, d.getEnableThinking());
+        assertEquals(0.0, d.getTemperature(), 0.001);
+        assertEquals(1000, (int) d.getMaxTokens());
     }
 
     // ===== jsonMode=true DashScope =====
