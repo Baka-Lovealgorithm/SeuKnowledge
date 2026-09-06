@@ -52,7 +52,7 @@ class ContextPropagatorTest {
     @Test
     void wrap_callable_subthreadSeesSseEmitter() throws Exception {
         SseEmitter emitter = new SseEmitter();
-        SseStreamContext.set(emitter);
+        SseStreamContext.setFlow(new SseStreamContext.SseFlow(emitter));
         try {
             AtomicBoolean seen = new AtomicBoolean(false);
             CompletableFuture.runAsync(ContextPropagator.wrap(() -> {

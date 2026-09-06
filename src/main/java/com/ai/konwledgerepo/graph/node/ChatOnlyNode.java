@@ -64,11 +64,12 @@ public class ChatOnlyNode extends QaNodeSupport {
                 "question", question, "recentJson", recentJson, "summaryText", summaryText));
         String answer;
         SseEmitter emitter = SseStreamContext.get();
+        SseStreamContext.SseFlow flow = SseStreamContext.getFlow();
         java.util.concurrent.atomic.AtomicBoolean cancelled = SseStreamContext.cancelFlag();
         java.util.function.BooleanSupplier cancelSupplier = cancelled == null ? null : cancelled::get;
         if (emitter != null) {
             answer = LlmTrace.stream(qaTracing, chat, prompt,
-                    text -> SseStreamContext.send(emitter, "delta", text), cancelSupplier);
+                    text -> SseStreamContext.send(flow, emitter, "delta", text), cancelSupplier);
             SseStreamContext.markDeltaSent();
         } else {
             answer = LlmTrace.call(qaTracing, chat, prompt);

@@ -122,6 +122,7 @@ public class AnswerComposeNode extends QaNodeSupport {
 
     private String generateAnswer(OverAllState state, ChatModel chat, List<Message> messages) {
         SseEmitter emitter = SseStreamContext.get();
+        SseStreamContext.SseFlow flow = SseStreamContext.getFlow();
         int retry = QaContext.intValue(state, QaContextKey.RETRY_COUNT, 0);
         java.util.concurrent.atomic.AtomicBoolean cancelled = SseStreamContext.cancelFlag();
         java.util.function.BooleanSupplier cancelSupplier = cancelled == null ? null : cancelled::get;
@@ -129,7 +130,7 @@ public class AnswerComposeNode extends QaNodeSupport {
             return LlmTrace.call(qaTracing, chat, messages, null, cancelSupplier);
         }
         String answer = LlmTrace.stream(qaTracing, chat, messages,
-                text -> SseStreamContext.send(emitter, "delta", text), cancelSupplier);
+                text -> SseStreamContext.send(flow, emitter, "delta", text), cancelSupplier);
         SseStreamContext.markDeltaSent();
         return answer;
     }

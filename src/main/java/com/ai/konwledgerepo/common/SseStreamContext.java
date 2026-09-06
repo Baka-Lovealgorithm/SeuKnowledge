@@ -55,11 +55,6 @@ public final class SseStreamContext {
         }
     }
 
-    public static void set(SseEmitter emitter) {
-        FLOW.set(new SseFlow(emitter));
-        DELTA_SENT.set(false);
-    }
-
     /** 设置外部创建的 SseFlow（供调用方提前持有引用，如取消端点注册） */
     public static void setFlow(SseFlow flow) {
         if (flow == null) {
@@ -149,41 +144,22 @@ public final class SseStreamContext {
     }
 
     /**
-     * 推送普通事件（type + content），用于 delta / refs / done 等节点级输出。
-     * 客户端断开等失败时静默忽略，不打断流程。
+     * 显式指定流与发射器的推送（跨线程安全）：流式模型回调（如 Reactor doOnNext）运行在
+     * 供应商/网络线程，ThreadLocal 中的 FLOW 不可见，调用方必须把捕获的 flow 与 emitter 一并传入。
+     * <p>
+     * delta 先无条件累积进 flow（停止后按已生成内容落库），再 best-effort 推送；
+     * 推送失败（客户端断开等）静默忽略并标记取消，不打断流程。
      */
-    public static void send(String type, Object data) {
-        SseEmitter emitter = get();
+    public static void send(SseFlow flow, SseEmitter emitter, String type, Object data) {
+        if ("delta".equals(type) && data != null && flow != null) {
+            flow.appendPartial(String.valueOf(data));
+        }
         if (emitter == null) {
             return;
         }
         try {
             emitter.send(event(type, data));
-            if ("delta".equals(type) && data != null) {
-                SseFlow flow = FLOW.get();
-                if (flow != null) {
-                    flow.appendPartial(String.valueOf(data));
-                }
-            }
-        } catch (IOException ignored) {
-            requestCancel();
-        }
-    }
-
-    /**
-     * 显式指定发射器的推送（跨线程安全）：流式模型回调（如 Reactor doOnNext）运行在
-     * 供应商/网络线程，ThreadLocal 中的 FLOW 不可见，必须把调用线程捕获的 emitter 传入。
-     */
-    public static void send(SseEmitter emitter, String type, Object data) {
-        if (emitter == null) {
-            return;
-        }
-        try {
-            emitter.send(event(type, data));
-            if ("delta".equals(type) && data != null) {
-                // 跨线程时找不到 ThreadLocal flow，依赖调用方自行累积
-            }
-        } catch (IOException ignored) {
+        } catch (Exception ignored) {
             requestCancel();
         }
     }

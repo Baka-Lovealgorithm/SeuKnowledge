@@ -51,7 +51,7 @@ public class ChatStreamService {
         } catch (GenerationCancelledException e) {
             try {
                 ChatSession session = sessionService.getSession(sessionId, userId, workspaceId);
-                int messageCount = messageStore.persistInterruptedAnswer(session, userId, question, e.getPartial(), workspaceId);
+                int messageCount = messageStore.persistInterruptedAnswer(session, userId, question, resolvePartial(e, flow), workspaceId);
                 summaryService.maybeUpdate(sessionId, workspaceId, messageCount);
             } catch (Exception ex) {
                 // 落库失败不影响停止语义
@@ -91,5 +91,19 @@ public class ChatStreamService {
         } catch (Exception ignored) {
             // 连接已断开
         }
+    }
+
+    /**
+     * 停止时待落库的部分答案：优先异常携带的已生成内容（流式中途取消）；为空时回退
+     * 共享 flow 的累积文本（节点入口/同步调用路径取消）。注意 {@link QaExecutionService#execute}
+     * 的 finally 会先 {@code clear()} ThreadLocal，此处必须用本类持有的 flow 引用，
+     * 而非 {@link SseStreamContext#partialAnswer()}。
+     */
+    static String resolvePartial(GenerationCancelledException e, SseFlow flow) {
+        String partial = e == null ? "" : e.getPartial();
+        if ((partial == null || partial.isEmpty()) && flow != null) {
+            return flow.partialAnswer();
+        }
+        return partial;
     }
 }
