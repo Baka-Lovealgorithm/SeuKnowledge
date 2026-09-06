@@ -36,6 +36,9 @@ public class QueryRewriteNode extends QaNodeSupport {
 
     private static final Logger log = LoggerFactory.getLogger(QueryRewriteNode.class);
 
+    /** 候选查询条数上限（护栏，须与 query-rewrite-rules.txt 的"总行数不超过 5"保持一致） */
+    private static final int MAX_QUERIES = 5;
+
     private final ModelFactory modelFactory;
     private final PromptCatalog promptCatalog;
 
@@ -79,8 +82,8 @@ public class QueryRewriteNode extends QaNodeSupport {
         span.setAttribute("retry", retry);
         if (retry > 0 && !retryHint.isBlank()) {
             log.info("QueryRewrite 第 {} 次重试：{}（改写为 {} 个查询）", retry, retryHint, queries.size());
-            log.info("QueryRewrite 实际查询：{}", queries);
         }
+        log.info("QueryRewrite 实际查询：{}", queries);
 
         Map<String, Object> result = new HashMap<>();
         result.put(QaContextKey.QUERIES, queries);
@@ -125,7 +128,7 @@ public class QueryRewriteNode extends QaNodeSupport {
             for (String line : response.split("\\n")) {
                 String q = line.replaceAll("^[\\s\\d.、\\-*•]+", "").trim();
                 if (!q.isEmpty() && q.length() <= 200) result.add(q);
-                if (result.size() >= 3) break;
+                if (result.size() >= MAX_QUERIES) break;
             }
         }
         if (result.isEmpty()) result.add(fallback);

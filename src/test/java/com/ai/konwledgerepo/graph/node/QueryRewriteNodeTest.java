@@ -81,9 +81,28 @@ class QueryRewriteNodeTest {
         stubLlm("1. 如何申请报销\n2. 报销流程是什么\n3. 报销需要什么材料");
         Map<String, Object> out = node.apply(state("如何申请报销？", 0, null));
         List<String> queries = queries(out);
-        assertEquals(3, queries.size(), "最多解析 3 个候选查询");
+        assertEquals(3, queries.size(), "3 条查询应全部解析（未超上限 5）");
         assertEquals("如何申请报销", queries.get(0));
         assertFalse(queries.get(0).startsWith("1."), "应剥离行首编号");
+        assertEquals(QaState.KNOWLEDGE_RECALL.name(), out.get(QaContextKey.NEXT));
+    }
+
+    @Test
+    void firstRound_queriesExceedLimit_truncatedToFive() throws Exception {
+        // 多子问题拆分模式：改写器可输出最多 5 条查询（拆分行从第二行起），超上限时截断且首行（完整问题）保留
+        stubLlm("A产品与B产品的价格、保修期、售后网点、赠品政策、退换货流程分别是什么\n"
+                + "A产品与B产品的价格对比\n"
+                + "A产品与B产品的保修期分别是多久\n"
+                + "A产品与B产品的售后网点覆盖情况\n"
+                + "A产品与B产品的赠品政策\n"
+                + "A产品与B产品的退换货流程");
+        Map<String, Object> out = node.apply(state("A与B的价格、保修、售后网点、赠品、退换货分别是什么？", 0, null));
+        List<String> queries = queries(out);
+        assertEquals(5, queries.size(), "候选查询上限应为 5 条（超过则截断）");
+        assertEquals("A产品与B产品的价格、保修期、售后网点、赠品政策、退换货流程分别是什么", queries.get(0),
+                "第一行始终是完整规范问题（RESOLVED_QUESTION 契约）");
+        assertEquals("A产品与B产品的赠品政策", queries.get(4), "截断应保留前 5 条且保持输出顺序");
+        assertFalse(queries.contains("A产品与B产品的退换货流程"), "第 6 行超出上限应被截断");
         assertEquals(QaState.KNOWLEDGE_RECALL.name(), out.get(QaContextKey.NEXT));
     }
 
