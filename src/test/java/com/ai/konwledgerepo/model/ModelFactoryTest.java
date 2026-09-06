@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -202,5 +203,38 @@ class ModelFactoryTest {
         ChatModel result = factory.getTitleChatModel(WS);
 
         assertSame(model, result);
+    }
+
+    @Test
+    void resolveMemoryChatConfig_memoryConfigured_returnsMemoryConfig() {
+        ModelConfig config = cfg(11L, "CHAT", "MEMORY");
+        when(resolver.tryResolveConfigId(WS, "CHAT", "MEMORY")).thenReturn(Optional.of(11L));
+        when(resolver.getConfig(11L)).thenReturn(config);
+
+        ModelConfig result = factory.resolveMemoryChatConfig(WS);
+
+        assertSame(config, result);
+    }
+
+    @Test
+    void resolveMemoryChatConfig_noMemory_fallsBackToRouter() {
+        // MEMORY 未配置 → 与 getMemoryChatModel 同款 ROUTER 回退
+        ModelConfig config = cfg(12L, "CHAT", "ROUTER");
+        when(resolver.tryResolveConfigId(WS, "CHAT", "MEMORY")).thenReturn(Optional.empty());
+        when(resolver.resolveConfigId(WS, "CHAT", "ROUTER")).thenReturn(12L);
+        when(resolver.getConfig(12L)).thenReturn(config);
+
+        ModelConfig result = factory.resolveMemoryChatConfig(WS);
+
+        assertSame(config, result);
+    }
+
+    @Test
+    void resolveMemoryChatConfig_resolutionFails_returnsNull() {
+        // 解析异常 → null（调用方按无配置处理，如 JudgeOptions 仅限 maxTokens）
+        when(resolver.tryResolveConfigId(WS, "CHAT", "MEMORY")).thenReturn(Optional.empty());
+        when(resolver.resolveConfigId(WS, "CHAT", "ROUTER")).thenThrow(new BizException("模型不可用"));
+
+        assertNull(factory.resolveMemoryChatConfig(WS));
     }
 }

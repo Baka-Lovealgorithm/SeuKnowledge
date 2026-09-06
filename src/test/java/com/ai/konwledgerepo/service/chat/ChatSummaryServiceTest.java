@@ -7,9 +7,15 @@ import com.ai.konwledgerepo.config.props.SeuCacheProperties;
 import com.ai.konwledgerepo.entity.ChatSession;
 import com.ai.konwledgerepo.model.ModelFactory;
 import com.ai.konwledgerepo.repository.ChatSessionRepository;
+import com.ai.konwledgerepo.tracing.QaTracing;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
+import org.springframework.ai.chat.prompt.Prompt;
 
 import java.util.List;
 import java.util.Optional;
@@ -39,6 +45,7 @@ class ChatSummaryServiceTest {
     private ChatSessionRepository sessionRepository;
     private ChatMessageStore messageStore;
     private ChatHistoryService historyService;
+    private ChatModel chat;
     private ChatSummaryService service;
 
     @BeforeEach
@@ -50,13 +57,36 @@ class ChatSummaryServiceTest {
         PromptCatalog catalog = mock(PromptCatalog.class);
         when(catalog.render(eq("summary-memory"), any())).thenReturn("旧摘要：{{oldSummary}}\n\n最近对话：{{historyJson}}");
         ModelFactory modelFactory = mock(ModelFactory.class);
-        ChatModel chat = mock(ChatModel.class);
-        when(chat.call(anyString())).thenReturn("新摘要内容");
+        chat = mock(ChatModel.class);
+        Generation generation = mock(Generation.class);
+        AssistantMessage message = mock(AssistantMessage.class);
+        when(message.getText()).thenReturn("新摘要内容");
+        when(generation.getOutput()).thenReturn(message);
+        ChatResponse response = mock(ChatResponse.class);
+        when(response.getResult()).thenReturn(generation);
+        when(chat.call(any(Prompt.class))).thenReturn(response);
         when(modelFactory.getMemoryChatModel(anyLong())).thenReturn(chat);
         // 同步执行器，方便测试异步触发
         service = new ChatSummaryService(redis, sessionRepository, messageStore, historyService, catalog, modelFactory,
+                QaTracing.disabled(),
                 new SeuCacheProperties(300, 600, 600, 300, 300, 60, 60, 600, 86400),
                 Runnable::run);
+    }
+
+    /** 回归 pin：摘要 LLM 调用必须走 LlmTrace 并带输出上限（JudgeOptions 限输出防 reasoning 失控） */
+    @Test
+    void maybeUpdate_llmCallCarriesMaxTokensLimit() {
+        stubPrevRecord(ChatSummaryService.SummaryRecord.EMPTY);
+        when(redis.setIfAbsent(anyString(), anyString(), any())).thenReturn(true);
+        stubHistory(6);
+        when(messageStore.persistSummary(1L, "新摘要内容", 6)).thenReturn(1);
+
+        service.maybeUpdate(1L, 1L, 6);
+
+        ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat).call(captor.capture());
+        assertEquals(ChatSummaryService.SUMMARY_MAX_TOKENS, captor.getValue().getOptions().getMaxTokens(),
+                "摘要输出上限必须随调用传入（防失控）");
     }
 
     private void stubPrevRecord(ChatSummaryService.SummaryRecord record) {

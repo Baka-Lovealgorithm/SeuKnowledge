@@ -5,8 +5,12 @@ import com.ai.konwledgerepo.common.RedisCacheService;
 import com.ai.konwledgerepo.common.RedisKeys;
 import com.ai.konwledgerepo.config.props.SeuCacheProperties;
 import com.ai.konwledgerepo.entity.ChatSession;
+import com.ai.konwledgerepo.entity.ModelConfig;
+import com.ai.konwledgerepo.graph.JudgeOptions;
 import com.ai.konwledgerepo.model.ModelFactory;
 import com.ai.konwledgerepo.repository.ChatSessionRepository;
+import com.ai.konwledgerepo.tracing.LlmTrace;
+import com.ai.konwledgerepo.tracing.QaTracing;
 import com.fasterxml.jackson.annotation.JsonAutoDetect;
 import com.fasterxml.jackson.annotation.PropertyAccessor;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -40,6 +44,9 @@ import java.util.concurrent.Executor;
  * 超过 {@link #MAX_DELTA_MESSAGES} 条时截断取最近部分并告警（极端场景显式记录，快照仍推进）。
  * <p>
  * 模型：优先 MEMORY 用途配置，未配置时回退 ROUTER 模型（便宜且已常见配置）。
+ * 调用统一走 {@link LlmTrace}（与标题生成同款）：60s 超时防异步任务悬挂、generation span
+ * 记录 token 用量（Langfuse 成本可见）、llm.log 记录 prompt/输出；JudgeOptions 按模型配置
+ * 关思考并限制输出长度，防 reasoning 膨胀。
  * 注入：问答链路读取摘要注入意图路由/改写/闲聊节点，与最近 3 轮原文共同构成记忆上下文。
  */
 @Service
@@ -54,12 +61,20 @@ public class ChatSummaryService {
     /** 单次压缩的最大增量条数（原始消息口径）：摘要长时间失败恢复时防单次输入过大，超出部分截断并告警 */
     private static final int MAX_DELTA_MESSAGES = 60;
 
+    /**
+     * 摘要输出上限（token）：常态输出 200~400 token，800 防截断又防失控
+     * （deepseek 系 reasoning 膨胀风险同标题生成，复用 {@link JudgeOptions} 关思考 + 限输出）。
+     * 包内可见（测试 pin 用）。
+     */
+    static final int SUMMARY_MAX_TOKENS = 800;
+
     private final RedisCacheService redisCacheService;
     private final ChatSessionRepository sessionRepository;
     private final ChatMessageStore messageStore;
     private final ChatHistoryService historyService;
     private final PromptCatalog promptCatalog;
     private final ModelFactory modelFactory;
+    private final QaTracing qaTracing;
     private final Executor executor;
     private final Duration summaryTtl;
     private final ObjectMapper mapper = new ObjectMapper();
@@ -70,6 +85,7 @@ public class ChatSummaryService {
                               ChatHistoryService historyService,
                               PromptCatalog promptCatalog,
                               ModelFactory modelFactory,
+                              QaTracing qaTracing,
                               SeuCacheProperties cacheProps,
                               @Qualifier("applicationTaskExecutor") Executor executor) {
         this.redisCacheService = redisCacheService;
@@ -78,6 +94,7 @@ public class ChatSummaryService {
         this.historyService = historyService;
         this.promptCatalog = promptCatalog;
         this.modelFactory = modelFactory;
+        this.qaTracing = qaTracing;
         this.executor = executor;
         this.summaryTtl = Duration.ofSeconds(cacheProps.historyTtlSeconds());
         this.mapper.setVisibility(PropertyAccessor.FIELD, JsonAutoDetect.Visibility.ANY);
@@ -145,7 +162,8 @@ public class ChatSummaryService {
                 String prompt = promptCatalog.render("summary-memory", Map.of(
                         "oldSummary", oldSummary.isBlank() ? "（无）" : oldSummary, "historyJson", historyJson));
                 ChatModel model = modelFactory.getMemoryChatModel(workspaceId);
-                String newSummary = model.call(prompt);
+                ModelConfig cfg = modelFactory.resolveMemoryChatConfig(workspaceId);
+                String newSummary = LlmTrace.call(qaTracing, model, prompt, JudgeOptions.of(model, cfg, SUMMARY_MAX_TOKENS));
                 if (newSummary != null) {
                     newSummary = newSummary.trim();
                 }

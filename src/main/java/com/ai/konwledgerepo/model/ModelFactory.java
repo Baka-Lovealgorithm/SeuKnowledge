@@ -116,6 +116,22 @@ public class ModelFactory {
         return getChatModel(resolver.resolveConfigId(workspaceId, ModelType.CHAT.value(), ModelUsage.ROUTER.value()));
     }
 
+    /**
+     * 解析 MEMORY 用途的模型配置（供 judge 类调用选项构造，如摘要生成的关思考/限输出）：
+     * 与 {@link #getMemoryChatModel} 同一解析逻辑（MEMORY → ROUTER 回退），异常时返回 null
+     * （调用方按无配置处理，如 {@code JudgeOptions.of} 仅限 maxTokens）。
+     */
+    public ModelConfig resolveMemoryChatConfig(Long workspaceId) {
+        try {
+            Optional<Long> memoryId = resolver.tryResolveConfigId(workspaceId, ModelType.CHAT.value(), ModelUsage.MEMORY.value());
+            Long id = memoryId.orElseGet(() -> resolver.resolveConfigId(workspaceId, ModelType.CHAT.value(), ModelUsage.ROUTER.value()));
+            return resolver.getConfig(id);
+        } catch (Exception e) {
+            log.warn("按用途解析记忆模型配置失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
     private Optional<EvidenceReranker> rerankerInstance(Long configId) {
         String cacheKey = "rerank:" + configId;
         EvidenceReranker cached = rerankerCache.get(cacheKey);
