@@ -20,14 +20,20 @@ import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.embedding.EmbeddingResponse;
 import reactor.core.publisher.Flux;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.IntStream;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -129,5 +135,51 @@ class LlmTraceGenAiIoTest {
                 eq("gen_ai.prompt"),
                 org.mockito.ArgumentMatchers.argThat(s -> s.length() <= 16001 && s.endsWith("…")));
         assertTrue(longText.length() > 16000);
+    }
+
+    @Test
+    void embedAll_batchesTextsInOneCall_vectorsAligned() {
+        EmbeddingModel model = mock(EmbeddingModel.class);
+        Embedding first = mock(Embedding.class);
+        Embedding second = mock(Embedding.class);
+        when(first.getOutput()).thenReturn(new float[]{1.0f});
+        when(second.getOutput()).thenReturn(new float[]{2.0f, 3.0f});
+        when(model.embedForResponse(any())).thenReturn(new EmbeddingResponse(List.of(first, second)));
+
+        List<float[]> vectors = LlmTrace.embedAll(tracing, model, List.of("查询一", "查询二"));
+
+        // 关键：两条文本一次批量调用（1 次 embedding RTT），返回与输入顺序对齐
+        verify(model, times(1)).embedForResponse(
+                argThat((List<String> in) -> in.size() == 2 && "查询一".equals(in.get(0)) && "查询二".equals(in.get(1))));
+        assertEquals(2, vectors.size());
+        assertArrayEquals(new float[]{1.0f}, vectors.get(0));
+        assertArrayEquals(new float[]{2.0f, 3.0f}, vectors.get(1));
+        verify(span, atLeastOnce()).setAttribute(eq("gen_ai.prompt"), org.mockito.ArgumentMatchers.contains("查询一"));
+        verify(span, org.mockito.Mockito.never())
+                .setAttribute(eq("gen_ai.completion"), any(String.class));
+    }
+
+    @Test
+    void embedAll_slicesOversizedBatch() {
+        EmbeddingModel model = mock(EmbeddingModel.class);
+        when(model.embedForResponse(any())).thenAnswer(inv -> {
+            List<String> in = inv.getArgument(0);
+            List<Embedding> embeddings = new ArrayList<>();
+            for (String ignored : in) {
+                Embedding embedding = mock(Embedding.class);
+                when(embedding.getOutput()).thenReturn(new float[]{0f});
+                embeddings.add(embedding);
+            }
+            return new EmbeddingResponse(embeddings);
+        });
+        // 11 条 > 单请求上限 10：自动分片 10 + 1，两次调用，向量与输入保持对齐
+        List<String> texts = IntStream.rangeClosed(1, 11).mapToObj(i -> "q" + i).toList();
+
+        List<float[]> vectors = LlmTrace.embedAll(tracing, model, texts);
+
+        assertEquals(11, vectors.size());
+        verify(model, times(2)).embedForResponse(any());
+        verify(model).embedForResponse(argThat((List<String> in) -> in.size() == 10));
+        verify(model).embedForResponse(argThat((List<String> in) -> in.size() == 1 && "q11".equals(in.get(0))));
     }
 }

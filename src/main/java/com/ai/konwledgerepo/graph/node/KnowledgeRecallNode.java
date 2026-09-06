@@ -1,6 +1,5 @@
 package com.ai.konwledgerepo.graph.node;
 
-import com.ai.konwledgerepo.common.ContextPropagator;
 import com.ai.konwledgerepo.common.SseStreamContext;
 import com.ai.konwledgerepo.config.props.SeuRecallProperties;
 import com.ai.konwledgerepo.entity.SourceType;
@@ -16,7 +15,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
-import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -24,12 +22,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executor;
 
 /**
- * 知识召回节点（多源）：对每个候选查询做三源混合检索；
+ * 知识召回节点（多源）：多查询 embedding 一次批量完成后逐查询做三源混合检索；
  * 跨查询按 dedupKey 累加 RRF rank 分（RAG-Fusion 多路融合），候选池按累加分降序输出。
  */
 @Component
@@ -40,20 +35,14 @@ public class KnowledgeRecallNode extends QaNodeSupport {
     private final EvidenceSearcher evidenceSearcher;
     private final int chunkTop;
     private final int sourceTop;
-    private final Executor qaExecutor;
-    private final boolean parallel;
 
     public KnowledgeRecallNode(EvidenceSearcher evidenceSearcher,
                                QaTracing qaTracing,
-                               SeuRecallProperties recallProps,
-                               @org.springframework.beans.factory.annotation.Qualifier("qaTaskExecutor") Executor qaExecutor,
-                               com.ai.konwledgerepo.config.props.SeuQaProperties qaProps) {
+                               SeuRecallProperties recallProps) {
         super(qaTracing);
         this.evidenceSearcher = evidenceSearcher;
         this.chunkTop = Math.max(1, recallProps.chunkTop());
         this.sourceTop = Math.max(1, recallProps.sourceTop());
-        this.qaExecutor = qaExecutor;
-        this.parallel = qaProps.parallel();
     }
 
     @Override
@@ -78,30 +67,19 @@ public class KnowledgeRecallNode extends QaNodeSupport {
         for (ChunkEvidence acc : accumulated) {
             excludedKeys.add(SourceType.dedupKey(acc.sourceType(), acc.chunkId()));
         }
-        if (parallel && queries.size() > 1) {
-            List<CompletableFuture<List<ChunkEvidence>>> futures = new ArrayList<>();
-            for (String query : queries) {
-                String q = query;
-                futures.add(CompletableFuture.supplyAsync(
-                        ContextPropagator.wrapSupplier(() -> searchForQuery(kbId, q, excludedKeys)), qaExecutor));
-            }
-            for (int i = 0; i < queries.size(); i++) {
-                try {
-                    merge(firstByKey, scoreSum, futures.get(i).get(), excludedKeys);
-                } catch (ExecutionException e) {
-                    Throwable cause = e.getCause();
-                    if (cause instanceof Exception ex) throw ex;
-                    throw new RuntimeException(cause);
-                }
+        if (queries.size() > 1) {
+            // 多查询 embedding 一次批量（1 次 RTT）+ 按需并发三源检索，结果与 queries 顺序对齐
+            List<List<ChunkEvidence>> perQuery = evidenceSearcher.searchBySourcesBatch(kbId, queries, chunkTop, sourceTop);
+            for (List<ChunkEvidence> result : perQuery) {
+                merge(firstByKey, scoreSum, result, excludedKeys);
             }
         } else {
-            for (String query : queries) {
-                merge(firstByKey, scoreSum, searchForQuery(kbId, query, excludedKeys), excludedKeys);
-            }
+            merge(firstByKey, scoreSum,
+                    evidenceSearcher.searchBySources(kbId, queries.get(0), chunkTop, sourceTop), excludedKeys);
         }
         // 跨查询 RRF 分数累加（RAG-Fusion 多路融合）：score 是检索器内部 kNN+BM25 的 RRF rank 分，
         // 同一证据被多条查询命中时累加，即标准 RAG-Fusion 全 ranker 求和（加法结合律，量纲天然一致）。
-        // 候选池按累加分降序输出；List.sort 稳定，同分保首现顺序；并行按查询顺序 get，累加顺序确定。
+        // 候选池按累加分降序输出；List.sort 稳定，同分保首现顺序；批量结果按查询顺序 merge，累加顺序确定。
         List<ChunkEvidence> merged = firstByKey.entrySet().stream()
                 .map(e -> e.getValue().withScore(scoreSum.get(e.getKey())))
                 .sorted(Comparator.comparingDouble(ChunkEvidence::score).reversed())
@@ -121,27 +99,6 @@ public class KnowledgeRecallNode extends QaNodeSupport {
         span.setAttribute("qa_hits", qaCount);
         span.setAttribute("total_hits", merged.size());
         return Map.of(QaContextKey.CHUNKS, merged, QaContextKey.NEXT, QaState.RERANK.name());
-    }
-
-    /**
-     * 单一查询按三来源（CHUNK/BUSINESS/QA）一次召回并汇总为候选列表。
-     * 检索器内部对 query 只向量化一次，在三个来源过滤间复用同一向量。
-     */
-    private List<ChunkEvidence> searchForQuery(Long kbId, String query, Set<String> excludedKeys) {
-        List<ChunkEvidence> result = new ArrayList<>();
-        mergeLocal(result, evidenceSearcher.searchBySources(kbId, query, chunkTop, sourceTop), excludedKeys);
-        return result;
-    }
-
-    /** 本地去重合并（不移除已保留证据——由外层 merge 统一处理） */
-    private void mergeLocal(List<ChunkEvidence> target, List<ChunkEvidence> source, Set<String> excludedKeys) {
-        for (ChunkEvidence evidence : source) {
-            String key = SourceType.dedupKey(evidence.sourceType(), evidence.chunkId());
-            if (excludedKeys.contains(key)) {
-                continue;
-            }
-            target.add(evidence);
-        }
     }
 
     /**

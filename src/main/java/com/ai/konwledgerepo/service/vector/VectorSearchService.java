@@ -88,6 +88,62 @@ public class VectorSearchService implements EvidenceSearcher {
      */
     public List<ChunkEvidence> searchBySources(Long kbId, String query, int chunkTop, int sourceTop) {
         float[] vector = embedQuery(kbId, query);
+        return searchBySourcesWithVector(kbId, query, vector, chunkTop, sourceTop);
+    }
+
+    /**
+     * 多查询批量检索（{@link EvidenceSearcher#searchBySourcesBatch} 实现）：
+     * 全部查询 embedding 一次批量完成（1 次网络往返，workspace/模型解析同样只做一次），
+     * 再逐查询做三源混合检索；parallel 时按查询并发取回（ContextPropagator 保留上下文），
+     * 按输入顺序对齐返回。单查询直接走 {@link #searchBySources} 零开销路径。
+     */
+    @Override
+    public List<List<ChunkEvidence>> searchBySourcesBatch(Long kbId, List<String> queries,
+                                                          int chunkTop, int sourceTop) {
+        if (queries == null || queries.isEmpty()) {
+            return List.of();
+        }
+        if (queries.size() == 1) {
+            return List.of(searchBySources(kbId, queries.get(0), chunkTop, sourceTop));
+        }
+        Long workspaceId = workspaceIdResolver.resolve(kbId);
+        EmbeddingModel embeddingModel = modelFactory.getEmbeddingModelByUsage(ModelUsage.RETRIEVE.value(), workspaceId);
+        List<float[]> vectors = LlmTrace.embedAll(qaTracing, embeddingModel, queries);
+        List<List<ChunkEvidence>> results = new ArrayList<>(queries.size());
+        for (int i = 0; i < queries.size(); i++) {
+            results.add(null);
+        }
+        if (parallel) {
+            List<CompletableFuture<List<ChunkEvidence>>> futures = new ArrayList<>();
+            for (int i = 0; i < queries.size(); i++) {
+                int idx = i;
+                futures.add(CompletableFuture.supplyAsync(
+                        ContextPropagator.wrapSupplier(() ->
+                                searchBySourcesWithVector(kbId, queries.get(idx), vectors.get(idx), chunkTop, sourceTop)),
+                        qaExecutor));
+            }
+            for (int i = 0; i < futures.size(); i++) {
+                try {
+                    results.set(i, futures.get(i).join());
+                } catch (CompletionException e) {
+                    Throwable cause = e.getCause();
+                    if (cause instanceof BizException biz) {
+                        throw biz;
+                    }
+                    throw new BizException("检索失败: " + (cause == null ? e.getMessage() : cause.getMessage()));
+                }
+            }
+        } else {
+            for (int i = 0; i < queries.size(); i++) {
+                results.set(i, searchBySourcesWithVector(kbId, queries.get(i), vectors.get(i), chunkTop, sourceTop));
+            }
+        }
+        return results;
+    }
+
+    /** 给定预计算向量做一次三来源（CHUNK/BUSINESS/QA）检索并顺序合并，批量路径复用同一向量逻辑。 */
+    private List<ChunkEvidence> searchBySourcesWithVector(Long kbId, String query, float[] vector,
+                                                          int chunkTop, int sourceTop) {
         List<ChunkEvidence> result = new ArrayList<>();
         result.addAll(searchByVector(kbId, query, vector, chunkTop, List.of(SourceType.CHUNK.value())));
         result.addAll(searchByVector(kbId, query, vector, sourceTop, List.of(SourceType.BUSINESS.value())));

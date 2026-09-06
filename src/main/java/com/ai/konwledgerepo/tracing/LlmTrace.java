@@ -13,10 +13,12 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.content.Media;
+import org.springframework.ai.embedding.Embedding;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.embedding.EmbeddingResponse;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
@@ -55,6 +57,9 @@ public final class LlmTrace {
      * 超长截断并加省略号，防 OTLP 报文过大被 Langfuse 拒收；完整内容仍见 logs/llm.log（DEBUG 级）。
      */
     private static final int MAX_IO_ATTR_LEN = 16000;
+
+    /** 批量向量化单请求上限（DashScope text-embedding-v3/v4 为 10 条，通用 OpenAI 兼容端点均可覆盖） */
+    private static final int EMBED_BATCH_MAX = 10;
 
     /** 超时包装专用虚拟线程执行器（per-task，阻塞让出载体线程，无池化泄漏） */
     private static final ExecutorService LLM_EXECUTOR = Executors.newVirtualThreadPerTaskExecutor();
@@ -265,6 +270,60 @@ public final class LlmTrace {
                 LLM_LOG.debug("  input >>> {}", truncate(text, 200));
             }
             return vector;
+        } catch (Exception e) {
+            if (e instanceof LlmTimeoutException) {
+                span.setAttribute("llm.timeout", true);
+            }
+            span.recordException(e);
+            throw e;
+        } finally {
+            span.end();
+        }
+    }
+
+    /**
+     * 批量向量化（Embedding）调用：请求一次携带多条文本（供应商批量接口，token 成本不变、
+     * 网络往返降为 1 次），返回与输入顺序对齐的向量列表。与 {@link #embed} 同款
+     * tracing/usage/超时语义；超过 {@link #EMBED_BATCH_MAX} 条自动分片多次调用。
+     */
+    public static List<float[]> embedAll(QaTracing tracing, EmbeddingModel model, List<String> texts) {
+        if (texts == null || texts.isEmpty()) {
+            return List.of();
+        }
+        Span span = tracing.beginEmbedding(model);
+        long start = System.currentTimeMillis();
+        try (Scope scope = span.makeCurrent()) {
+            List<float[]> vectors = new ArrayList<>(texts.size());
+            long promptTokens = 0;
+            long totalTokens = 0;
+            for (int from = 0; from < texts.size(); from += EMBED_BATCH_MAX) {
+                List<String> slice = texts.subList(from, Math.min(texts.size(), from + EMBED_BATCH_MAX));
+                EmbeddingResponse response = awaitWithTimeout("embedding",
+                        () -> model.embedForResponse(slice), llmTimeout);
+                Usage usage = response.getMetadata() == null ? null : response.getMetadata().getUsage();
+                QaTracing.setUsage(span, usage);
+                TokenAccumulator.accumulate(TokenAccumulator.TYPE_EMBEDDING, usage);
+                if (usage != null) {
+                    promptTokens += usage.getPromptTokens();
+                    totalTokens += usage.getTotalTokens();
+                }
+                List<Embedding> results = response.getResults();
+                if (results != null) {
+                    for (Embedding embedding : results) {
+                        vectors.add(embedding.getOutput());
+                    }
+                }
+            }
+            String joined = String.join(" | ", texts);
+            writeIoAttrs(span, truncate(joined, 200), null);
+            if (LLM_LOG.isDebugEnabled()) {
+                int dim = vectors.isEmpty() || vectors.get(0) == null ? 0 : vectors.get(0).length;
+                LLM_LOG.debug("LLM embedding batch call: model={} count={} dim={} cost={}ms usage(in/total)={}/{}",
+                        QaTracing.modelNameOf(model), texts.size(), dim,
+                        System.currentTimeMillis() - start, promptTokens, totalTokens);
+                LLM_LOG.debug("  inputs >>> {}", truncate(joined, 200));
+            }
+            return vectors;
         } catch (Exception e) {
             if (e instanceof LlmTimeoutException) {
                 span.setAttribute("llm.timeout", true);

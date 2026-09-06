@@ -1,6 +1,5 @@
 package com.ai.konwledgerepo.graph.node;
 
-import com.ai.konwledgerepo.config.props.SeuQaProperties;
 import com.ai.konwledgerepo.config.props.SeuRecallProperties;
 import com.ai.konwledgerepo.graph.ChunkEvidence;
 import com.ai.konwledgerepo.graph.QaContext;
@@ -15,7 +14,6 @@ import org.junit.jupiter.api.Test;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -33,7 +31,8 @@ import static org.mockito.Mockito.when;
 /**
  * 知识召回节点测试：多查询×多来源（CHUNK/BUSINESS/QA）合并去重，跨查询 RRF 分数累加
  * （多查询共同命中分数相加，候选池按累加分降序输出）；已保留证据（累计池）从候选排除；
- * queries 为空时短路返回空候选池；召回条数按 SeuRecallProperties 配置透传给检索器。
+ * queries 为空时短路返回空候选池；多查询走 searchBySourcesBatch 批量检索（embedding 一次批量），
+ * 单查询走 searchBySources；召回条数按 SeuRecallProperties 配置透传给检索器。
  */
 class KnowledgeRecallNodeTest {
 
@@ -45,8 +44,7 @@ class KnowledgeRecallNodeTest {
     void setUp() {
         vectorSearchService = mock(VectorSearchService.class);
         qaTracing = QaTracing.disabled();
-        node = new KnowledgeRecallNode(vectorSearchService, qaTracing, new SeuRecallProperties(8, 8),
-                Executors.newVirtualThreadPerTaskExecutor(), new SeuQaProperties(20, 2, 32, 30, true, false, false, 0.4, false, 60, 200));
+        node = new KnowledgeRecallNode(vectorSearchService, qaTracing, new SeuRecallProperties(8, 8));
     }
 
     private ChunkEvidence ev(long chunkId, String sourceType, double score) {
@@ -56,17 +54,17 @@ class KnowledgeRecallNodeTest {
 
     @Test
     void multiQueryHits_dedupAndAccumulateScoresAcrossQueries() throws Exception {
-        // searchBySources(kbId, query, chunkTop, sourceTop) 返回 [CHUNK, BUSINESS, QA] 顺序合并结果。
-        // q1：CHUNK[1,2] BUSINESS[3] QA[4]；q2：CHUNK[2,5] BUSINESS[] QA[4]（chunk 2 / QA 4 跨查询重复）
-        when(vectorSearchService.searchBySources(anyLong(), anyString(), anyInt(), anyInt()))
+        // searchBySourcesBatch(kbId, queries, chunkTop, sourceTop) 按查询顺序返回每查询的
+        // [CHUNK, BUSINESS, QA] 顺序合并结果。q1：CHUNK[1,2] BUSINESS[3] QA[4]；q2：CHUNK[2,5] BUSINESS[] QA[4]
+        when(vectorSearchService.searchBySourcesBatch(anyLong(), anyList(), anyInt(), anyInt()))
                 .thenAnswer(inv -> {
-                    String query = inv.getArgument(1);
-                    return switch (query) {
+                    List<String> qs = inv.getArgument(1);
+                    return qs.stream().<List<ChunkEvidence>>map(query -> switch (query) {
                         case "q1" -> List.of(ev(1, "CHUNK", 0.9), ev(2, "CHUNK", 0.8),
                                 ev(3, "BUSINESS", 0.7), ev(4, "QA", 0.6));
                         case "q2" -> List.of(ev(2, "CHUNK", 0.8), ev(5, "CHUNK", 0.5), ev(4, "QA", 0.6));
                         default -> List.of();
-                    };
+                    }).toList();
                 });
 
         Map<String, Object> data = new HashMap<>();
@@ -88,8 +86,9 @@ class KnowledgeRecallNodeTest {
         assertEquals(0.5, scoreById.get(5L), 1e-9, "单查询命中不累加，保持原分");
         assertEquals(QaState.RERANK.name(), out.get(QaContextKey.NEXT));
 
-        // 关键：每条 query 只触发一次 searchBySources（即每条 query 仅向量化一次，向量在一轮检索内复用）
-        verify(vectorSearchService, times(2)).searchBySources(anyLong(), anyString(), anyInt(), anyInt());
+        // 关键：多查询只触发一次 searchBySourcesBatch（embedding 一次批量），不再逐查询调用 searchBySources
+        verify(vectorSearchService, times(1)).searchBySourcesBatch(anyLong(), anyList(), anyInt(), anyInt());
+        verify(vectorSearchService, never()).searchBySources(anyLong(), anyString(), anyInt(), anyInt());
     }
 
     @Test
@@ -128,8 +127,7 @@ class KnowledgeRecallNodeTest {
     void configuredTopK_passedToSearcher() throws Exception {
         // 证据池扩容：CHUNK 每查询召回 15、BUSINESS/QA 各 8——chunkTop/sourceTop 必须按配置透传
         KnowledgeRecallNode expanded = new KnowledgeRecallNode(vectorSearchService, qaTracing,
-                new SeuRecallProperties(15, 8), Executors.newVirtualThreadPerTaskExecutor(),
-                new SeuQaProperties(20, 2, 32, 30, true, false, false, 0.4, false, 60, 200));
+                new SeuRecallProperties(15, 8));
         when(vectorSearchService.searchBySources(anyLong(), anyString(), anyInt(), anyInt())).thenReturn(List.of());
 
         Map<String, Object> data = new HashMap<>();
@@ -138,8 +136,9 @@ class KnowledgeRecallNodeTest {
 
         expanded.apply(new OverAllState(data));
 
-        // 每条 query 只调用一次 searchBySources，且 topK 按配置透传（chunkTop=15、sourceTop=8）
+        // 单查询走 searchBySources 一次调用，且 topK 按配置透传（chunkTop=15、sourceTop=8）
         verify(vectorSearchService).searchBySources(1L, "q1", 15, 8);
         verify(vectorSearchService, times(1)).searchBySources(anyLong(), anyString(), anyInt(), anyInt());
+        verify(vectorSearchService, never()).searchBySourcesBatch(anyLong(), anyList(), anyInt(), anyInt());
     }
 }

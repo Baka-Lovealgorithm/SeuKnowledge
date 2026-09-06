@@ -24,4 +24,15 @@ public interface EvidenceSearcher {
      * 未做跨来源/跨查询去重（由调用方统一处理）。
      */
     List<ChunkEvidence> searchBySources(Long kbId, String query, int chunkTop, int sourceTop);
+
+    /**
+     * 多查询批量检索：全部查询 embedding 一次批量完成（1 次网络往返），再逐查询做三源检索。
+     * <p>返回列表与 queries 输入顺序对齐，元素结构同 {@link #searchBySources}；
+     * 未做跨查询去重（由调用方统一处理）。默认实现逐查询委托 {@link #searchBySources}
+     * （兼容未覆写的实现），VectorSearchService 覆写为真批量。
+     */
+    default List<List<ChunkEvidence>> searchBySourcesBatch(Long kbId, List<String> queries,
+                                                           int chunkTop, int sourceTop) {
+        return queries.stream().map(q -> searchBySources(kbId, q, chunkTop, sourceTop)).toList();
+    }
 }
