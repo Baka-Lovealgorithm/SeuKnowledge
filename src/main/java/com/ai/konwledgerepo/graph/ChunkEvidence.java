@@ -7,4 +7,9 @@ package com.ai.konwledgerepo.graph;
  */
 public record ChunkEvidence(Long chunkId, Long docId, Long kbId, String docName, Integer pageNum,
                             String sourceType, String title, String content, double score) {
+
+    /** 以新分数重建同一条证据（record 不可变，跨查询 RRF 分数累加时用于更新 score） */
+    public ChunkEvidence withScore(double newScore) {
+        return new ChunkEvidence(chunkId, docId, kbId, docName, pageNum, sourceType, title, content, newScore);
+    }
 }

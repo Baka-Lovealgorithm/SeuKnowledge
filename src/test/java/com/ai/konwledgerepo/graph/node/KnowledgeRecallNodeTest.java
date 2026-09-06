@@ -16,6 +16,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -30,9 +31,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 知识召回节点测试：多查询×多来源（CHUNK/BUSINESS/QA）合并去重；
- * 已保留证据（累计池）从候选排除；queries 为空时短路返回空候选池；
- * 召回条数按 SeuRecallProperties 配置透传给检索器。
+ * 知识召回节点测试：多查询×多来源（CHUNK/BUSINESS/QA）合并去重，跨查询 RRF 分数累加
+ * （多查询共同命中分数相加，候选池按累加分降序输出）；已保留证据（累计池）从候选排除；
+ * queries 为空时短路返回空候选池；召回条数按 SeuRecallProperties 配置透传给检索器。
  */
 class KnowledgeRecallNodeTest {
 
@@ -54,7 +55,7 @@ class KnowledgeRecallNodeTest {
     }
 
     @Test
-    void multiQueryHits_mergeAndDedupAcrossSourcesAndQueries() throws Exception {
+    void multiQueryHits_dedupAndAccumulateScoresAcrossQueries() throws Exception {
         // searchBySources(kbId, query, chunkTop, sourceTop) 返回 [CHUNK, BUSINESS, QA] 顺序合并结果。
         // q1：CHUNK[1,2] BUSINESS[3] QA[4]；q2：CHUNK[2,5] BUSINESS[] QA[4]（chunk 2 / QA 4 跨查询重复）
         when(vectorSearchService.searchBySources(anyLong(), anyString(), anyInt(), anyInt()))
@@ -76,7 +77,15 @@ class KnowledgeRecallNodeTest {
 
         List<ChunkEvidence> chunks = QaContext.chunks(out.get(QaContextKey.CHUNKS));
         assertEquals(5, chunks.size(), "跨查询/跨来源按 sourceType:chunkId 去重后应为 5 条");
-        assertEquals(List.of(1L, 2L, 3L, 4L, 5L), chunks.stream().map(ChunkEvidence::chunkId).toList());
+        // 跨查询重复命中的分数累加（RAG-Fusion）：chunk 2 = 0.8+0.8、QA 4 = 0.6+0.6，
+        // 候选池按累加分降序输出（同分保首现顺序）
+        assertEquals(List.of(2L, 4L, 1L, 3L, 5L), chunks.stream().map(ChunkEvidence::chunkId).toList());
+        Map<Long, Double> scoreById = chunks.stream()
+                .collect(Collectors.toMap(ChunkEvidence::chunkId, ChunkEvidence::score));
+        assertEquals(1.6, scoreById.get(2L), 1e-9, "chunk 2 被两条查询命中：0.8 + 0.8");
+        assertEquals(1.2, scoreById.get(4L), 1e-9, "QA 4 被两条查询命中：0.6 + 0.6");
+        assertEquals(0.9, scoreById.get(1L), 1e-9, "单查询命中不累加，保持原分");
+        assertEquals(0.5, scoreById.get(5L), 1e-9, "单查询命中不累加，保持原分");
         assertEquals(QaState.RERANK.name(), out.get(QaContextKey.NEXT));
 
         // 关键：每条 query 只触发一次 searchBySources（即每条 query 仅向量化一次，向量在一轮检索内复用）

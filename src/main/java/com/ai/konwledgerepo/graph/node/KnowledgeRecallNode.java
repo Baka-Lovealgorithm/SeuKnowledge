@@ -17,7 +17,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -26,7 +29,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 
 /**
- * 知识召回节点（多源）：对每个候选查询做三源混合检索。
+ * 知识召回节点（多源）：对每个候选查询做三源混合检索；
+ * 跨查询按 dedupKey 累加 RRF rank 分（RAG-Fusion 多路融合），候选池按累加分降序输出。
  */
 @Component
 public class KnowledgeRecallNode extends QaNodeSupport {
@@ -66,8 +70,8 @@ public class KnowledgeRecallNode extends QaNodeSupport {
         }
 
         SseStreamContext.sendStage("KNOWLEDGE_RECALL", "证据召回（文档 top" + chunkTop + " / 业务知识、问答对各 top" + sourceTop + "）");
-        List<ChunkEvidence> merged = new ArrayList<>();
-        Set<String> seen = new HashSet<>();
+        Map<String, ChunkEvidence> firstByKey = new LinkedHashMap<>();
+        Map<String, Double> scoreSum = new HashMap<>();
         List<ChunkEvidence> accumulated = QaContext.chunks(
                 state.value(QaContextKey.ACCUMULATED_CHUNKS).orElse(List.of()));
         Set<String> excludedKeys = new HashSet<>();
@@ -83,7 +87,7 @@ public class KnowledgeRecallNode extends QaNodeSupport {
             }
             for (int i = 0; i < queries.size(); i++) {
                 try {
-                    merge(merged, seen, futures.get(i).get(), excludedKeys);
+                    merge(firstByKey, scoreSum, futures.get(i).get(), excludedKeys);
                 } catch (ExecutionException e) {
                     Throwable cause = e.getCause();
                     if (cause instanceof Exception ex) throw ex;
@@ -92,9 +96,16 @@ public class KnowledgeRecallNode extends QaNodeSupport {
             }
         } else {
             for (String query : queries) {
-                merge(merged, seen, searchForQuery(kbId, query, excludedKeys), excludedKeys);
+                merge(firstByKey, scoreSum, searchForQuery(kbId, query, excludedKeys), excludedKeys);
             }
         }
+        // 跨查询 RRF 分数累加（RAG-Fusion 多路融合）：score 是检索器内部 kNN+BM25 的 RRF rank 分，
+        // 同一证据被多条查询命中时累加，即标准 RAG-Fusion 全 ranker 求和（加法结合律，量纲天然一致）。
+        // 候选池按累加分降序输出；List.sort 稳定，同分保首现顺序；并行按查询顺序 get，累加顺序确定。
+        List<ChunkEvidence> merged = firstByKey.entrySet().stream()
+                .map(e -> e.getValue().withScore(scoreSum.get(e.getKey())))
+                .sorted(Comparator.comparingDouble(ChunkEvidence::score).reversed())
+                .toList();
         long chunkCount = merged.stream().filter(e -> SourceType.CHUNK.is(e.sourceType())).count();
         long businessCount = merged.stream().filter(e -> SourceType.BUSINESS.is(e.sourceType())).count();
         long qaCount = merged.stream().filter(e -> SourceType.QA.is(e.sourceType())).count();
@@ -133,16 +144,19 @@ public class KnowledgeRecallNode extends QaNodeSupport {
         }
     }
 
-    private void merge(List<ChunkEvidence> target, Set<String> seen, List<ChunkEvidence> source,
-                       Set<String> excludedKeys) {
+    /**
+     * 跨查询合并：按 dedupKey 无条件累加 RRF rank 分（多查询共同命中 = 强相关信号），
+     * 元数据取首次出现的证据；已保留证据（累计池）不参与候选。
+     */
+    private void merge(Map<String, ChunkEvidence> firstByKey, Map<String, Double> scoreSum,
+                       List<ChunkEvidence> source, Set<String> excludedKeys) {
         for (ChunkEvidence evidence : source) {
             String key = SourceType.dedupKey(evidence.sourceType(), evidence.chunkId());
             if (excludedKeys.contains(key)) {
                 continue; // 已保留证据不参与 rerank 候选（由累计池保存，AnswerCompose 合并交 AI）
             }
-            if (seen.add(key)) {
-                target.add(evidence);
-            }
+            scoreSum.merge(key, evidence.score(), Double::sum);
+            firstByKey.putIfAbsent(key, evidence);
         }
     }
 }
