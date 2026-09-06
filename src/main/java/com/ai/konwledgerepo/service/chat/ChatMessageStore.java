@@ -107,6 +107,24 @@ public class ChatMessageStore {
     }
 
     /**
+     * 停止生成且未产生任何内容（首 token 前取消）：仅落 USER 消息。
+     * 不落空 assistant 消息——避免历史接口返回"空气泡"、摘要输入混入空消息；
+     * 问题确实问过，保留留痕（下轮问答的 LLM 上下文亦可见）。
+     * 与 {@link #persistInterruptedAnswer} 一致的悲观锁事务，返回落库后的会话消息总数。
+     */
+    @Transactional
+    public int persistInterruptedQuestion(ChatSession session, Long userId, String question, Long workspaceId) {
+        ChatSession locked = sessionRepository.findByIdForUpdate(session.getId())
+                .orElseThrow(() -> new BizException("会话不存在或已删除"));
+        saveMessage(locked.getId(), MessageRole.USER.value(), question, null, false);
+        locked.setMessageCount(locked.getMessageCount() + 1);
+        locked.setLastMessageAt(java.time.LocalDateTime.now());
+        sessionRepository.save(locked);
+        sessionService.evictSessionList(userId, workspaceId);
+        return locked.getMessageCount();
+    }
+
+    /**
      * 标题补写（独立短事务）：条件更新 title/titleAuto，原子防覆盖手动 rename。
      * 供 {@link SessionTitleService} 异步线程跨 bean 调用——事务经代理生效，
      * 避免 @Transactional 自调用失效（异步线程无事务导致 update 报错）。

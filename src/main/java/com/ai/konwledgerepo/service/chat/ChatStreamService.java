@@ -51,7 +51,11 @@ public class ChatStreamService {
         } catch (GenerationCancelledException e) {
             try {
                 ChatSession session = sessionService.getSession(sessionId, userId, workspaceId);
-                int messageCount = messageStore.persistInterruptedAnswer(session, userId, question, resolvePartial(e, flow), workspaceId);
+                String partial = resolvePartial(e, flow);
+                // 未产生任何内容（首 token 前取消）：仅落用户消息，不落空 assistant 消息（防历史"空气泡"）
+                int messageCount = (partial == null || partial.isBlank())
+                        ? messageStore.persistInterruptedQuestion(session, userId, question, workspaceId)
+                        : messageStore.persistInterruptedAnswer(session, userId, question, partial, workspaceId);
                 summaryService.maybeUpdate(sessionId, workspaceId, messageCount);
             } catch (Exception ex) {
                 // 落库失败不影响停止语义
