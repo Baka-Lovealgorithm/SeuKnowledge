@@ -78,7 +78,7 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { docApi } from '../api'
@@ -97,6 +97,9 @@ const chunkTitle = ref('')
 const curateOn = ref(false)
 const detailVisible = ref(false)
 const detailRow = ref(null)
+
+/** 过渡态轮询定时器（解析状态自动刷新） */
+let timer = null
 
 const parseType = (s) => ({ SUCCESS: 'success', FAILED: 'danger', PARSING: 'warning', PENDING: 'info' }[s] || 'info')
 
@@ -120,9 +123,48 @@ function sizeText(n) {
 
 function fmt(t) { return t ? t.replace('T', ' ').slice(0, 19) : '' }
 
+/** 是否存在过渡态文档（解析未落定），决定要不要继续轮询 */
+function hasActive() {
+  return list.value.some((d) => d.parseStatus === 'PENDING' || d.parseStatus === 'PARSING')
+}
+
+function syncPolling() {
+  if (hasActive()) startPolling()
+  else stopPolling()
+}
+
+/** 3s 静默轮询：不置 loading 避免表格闪烁；全部落定后自动停止；请求失败即停止（拦截器已 toast，避免连环报错）。
+ *  轮询中检测状态跳变：文档解析落定时用与页面一致的 ElMessage 顶部提示。 */
+function startPolling() {
+  if (timer) return
+  timer = setInterval(async () => {
+    const prev = new Map(list.value.map((d) => [d.id, d.parseStatus]))
+    try {
+      list.value = await docApi.list(kbId)
+      for (const d of list.value) {
+        const before = prev.get(d.id)
+        if (before !== 'PENDING' && before !== 'PARSING') continue
+        if (d.parseStatus === 'SUCCESS') {
+          ElMessage.success(`文档「${d.fileName}」解析成功，共 ${d.chunkCount ?? '?'} 块`)
+        } else if (d.parseStatus === 'FAILED') {
+          ElMessage.error(`文档「${d.fileName}」解析失败：${d.errorMsg || '未知错误'}`)
+        }
+      }
+      if (!hasActive()) stopPolling()
+    } catch {
+      stopPolling()
+    }
+  }, 3000)
+}
+
+function stopPolling() {
+  if (timer) { clearInterval(timer); timer = null }
+}
+
 async function load() {
   loading.value = true
   try { list.value = await docApi.list(kbId) } finally { loading.value = false }
+  syncPolling()
 }
 
 async function doUpload({ file }) {
@@ -187,6 +229,7 @@ async function remove(row) {
 function goBack() { router.push('/kb') }
 
 onMounted(load)
+onUnmounted(stopPolling)
 </script>
 
 <style scoped>
