@@ -68,7 +68,7 @@ class DocumentParserServiceTest {
         // 页面级清洗默认透传：pages 原样返回（页面级规则单独在 DocumentCleanServiceTest 覆盖）
         when(clean.cleanPages(any())).thenAnswer(inv ->
                 new DocumentCleanService.PageCleanResult(inv.getArgument(0), List.of()));
-        return new DocumentParserService(llama, pptx, excel, resolver, pdfService, filler,
+        return new DocumentParserService(llama, new HtmlParserService(), pptx, excel, resolver, pdfService, filler,
                 mock(ParseCacheService.class), clean, tracing, props);
     }
 
@@ -239,6 +239,78 @@ class DocumentParserServiceTest {
 
         List<ChunkPiece> pieces = parser().parse(doc);
         assertTrue(!pieces.isEmpty());
+    }
+
+    @Test
+    void parseHtml_extractsReadableContentAndHeadings() throws Exception {
+        Path file = tempDir.resolve("guide.html");
+        Files.writeString(file, """
+                <!doctype html><html><head><title>ignored</title><style>.x { color: red; }</style></head>
+                <body><nav>导航链接</nav><main><h1>部署指南</h1><p>这是正文内容。</p>
+                <h2>安装步骤</h2><ul><li>安装服务</li><li>启动服务</li></ul>
+                <pre>zrdds start</pre><table><tr><th>名称</th><th>说明</th></tr><tr><td>端口</td><td>7400</td></tr></table>
+                <script>alert('ignored')</script></main><footer>页脚</footer></body></html>
+                """);
+        Document doc = new Document();
+        doc.setFilePath(file.toString());
+        doc.setFileType("html");
+
+        List<ChunkPiece> pieces = parser().parse(doc);
+        String content = pieces.stream().map(ChunkPiece::content).collect(java.util.stream.Collectors.joining("\n"));
+
+        assertTrue(content.contains("部署指南"));
+        assertTrue(content.contains("安装步骤"));
+        assertTrue(content.contains("安装服务"));
+        assertTrue(content.contains("zrdds start"));
+        assertTrue(content.contains("端口"));
+        assertFalse(content.contains("导航链接"));
+        assertFalse(content.contains("alert"));
+        assertFalse(content.contains("页脚"));
+        assertEquals("部署指南", pieces.get(0).title());
+    }
+
+    @Test
+    void parseDoxygenHtml_keepsTitleCodeAndDocumentationButDropsLineNumbers() throws Exception {
+        Path file = tempDir.resolve("api_source.html");
+        Files.writeString(file, """
+                <html><body><div id="top"><ul class="tablist"><li>首页</li></ul></div>
+                <div id="doc-content"><div class="header"><div class="title">Demo.h 源文件</div></div>
+                <div class="contents"><div class="fragment"><div class="line"><span class="lineno"> 12</span>#define DEMO 1</div></div>
+                <div class="ttc"><div class="ttname">Demo</div><div class="ttdoc">示例接口说明。</div></div></div></div>
+                <div id="nav-path">导航路径</div></body></html>
+                """);
+        Document doc = new Document();
+        doc.setFilePath(file.toString());
+        doc.setFileType("html");
+
+        String content = parser().parse(doc).stream().map(ChunkPiece::content)
+                .collect(java.util.stream.Collectors.joining("\n"));
+
+        assertTrue(content.contains("Demo.h 源文件"));
+        assertTrue(content.contains("#define DEMO 1"));
+        assertTrue(content.contains("示例接口说明"));
+        assertFalse(content.contains("首页"));
+        assertFalse(content.contains("导航路径"));
+        assertFalse(content.contains(" 12"));
+    }
+
+    @Test
+    void parseBundledZrddsDoxygenHtml_whenAvailable_extractsApiContent() throws Exception {
+        Path sample = Path.of("C:/Users/Administrator/ZRDDS/ZRDDS-2.5.0/doc/cdoc/html/"
+                + "_asynchronous_publisher_qos_policy_8h_source.html");
+        org.junit.jupiter.api.Assumptions.assumeTrue(Files.isRegularFile(sample), "本机未安装 ZRDDS 文档，跳过样本验证");
+        Document doc = new Document();
+        doc.setFilePath(sample.toString());
+        doc.setFileType("html");
+
+        String content = parser().parse(doc).stream().map(ChunkPiece::content)
+                .collect(java.util.stream.Collectors.joining("\n"));
+
+        assertTrue(content.contains("AsynchronousPublisherQosPolicy.h"));
+        assertTrue(content.contains("disable_asynchronous_write"));
+        assertTrue(content.contains("是否禁用异步发送模式"));
+        assertFalse(content.contains("首页"));
+        assertFalse(content.contains("导航路径"));
     }
 
     @Test

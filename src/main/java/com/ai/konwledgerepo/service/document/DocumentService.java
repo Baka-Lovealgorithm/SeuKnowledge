@@ -40,7 +40,7 @@ public class DocumentService {
 
     private static final Logger log = LoggerFactory.getLogger(DocumentService.class);
 
-    private static final Set<String> ALLOWED_TYPES = Set.of("txt", "md", "pdf", "docx", "pptx", "xlsx", "xls");
+    private static final Set<String> ALLOWED_TYPES = Set.of("txt", "md", "html", "pdf", "docx", "pptx", "xlsx", "xls");
 
     private final DocumentRepository documentRepository;
     private final ChunkRepository chunkRepository;
@@ -197,7 +197,7 @@ public class DocumentService {
         String original = file.getOriginalFilename();
         String ext = extension(original);
         if (!ALLOWED_TYPES.contains(ext)) {
-            throw new BizException("仅支持 .txt / .md / .pdf / .docx / .pptx / .xlsx / .xls 文件，当前: " + (original == null ? "未知" : original));
+            throw new BizException("仅支持 .txt / .md / .html / .pdf / .docx / .pptx / .xlsx / .xls 文件，当前: " + (original == null ? "未知" : original));
         }
         if (file.isEmpty()) {
             throw new BizException("文件内容为空: " + original);

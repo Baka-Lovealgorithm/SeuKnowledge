@@ -15,6 +15,7 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
@@ -60,6 +61,12 @@ public class GlobalExceptionHandler {
                 .map(v -> v.getMessage())
                 .orElse("参数校验失败");
         return ApiResponse.error(ErrorCodes.BAD_REQUEST, msg);
+    }
+
+    /** 路径/查询参数类型不匹配（如 chunk id 被前端拼成 undefined）属于客户端请求错误，而非服务端故障。 */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ApiResponse<Void> handleTypeMismatch(MethodArgumentTypeMismatchException e) {
+        return ApiResponse.error(ErrorCodes.BAD_REQUEST, "参数格式错误: " + e.getName());
     }
 
     @ExceptionHandler(DataIntegrityViolationException.class)
