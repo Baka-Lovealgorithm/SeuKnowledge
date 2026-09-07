@@ -28,7 +28,7 @@ public class Chunk extends BaseEntity {
     @Column(nullable = false, columnDefinition = "TEXT")
     private String content;
 
-    /** PDF 页码；txt/md 为 0 */
+    /** LlamaParse/PDF 页码；txt/md 为 0 */
     @Column(name = "page_num")
     private Integer pageNum = 0;
 

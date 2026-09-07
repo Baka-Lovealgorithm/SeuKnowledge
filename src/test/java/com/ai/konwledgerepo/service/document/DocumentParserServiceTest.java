@@ -62,6 +62,13 @@ class DocumentParserServiceTest {
     private static DocumentParserService build(VisionOcrService vision, LlamaParseService llama, PptxParserService pptx,
                                                ExcelParserService excel, WorkspaceIdResolver resolver, QaTracing tracing,
                                                SeuDocumentProperties props, Executor executor) {
+        return build(vision, llama, pptx, excel, resolver, tracing, props, executor, false);
+    }
+
+    private static DocumentParserService build(VisionOcrService vision, LlamaParseService llama, PptxParserService pptx,
+                                               ExcelParserService excel, WorkspaceIdResolver resolver, QaTracing tracing,
+                                               SeuDocumentProperties props, Executor executor,
+                                               boolean localHtmlParserEnabled) {
         PdfParseService pdfService = new PdfParseService(vision, tracing, props, executor);
         VisionPageFiller filler = new VisionPageFiller(llama, vision, tracing, props, executor);
         DocumentCleanService clean = mock(DocumentCleanService.class);
@@ -69,7 +76,7 @@ class DocumentParserServiceTest {
         when(clean.cleanPages(any())).thenAnswer(inv ->
                 new DocumentCleanService.PageCleanResult(inv.getArgument(0), List.of()));
         return new DocumentParserService(llama, new HtmlParserService(), pptx, excel, resolver, pdfService, filler,
-                mock(ParseCacheService.class), clean, tracing, props);
+                mock(ParseCacheService.class), clean, tracing, props, localHtmlParserEnabled);
     }
 
     /** 测试中关闭识图解析与追踪，保持纯文本分块行为 */
@@ -242,75 +249,94 @@ class DocumentParserServiceTest {
     }
 
     @Test
-    void parseHtml_extractsReadableContentAndHeadings() throws Exception {
+    void parseHtml_requiresLlamaParse() throws Exception {
         Path file = tempDir.resolve("guide.html");
-        Files.writeString(file, """
-                <!doctype html><html><head><title>ignored</title><style>.x { color: red; }</style></head>
-                <body><nav>导航链接</nav><main><h1>部署指南</h1><p>这是正文内容。</p>
-                <h2>安装步骤</h2><ul><li>安装服务</li><li>启动服务</li></ul>
-                <pre>zrdds start</pre><table><tr><th>名称</th><th>说明</th></tr><tr><td>端口</td><td>7400</td></tr></table>
-                <script>alert('ignored')</script></main><footer>页脚</footer></body></html>
-                """);
+        Files.writeString(file, "<html><body>content</body></html>");
         Document doc = new Document();
         doc.setFilePath(file.toString());
+        doc.setFileName("guide.html");
         doc.setFileType("html");
 
-        List<ChunkPiece> pieces = parser().parse(doc);
-        String content = pieces.stream().map(ChunkPiece::content).collect(java.util.stream.Collectors.joining("\n"));
+        BizException error = assertThrows(BizException.class, () -> parser().parse(doc));
+        assertTrue(error.getMessage().contains("HTML 解析需要启用 LlamaParse"));
+    }
 
+    @Test
+    void parseHtml_usesLlamaParseMarkdownAndRecursiveChunking() throws Exception {
+        Path file = tempDir.resolve("guide.html");
+        Files.writeString(file, "<html><body>source</body></html>");
+        LlamaParseService llama = mock(LlamaParseService.class);
+        when(llama.isConfigured()).thenReturn(true);
+        when(llama.parseToMarkdown(file, "guide.html", false)).thenReturn(List.of(
+                new LlamaParseService.PageMarkdown(1,
+                        "# 部署指南\n\n| 参数 | 值 |\n| --- | --- |\n| 端口 | 7400 |")));
+        DocumentParserService service = build(mock(VisionOcrService.class), llama,
+                mock(PptxParserService.class), mock(ExcelParserService.class), mock(WorkspaceIdResolver.class),
+                QaTracing.disabled(), docProps(false, 1, false), null);
+        Document doc = new Document();
+        doc.setFilePath(file.toString());
+        doc.setFileName("guide.html");
+        doc.setFileType("html");
+
+        List<ChunkPiece> pieces = service.parse(doc);
+        String content = pieces.stream().map(ChunkPiece::content)
+                .collect(java.util.stream.Collectors.joining("\n"));
+
+        verify(llama).parseToMarkdown(file, "guide.html", false);
+        verify(llama, never()).detectMissingPages(any(), any());
         assertTrue(content.contains("部署指南"));
-        assertTrue(content.contains("安装步骤"));
-        assertTrue(content.contains("安装服务"));
-        assertTrue(content.contains("zrdds start"));
-        assertTrue(content.contains("端口"));
-        assertFalse(content.contains("导航链接"));
-        assertFalse(content.contains("alert"));
-        assertFalse(content.contains("页脚"));
-        assertEquals("部署指南", pieces.get(0).title());
+        assertTrue(content.contains("| 参数 | 值 |"));
+        assertTrue(content.contains("| 端口 | 7400 |"));
+        assertEquals(1, pieces.get(0).pageNum());
     }
 
     @Test
-    void parseDoxygenHtml_keepsTitleCodeAndDocumentationButDropsLineNumbers() throws Exception {
-        Path file = tempDir.resolve("api_source.html");
-        Files.writeString(file, """
-                <html><body><div id="top"><ul class="tablist"><li>首页</li></ul></div>
-                <div id="doc-content"><div class="header"><div class="title">Demo.h 源文件</div></div>
-                <div class="contents"><div class="fragment"><div class="line"><span class="lineno"> 12</span>#define DEMO 1</div></div>
-                <div class="ttc"><div class="ttname">Demo</div><div class="ttdoc">示例接口说明。</div></div></div></div>
-                <div id="nav-path">导航路径</div></body></html>
-                """);
+    void parseHtml_usesLocalJsoupOnlyWhenExplicitlyEnabled() throws Exception {
+        Path file = tempDir.resolve("local.html");
+        Files.writeString(file, "<html><body><h1>本地备用</h1><p>正文内容</p></body></html>");
+        LlamaParseService llama = mock(LlamaParseService.class);
+        DocumentParserService service = build(mock(VisionOcrService.class), llama,
+                mock(PptxParserService.class), mock(ExcelParserService.class), mock(WorkspaceIdResolver.class),
+                QaTracing.disabled(), docProps(false, 1, false), null, true);
         Document doc = new Document();
         doc.setFilePath(file.toString());
+        doc.setFileName("local.html");
         doc.setFileType("html");
 
-        String content = parser().parse(doc).stream().map(ChunkPiece::content)
-                .collect(java.util.stream.Collectors.joining("\n"));
+        List<ChunkPiece> pieces = service.parse(doc);
 
-        assertTrue(content.contains("Demo.h 源文件"));
-        assertTrue(content.contains("#define DEMO 1"));
-        assertTrue(content.contains("示例接口说明"));
-        assertFalse(content.contains("首页"));
-        assertFalse(content.contains("导航路径"));
-        assertFalse(content.contains(" 12"));
+        verify(llama, never()).parseToMarkdown(any(), any(), any(Boolean.class));
+        String content = pieces.stream().map(ChunkPiece::content)
+                .collect(java.util.stream.Collectors.joining("\n"));
+        assertTrue(content.contains("本地备用"));
+        assertTrue(content.contains("正文内容"));
     }
 
     @Test
-    void parseBundledZrddsDoxygenHtml_whenAvailable_extractsApiContent() throws Exception {
-        Path sample = Path.of("C:/Users/Administrator/ZRDDS/ZRDDS-2.5.0/doc/cdoc/html/"
-                + "_asynchronous_publisher_qos_policy_8h_source.html");
-        org.junit.jupiter.api.Assumptions.assumeTrue(Files.isRegularFile(sample), "本机未安装 ZRDDS 文档，跳过样本验证");
+    void parseToPages_htmlSupportsCurationWithoutPdfMissingPageFill() throws Exception {
+        Path file = tempDir.resolve("curate.html");
+        Files.writeString(file, "<html><body>source</body></html>");
+        LlamaParseService llama = mock(LlamaParseService.class);
+        when(llama.isConfigured()).thenReturn(true);
+        List<LlamaParseService.PageMarkdown> expected = List.of(
+                new LlamaParseService.PageMarkdown(0, "# HTML 初洗\n\n正文"));
+        when(llama.parseToMarkdown(file, "curate.html", false)).thenReturn(expected);
+        WorkspaceIdResolver resolver = mock(WorkspaceIdResolver.class);
+        when(resolver.resolve(1L)).thenReturn(10L);
+        DocumentParserService service = build(mock(VisionOcrService.class), llama,
+                mock(PptxParserService.class), mock(ExcelParserService.class), resolver,
+                QaTracing.disabled(), docProps(false, 1, true), null);
         Document doc = new Document();
-        doc.setFilePath(sample.toString());
+        doc.setFilePath(file.toString());
+        doc.setFileName("curate.html");
         doc.setFileType("html");
+        doc.setKbId(1L);
 
-        String content = parser().parse(doc).stream().map(ChunkPiece::content)
-                .collect(java.util.stream.Collectors.joining("\n"));
+        List<LlamaParseService.PageMarkdown> actual = service.parseToPages(doc);
 
-        assertTrue(content.contains("AsynchronousPublisherQosPolicy.h"));
-        assertTrue(content.contains("disable_asynchronous_write"));
-        assertTrue(content.contains("是否禁用异步发送模式"));
-        assertFalse(content.contains("首页"));
-        assertFalse(content.contains("导航路径"));
+        assertEquals(expected, actual);
+        verify(llama).parseToMarkdown(file, "curate.html", false);
+        verify(llama, never()).detectMissingPages(any(), any());
     }
 
     @Test

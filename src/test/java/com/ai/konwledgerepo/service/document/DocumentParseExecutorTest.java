@@ -20,7 +20,7 @@ import static org.mockito.Mockito.when;
 
 /**
  * DocumentParseExecutor 单元测试：mock DocumentParserService（不实例化真实解析器）。
- * 覆盖：锁占用早退、startParse 失败、成功路径、异常路径、策展门分支（pdf 走门不向量化）。
+ * 覆盖：锁占用早退、startParse 失败、成功路径、异常路径、策展门分支（html/pdf 走门不向量化）。
  */
 class DocumentParseExecutorTest {
 
@@ -46,6 +46,8 @@ class DocumentParseExecutorTest {
                 vectorIngestionService);
 
         when(taskLock.tryAcquire(any(), any())).thenReturn(true);
+        when(parserService.supportsLlamaParseCuration("pdf")).thenReturn(true);
+        when(parserService.supportsLlamaParseCuration("html")).thenReturn(true);
         // 清洗默认透传：原 pieces 全部保留、无清洗判定
         when(documentCleanService.cleanChunks(any())).thenAnswer(inv -> {
             List<ChunkPiece> pieces = inv.getArgument(0);
@@ -148,6 +150,30 @@ class DocumentParseExecutorTest {
         verify(vectorIngestionService, never()).ingest(any());
         verify(parserService, never()).parse(any());
         verify(taskLock).release(RedisKeys.docParse(DOC_ID));
+    }
+
+    @Test
+    void parseAsync_curateRequiredHtml_goesGated_noIngest() {
+        Document doc = new Document();
+        doc.setId(DOC_ID);
+        doc.setKbId(10L);
+        doc.setFileName("guide.html");
+        doc.setFileType("html");
+        doc.setCurateRequired(true);
+        when(parseTx.startParse(DOC_ID)).thenReturn(Optional.of(doc));
+        List<LlamaParseService.PageMarkdown> pages = List.of(
+                new LlamaParseService.PageMarkdown(0, "# HTML 内容"));
+        when(parserService.parseToPages(doc)).thenReturn(pages);
+        List<ChunkPiece> pieces = List.of(new ChunkPiece("# HTML 内容", 0, "HTML 内容"));
+        when(parserService.chunkFromPages(pages)).thenReturn(pieces);
+        when(parseTx.finalizeSuccessGated(DOC_ID, pieces, List.of())).thenReturn(true);
+
+        executor.parseAsync(DOC_ID, false);
+
+        verify(curateService).saveInitialMd(DOC_ID, pages, null);
+        verify(parseTx).finalizeSuccessGated(DOC_ID, pieces, List.of());
+        verify(vectorIngestionService, never()).ingest(any());
+        verify(parserService, never()).parse(any());
     }
 
     @Test

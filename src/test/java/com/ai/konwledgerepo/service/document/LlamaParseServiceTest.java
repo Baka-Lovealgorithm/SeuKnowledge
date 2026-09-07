@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.util.List;
 import java.util.UUID;
 
@@ -29,10 +30,15 @@ class LlamaParseServiceTest {
 
     /** 默认参数构造（缺页检测不依赖解析配置；enabled=false 不影响检测逻辑） */
     private LlamaParseService service() {
+        return service(null);
+    }
+
+    private LlamaParseService service(Path outputDir) {
         return new LlamaParseService(
                 new SeuDocumentProperties(true, true, 50, 100, 3, 800, 120,
                         new SeuDocumentProperties.LlamaParse(false, "", "https://api.cloud.llamaindex.ai",
-                                "cost_effective", "latest", "ch_sim", 5, 900, "", false, true, null), SeuDocumentProperties.Clean.defaults()),
+                                "cost_effective", "latest", "ch_sim", 5, 900, "", false, true,
+                                outputDir == null ? null : outputDir.toString()), SeuDocumentProperties.Clean.defaults()),
                 new ObjectMapper());
     }
 
@@ -140,5 +146,25 @@ class LlamaParseServiceTest {
     void needScreenshot_longMd_skipDownload() {
         assertFalse(LlamaParseService.needScreenshot("a".repeat(50), 50), "50 字符达到阈值不需要截图");
         assertFalse(LlamaParseService.needScreenshot("正文内容充足".repeat(20), 50), "文本充足页不下载截图");
+    }
+
+    @Test
+    void exportMarkdown_preservesPageMarkersAndUsesContentHash() throws Exception {
+        Path source = tempDir.resolve("guide.html");
+        Files.writeString(source, "<html><body>source</body></html>");
+        Path output = tempDir.resolve("markdown-output");
+
+        service(output).exportMarkdown(source, "guide.html", List.of(
+                page(0, "# 指南\n\n| 参数 | 值 |")));
+
+        List<Path> files;
+        try (var stream = Files.list(output)) {
+            files = stream.toList();
+        }
+        assertEquals(1, files.size());
+        assertTrue(files.get(0).getFileName().toString().matches("guide\\.html-[0-9a-f]{12}\\.md"));
+        String markdown = Files.readString(files.get(0));
+        assertTrue(markdown.contains("<!-- PAGE 0 -->"));
+        assertTrue(markdown.contains("| 参数 | 值 |"));
     }
 }

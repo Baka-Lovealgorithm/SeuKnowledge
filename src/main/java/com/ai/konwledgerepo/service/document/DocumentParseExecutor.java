@@ -16,7 +16,7 @@ import java.util.Optional;
 /**
  * 文档异步解析执行器：提取文本 → 分块 → 写入 MySQL chunk → 向量化入 ES。
  * <p>
- * 初洗门分支：curateRequired=true 且类型为 LlamaParse 产物（pdf/docx）时，解析到逐页 md
+ * 初洗门分支：curateRequired=true 且类型为 LlamaParse 产物（html/pdf/docx）时，解析到逐页 md
  * 落库（v1）→ 分块 → 落 chunk 后停在初洗（PREVIEWING，不向量化），等待人工决断
  * （编辑 md 重分块 / 接受后精修 / 确认后统一向量化）；其余照旧自动链路。
  * <p>
@@ -80,7 +80,8 @@ public class DocumentParseExecutor {
             }
             Document doc = docOpt.get();
             doc.setReuseCache(reuseCache);
-            if (Boolean.TRUE.equals(doc.getCurateRequired()) && isLlamaParseType(doc.getFileType())) {
+            if (Boolean.TRUE.equals(doc.getCurateRequired())
+                    && parserService.supportsLlamaParseCuration(doc.getFileType())) {
                 parseGated(doc);
             } else {
                 parseAuto(doc);
@@ -130,12 +131,4 @@ public class DocumentParseExecutor {
                 clean.outcomes().stream().filter(o -> o.disposition() == DocumentCleanService.Disposition.SUSPECT).count());
     }
 
-    /** 初洗门仅对 LlamaParse 产物（pdf/docx）有意义；txt/md/pptx/xlsx 无逐页 md，回退照旧链路 */
-    private static boolean isLlamaParseType(String fileType) {
-        if (fileType == null) {
-            return false;
-        }
-        String t = fileType.toLowerCase();
-        return "pdf".equals(t) || "docx".equals(t);
-    }
 }
