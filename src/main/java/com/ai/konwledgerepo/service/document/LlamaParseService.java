@@ -18,9 +18,12 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestClient;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -146,7 +149,7 @@ public class LlamaParseService {
             log.info("LlamaParse 任务已创建 jobId={} file={}", jobId, fileName);
             String status = pollJob(jobId);
             log.info("LlamaParse 任务完成 jobId={} status={} file={}", jobId, status, fileName);
-            return fetchMarkdown(jobId, fileName, needScreenshots);
+            return fetchMarkdown(jobId, file, fileName, needScreenshots);
         } catch (BizException e) {
             throw e;
         } catch (Exception e) {
@@ -261,9 +264,9 @@ public class LlamaParseService {
     /**
      * 取逐页 Markdown（JSON 结果优先，保留页码）；失败回退整篇 markdown；可选导出到 output-dir。
      * 整页截图按需下载：仅下载 needScreenshots 且文字识别数较少的页（md 为空或 &lt; vision-min-text），
-     * 其余页 screenshot 保持 null（避免全量下载浪费；PDF 路径 needScreenshots=false 时不下载任何截图）。
+     * 其余页 screenshot 保持 null（避免全量下载浪费；HTML/PDF/DOCX 路径 needScreenshots=false 时不下载截图）。
      */
-    private List<PageMarkdown> fetchMarkdown(String jobId, String fileName, boolean needScreenshots) throws IOException {
+    private List<PageMarkdown> fetchMarkdown(String jobId, Path file, String fileName, boolean needScreenshots) throws IOException {
         List<PageMarkdown> pages = new ArrayList<>();
         try {
             JsonNode root = getJson("/api/v1/parsing/job/" + jobId + "/result/json");
@@ -305,7 +308,7 @@ public class LlamaParseService {
         if (pages.isEmpty()) {
             throw new BizException("LlamaParse 结果无可用页面（请检查 tier 是否支持 markdown 输出）");
         }
-        exportIfNeeded(fileName, pages);
+        exportMarkdown(file, fileName, pages);
         return pages;
     }
 
@@ -400,21 +403,46 @@ public class LlamaParseService {
         }
     }
 
-    private void exportIfNeeded(String fileName, List<PageMarkdown> pages) {
+    /**
+     * 导出 LlamaParse 返回的原始 Markdown（在页面级清洗和人工初洗之前），供人工比对和后续优化使用。
+     * 同名而不同内容的上传文件按内容哈希隔离，缓存命中时也可用此方法恢复导出文件。
+     */
+    void exportMarkdown(Path sourceFile, String fileName, List<PageMarkdown> pages) {
         if (outputDir == null) {
             return;
         }
         try {
             Files.createDirectories(outputDir);
-            String safe = fileName.replaceAll("[^a-zA-Z0-9._\\-]", "_");
+            String safe = (fileName == null || fileName.isBlank() ? "document" : fileName)
+                    .replaceAll("[^a-zA-Z0-9._\\-]", "_");
             StringBuilder sb = new StringBuilder();
             for (PageMarkdown page : pages) {
                 sb.append("\n<!-- PAGE ").append(page.pageNumber()).append(" -->\n").append(page.markdown());
             }
-            Files.writeString(outputDir.resolve(safe + ".md"), sb.toString(), StandardCharsets.UTF_8);
-            log.info("LlamaParse 转换结果已导出: {}", outputDir.resolve(safe + ".md"));
+            Path output = outputDir.resolve(safe + "-" + shortFileHash(sourceFile) + ".md");
+            Files.writeString(output, sb.toString(), StandardCharsets.UTF_8);
+            log.info("LlamaParse 原始 Markdown 已导出: {}", output);
         } catch (IOException e) {
             log.warn("LlamaParse 结果导出失败: {}", e.getMessage());
+        }
+    }
+
+    private static String shortFileHash(Path sourceFile) {
+        try (InputStream in = Files.newInputStream(sourceFile)) {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = in.read(buffer)) != -1) {
+                digest.update(buffer, 0, read);
+            }
+            byte[] bytes = digest.digest();
+            StringBuilder hex = new StringBuilder();
+            for (int i = 0; i < Math.min(6, bytes.length); i++) {
+                hex.append(String.format("%02x", bytes[i]));
+            }
+            return hex.toString();
+        } catch (IOException | NoSuchAlgorithmException e) {
+            return "unknown";
         }
     }
 

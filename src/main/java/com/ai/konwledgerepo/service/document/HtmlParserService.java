@@ -16,10 +16,8 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * HTML 文档解析：提取可阅读正文并转换为 Markdown 风格文本，再复用既有标题感知分块。
- *
- * <p>优先选择 Doxygen 生成页面的 {@code .contents} 区域；普通页面依次选择 main、article、body。
- * 脚本、样式、导航、页脚、搜索控件和 Doxygen 源码行号会在提取前移除，避免它们进入向量检索。
+ * 本地 HTML 备用解析器：仅在 {@code KB_HTML_LOCAL_PARSER_ENABLED=true} 时由文档分发器选用。
+ * 默认 HTML 使用 LlamaParse，以获得更完整的 Markdown 和表格结构。
  */
 @Service
 public class HtmlParserService {
@@ -33,9 +31,7 @@ public class HtmlParserService {
             ".navpath", ".footer", ".tabs", ".tablist", ".summary", ".memnav", ".memitem", ".directory",
             ".lineno", ".ui-resizable-handle");
 
-    /**
-     * 读取 HTML、提取正文并按现有文本规则分块。HTML 没有真实页码，因此页码统一为 0。
-     */
+    /** 读取 HTML、提取正文并按既有文本规则分块。HTML 没有真实页码，因此页码统一为 0。 */
     public List<ChunkPiece> parse(Path path, int chunkSize, int chunkOverlap) {
         try {
             String markdown = toMarkdown(Jsoup.parse(path.toFile(), null));
@@ -48,9 +44,7 @@ public class HtmlParserService {
         }
     }
 
-    /**
-     * HTML → Markdown 风格纯文本。包可见以便单元测试覆盖 Doxygen 与普通 HTML。
-     */
+    /** HTML 转 Markdown 风格纯文本。包可见以便单元测试覆盖 Doxygen 与普通 HTML。 */
     static String toMarkdown(String html) {
         return toMarkdown(Jsoup.parse(html == null ? "" : html));
     }

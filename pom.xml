@@ -114,7 +114,7 @@
             <version>5.4.1</version>
         </dependency>
 
-        <!-- HTML 正文提取：兼容普通 HTML 与 Doxygen 生成的 XHTML 文档 -->
+        <!-- 本地 HTML 备用解析：默认关闭，仅在显式启用时用于无法调用 LlamaParse 的场景 -->
         <dependency>
             <groupId>org.jsoup</groupId>
             <artifactId>jsoup</artifactId>

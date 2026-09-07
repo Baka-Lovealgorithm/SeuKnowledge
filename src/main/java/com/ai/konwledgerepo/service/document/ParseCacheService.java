@@ -21,7 +21,7 @@ import java.util.Optional;
 /**
  * 文件级 LlamaParse 结果缓存服务：文件 SHA-256 内容寻址，缓存逐页 markdown。
  * <p>
- * 仅覆盖 needScreenshots=false 的解析路径（PDF/DOCX）：缓存页面序列不包含截图，
+ * 仅覆盖 needScreenshots=false 的解析路径（HTML/PDF/DOCX）：缓存页面序列不包含截图，
  * 可无损持久化与还原。写入失败不阻断解析（仅告警）；读取异常按 miss 处理（回退全量解析）。
  */
 @Service

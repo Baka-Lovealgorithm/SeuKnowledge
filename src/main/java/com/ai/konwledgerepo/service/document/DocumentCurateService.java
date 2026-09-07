@@ -32,7 +32,7 @@ import java.util.stream.Collectors;
  * 文档初洗与精修（原"文档人工策展"）：对解析后的逐页 markdown 提供在线编辑、重分块，
  * 以及"分块后、向量化前"的决断门（初洗 PREVIEWING → 精修 ACCEPTED → 确认后统一向量化）。
  * <p>
- * 流程（仅 curateRequired=true 且 LlamaParse 产物 pdf/docx）：
+ * 流程（仅 curateRequired=true 且 LlamaParse 产物 html/pdf/docx）：
  * <pre>
  * 解析完成 → saveInitialMd（落 md v1）→ finalizeSuccessGated（落 chunk + PREVIEWING）
  * PREVIEWING（初洗）：chunk 全只读；saveMd（编辑 md → 重分块，可反复）或 accept
