@@ -23,7 +23,8 @@ import java.util.List;
 
 /**
  * 文档解析服务（分发）：按类型（txt/md/html/pdf/docx/pptx/xlsx/xls）提取文本并分块。
- * txt/md 使用标题感知分块（ChunkSplitter，原逻辑不变）；
+ * txt 使用标题感知分块（ChunkSplitter，原逻辑不变）；
+ * md 直传使用递归分块（RecursiveChunkSplitter，表格 A+B 分块 + forward-fill，与 LlamaParse md 产物同链路）；
  * html 默认走 LlamaParse 云端转 Markdown + 递归分块（RecursiveChunkSplitter），可显式启用本地 Jsoup 备用解析；
  * docx 必须走 LlamaParse 云端转 Markdown + 递归分块；
  * pdf 在启用 LlamaParse 时走云端转 Markdown + 递归分块，
@@ -110,7 +111,8 @@ public class DocumentParserService {
         try {
             Path path = Path.of(doc.getFilePath());
             return switch (doc.getFileType().toLowerCase()) {
-                case "txt", "md" -> parseText(path);
+                case "txt" -> parseText(path);
+                case "md" -> parseMarkdown(path);
                 case "html" -> parseHtml(path, doc.getFileName(), reuseCache);
                 case "pdf" -> parsePdfWithLlamaParseFallback(path, doc.getFileName(), workspaceId, reuseCache);
                 case "docx" -> parseLlamaParseRequired(path, doc.getFileName(), reuseCache, "DOCX");
@@ -193,6 +195,12 @@ public class DocumentParserService {
     private List<ChunkPiece> parseText(Path path) throws IOException {
         String content = Files.readString(path, StandardCharsets.UTF_8);
         return ChunkSplitter.split(content, 0, chunkSize, chunkOverlap);
+    }
+
+    /** md 直传：整篇按 Markdown 递归分块（表格 A+B 原子/行组 + forward-fill），与 LlamaParse md 产物同链路 */
+    private List<ChunkPiece> parseMarkdown(Path path) throws IOException {
+        String content = Files.readString(path, StandardCharsets.UTF_8);
+        return RecursiveChunkSplitter.split(content, 0, chunkSize, chunkOverlap);
     }
 
     /**

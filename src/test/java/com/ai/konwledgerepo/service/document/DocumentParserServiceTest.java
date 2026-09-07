@@ -236,7 +236,7 @@ class DocumentParserServiceTest {
     }
 
     @Test
-    void parseMd_worksSameAsText() throws Exception {
+    void parseMd_basicTextStillChunked() throws Exception {
         Path file = tempDir.resolve("test.md");
         Files.writeString(file, "# 标题\n\n正文段落内容。");
 
@@ -245,7 +245,103 @@ class DocumentParserServiceTest {
         doc.setFileType("md");
 
         List<ChunkPiece> pieces = parser().parse(doc);
-        assertTrue(!pieces.isEmpty());
+        assertEquals(1, pieces.size());
+        assertTrue(pieces.get(0).content().contains("标题"));
+        assertTrue(pieces.get(0).content().contains("正文段落内容"));
+        assertEquals(0, pieces.get(0).pageNum(), "md 页码应为 0");
+    }
+
+    /** 带空单元格（合并单元格语义）的 md 表格夹具：MinGW 行首列为空，forward-fill 后应继承 Windows */
+    private static final String MD_TABLE_FIXTURE = """
+            # 1. 安装环境要求
+
+            ## 1.2. 软件环境
+
+            表 1 臻融数据分发服务 DDS 系统软件软件环境要求
+
+            | 操作系统 | 系统最低版本 | 依赖环境 |
+            | ------- | ------------- | ------------------------------ |
+            | Windows | Windows XP    | Visual Studio 2008 及以上版本的 IDE 及运行库 |
+            |         | MinGW         | **4.4.0** 等 |
+            | Linux   | Linux2.6.0 以上 | **g++ 4.8** 以上版本，包含相关支持库、工具链 |
+            """;
+
+    private Document mdTableDoc(Path file, String fileType) {
+        Document doc = new Document();
+        doc.setFilePath(file.toString());
+        doc.setFileType(fileType);
+        return doc;
+    }
+
+    @Test
+    void parseMd_tableAtomicChunkWithCaptionAndForwardFill() throws Exception {
+        Path file = tempDir.resolve("table.md");
+        Files.writeString(file, MD_TABLE_FIXTURE);
+
+        List<ChunkPiece> pieces = parser().parse(mdTableDoc(file, "md"));
+
+        assertFalse(pieces.isEmpty());
+        // 表格规整化：分隔行统一为 | --- |
+        assertTrue(pieces.stream().anyMatch(p -> p.content().contains("| --- |")), "表格块应含规整化分隔行");
+        // forward-fill：空单元格继承上一行 Windows
+        assertTrue(pieces.stream().anyMatch(p -> p.content().contains("| Windows | MinGW | **4.4.0** 等 |")),
+                "空单元格应继承上一行的 Windows");
+        // caption 吸附进表格块首行
+        assertTrue(pieces.stream().anyMatch(p -> p.content().startsWith("表 1 臻融数据分发服务")),
+                "caption 应吸附为表格块首行");
+        // 表格块继承标题祖先链
+        assertTrue(pieces.stream().anyMatch(p -> p.content().startsWith("表 1") && p.title().contains("1.2. 软件环境")),
+                "表格块标题应为标题祖先链路径");
+        assertTrue(pieces.stream().allMatch(p -> p.content().length() <= 800), "md 块长不应超过上限");
+    }
+
+    @Test
+    void parseMd_largeTableSplitIntoRowGroupsWithHeaderRepeated() throws Exception {
+        StringBuilder sb = new StringBuilder("# 大表章节\n\n表 2 运行库命名规则\n\n| 名称 | 命名规则 |\n| --- | --- |\n");
+        for (int i = 1; i <= 40; i++) {
+            sb.append("| 库文件").append(i).append(" | ZRDDS 库命名规则说明文本第").append(i).append("号 |\n");
+        }
+        Path file = tempDir.resolve("big-table.md");
+        Files.writeString(file, sb.toString());
+
+        List<ChunkPiece> pieces = parser().parse(mdTableDoc(file, "md"));
+
+        // 大表按行组分块：每个含 ≥2 数据行的块都必须自带表头与分隔行
+        List<ChunkPiece> rowGroups = pieces.stream()
+                .filter(p -> p.content().contains("库文件")).toList();
+        assertTrue(rowGroups.size() >= 2, "大表应拆为多个行组块");
+        for (ChunkPiece group : rowGroups) {
+            assertTrue(group.content().contains("| --- |"), "行组块应含分隔行: seq 内容=" + group.content());
+            assertTrue(group.content().contains("| 名称 | 命名规则 |"), "行组块应重复表头");
+        }
+        // 全部数据行保留（forward-fill 只增不删）
+        String all = pieces.stream().map(ChunkPiece::content).collect(java.util.stream.Collectors.joining("\n"));
+        for (int i = 1; i <= 40; i++) {
+            assertTrue(all.contains("库文件" + i), "数据行 库文件" + i + " 不应丢失");
+        }
+        assertTrue(pieces.stream().allMatch(p -> p.content().length() <= 800), "行组块不应超过块长上限");
+    }
+
+    @Test
+    void parseMd_vsTxt_tableAwareFork() throws Exception {
+        // 同一份内容分别以 .md 与 .txt 解析：md 走表格感知递归分块，txt 保持原 ChunkSplitter 行为
+        Path mdFile = tempDir.resolve("fork.md");
+        Files.writeString(mdFile, MD_TABLE_FIXTURE);
+        Path txtFile = tempDir.resolve("fork.txt");
+        Files.writeString(txtFile, MD_TABLE_FIXTURE);
+
+        List<ChunkPiece> mdPieces = parser().parse(mdTableDoc(mdFile, "md"));
+        List<ChunkPiece> txtPieces = parser().parse(mdTableDoc(txtFile, "txt"));
+
+        // md：forward-fill 生效（空单元格被继承值填充）
+        assertTrue(mdPieces.stream().anyMatch(p -> p.content().contains("| Windows | MinGW | **4.4.0** 等 |")),
+                "md 应触发 forward-fill");
+        // txt：原样保留空单元格，不发生 forward-fill，也无规整化分隔行
+        assertTrue(txtPieces.stream().noneMatch(p -> p.content().contains("| Windows | MinGW | **4.4.0** 等 |")),
+                "txt 不应触发 forward-fill");
+        assertTrue(txtPieces.stream().anyMatch(p -> p.content().contains("MinGW")), "txt 内容应原样保留");
+        assertFalse(mdPieces.isEmpty());
+        assertFalse(txtPieces.isEmpty());
     }
 
     @Test
