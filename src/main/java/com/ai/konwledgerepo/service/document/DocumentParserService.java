@@ -21,8 +21,9 @@ import java.util.Comparator;
 import java.util.List;
 
 /**
- * 文档解析服务（分发）：按类型（txt/md/pdf/docx/pptx/xlsx/xls）提取文本并分块。
+ * 文档解析服务（分发）：按类型（txt/md/html/pdf/docx/pptx/xlsx/xls）提取文本并分块。
  * txt/md 使用标题感知分块（ChunkSplitter，原逻辑不变）；
+ * html 使用 HtmlParserService 提取正文并转成 Markdown 风格文本，再复用 ChunkSplitter；
  * pdf/docx 在启用 LlamaParse 时走云端转 Markdown + 递归分块（RecursiveChunkSplitter），
  * pdf 失败/未配置时回退 {@link PdfParseService}（PDFBox 纯文本 + 按需识图）；
  * 缺页补全见 {@link VisionPageFiller}；pptx 复用 {@link PptxParserService}；
@@ -35,6 +36,7 @@ public class DocumentParserService {
     private static final Logger log = LoggerFactory.getLogger(DocumentParserService.class);
 
     private final LlamaParseService llamaParseService;
+    private final HtmlParserService htmlParserService;
     private final PptxParserService pptxParserService;
     private final ExcelParserService excelParserService;
     private final WorkspaceIdResolver workspaceIdResolver;
@@ -48,6 +50,7 @@ public class DocumentParserService {
     private final boolean fillMissingPages;
 
     public DocumentParserService(LlamaParseService llamaParseService,
+                                 HtmlParserService htmlParserService,
                                  PptxParserService pptxParserService,
                                  ExcelParserService excelParserService,
                                  WorkspaceIdResolver workspaceIdResolver,
@@ -58,6 +61,7 @@ public class DocumentParserService {
                                  QaTracing qaTracing,
                                  SeuDocumentProperties docProps) {
         this.llamaParseService = llamaParseService;
+        this.htmlParserService = htmlParserService;
         this.pptxParserService = pptxParserService;
         this.excelParserService = excelParserService;
         this.workspaceIdResolver = workspaceIdResolver;
@@ -101,6 +105,7 @@ public class DocumentParserService {
             Path path = Path.of(doc.getFilePath());
             return switch (doc.getFileType().toLowerCase()) {
                 case "txt", "md" -> parseText(path);
+                case "html" -> htmlParserService.parse(path, chunkSize, chunkOverlap);
                 case "pdf" -> parsePdfWithLlamaParseFallback(path, doc.getFileName(), workspaceId, reuseCache);
                 case "docx" -> parseDocx(path, doc.getFileName(), reuseCache);
                 case "pptx" -> pptxParserService.parse(path, doc.getFileName(), workspaceId);

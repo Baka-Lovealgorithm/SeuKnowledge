@@ -248,13 +248,25 @@ async function selectDoc(id) {
   loading.value = true
   try {
     if (isCurate.value) {
-      chunks.value = await curateApi.chunks(id)
+      chunks.value = normalizeChunks(await curateApi.chunks(id))
     } else {
-      chunks.value = await docApi.chunks(id)
+      // 普通文档接口返回 ChunkResponse.id；初洗门接口返回 ChunkReviewResponse.chunkId。
+      // 统一为 chunkId，避免编辑/审核动作拼出 /chunks/undefined/... 请求。
+      chunks.value = normalizeChunks(await docApi.chunks(id))
     }
   } finally {
     loading.value = false
   }
+}
+
+function normalizeChunks(items) {
+  return (items || []).map((chunk) => ({ ...chunk, chunkId: chunk.chunkId ?? chunk.id }))
+}
+
+function hasChunkId(row) {
+  if (row?.chunkId != null) return true
+  ElMessage.error('分块标识缺失，请刷新页面后重试')
+  return false
 }
 
 async function onKbChange() {
@@ -301,6 +313,7 @@ function openDetail(row) {
 }
 
 function openEdit(row) {
+  if (!hasChunkId(row)) return
   editRow.value = row
   editTitle.value = row.title || ''
   editContent.value = row.content || ''
@@ -308,6 +321,7 @@ function openEdit(row) {
 }
 
 async function saveEdit() {
+  if (!hasChunkId(editRow.value)) return
   editSaving.value = true
   try {
     if (isCurate.value) {
@@ -327,6 +341,7 @@ async function saveEdit() {
 }
 
 async function keep(row) {
+  if (!hasChunkId(row)) return
   try {
     if (isCurate.value) {
       await curateApi.keepChunk(docId.value, row.chunkId)
@@ -342,6 +357,7 @@ async function keep(row) {
 }
 
 async function unkeep(row) {
+  if (!hasChunkId(row)) return
   try {
     if (isCurate.value) {
       await curateApi.unkeepChunk(docId.value, row.chunkId)
@@ -357,6 +373,7 @@ async function unkeep(row) {
 }
 
 async function drop(row) {
+  if (!hasChunkId(row)) return
   try {
     await ElMessageBox.confirm(`确定删除 chunk #${row.seq}？删除后该块不进向量库（记录保留）。`, '删除 chunk', { type: 'warning' })
   } catch {
@@ -387,6 +404,7 @@ async function doMerge() {
   const target = mergeCandidates.value.find((c) => c.chunkId === mergeTargetId.value)
   if (!target) return
   const source = mergeCandidates.value.find((c) => c.chunkId !== mergeTargetId.value)
+  if (!hasChunkId(target) || !hasChunkId(source)) return
   mergeSaving.value = true
   try {
     const r = await curateApi.mergeChunk(docId.value, { sourceId: source.chunkId, targetId: target.chunkId })
@@ -422,7 +440,9 @@ async function confirm() {
 }
 
 async function batchKeep() {
-  const ids = selectedRows.value.filter((r) => r.cleanStatus === 'SUSPECT').map((r) => r.chunkId)
+  const rows = selectedRows.value.filter((r) => r.cleanStatus === 'SUSPECT')
+  if (rows.some((row) => !hasChunkId(row))) return
+  const ids = rows.map((row) => row.chunkId)
   if (!ids.length) return
   await ElMessageBox.confirm(`批量保留 ${ids.length} 个待审核分块并向量化？`, '批量保留', { type: 'info' })
   await reviewApi.batch(ids, 'keep')
@@ -431,7 +451,9 @@ async function batchKeep() {
 }
 
 async function batchDrop() {
-  const ids = selectedRows.value.filter((r) => r.cleanStatus === 'SUSPECT').map((r) => r.chunkId)
+  const rows = selectedRows.value.filter((r) => r.cleanStatus === 'SUSPECT')
+  if (rows.some((row) => !hasChunkId(row))) return
+  const ids = rows.map((row) => row.chunkId)
   if (!ids.length) return
   await ElMessageBox.confirm(`确定批量删除 ${ids.length} 个待审核分块？`, '批量删除', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' })
   await reviewApi.batch(ids, 'drop')
