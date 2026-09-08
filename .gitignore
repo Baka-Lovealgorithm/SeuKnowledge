@@ -41,6 +41,12 @@ web/vite-dev.log
 ### 运行时数据（上传文件 / LlamaParse 导出 / 日志等，不入库）###
 data/
 logs/
+runtime/
+
+### 容器部署本地密钥（仅提交 .env.example）###
+.env
+.env.*
+!.env.example
 
 ### 产品资料冗余压缩包（ZRDDS产品资料/ 目录已在库内）###
 ZRDDS产品资料.zip

@@ -1,0 +1,116 @@
+name: seuknowledge
+
+services:
+  mysql:
+    image: mysql:${MYSQL_VERSION:-8.4.4}
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DB:-seuknowledge}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+      TZ: Asia/Shanghai
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot --password=\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  elasticsearch:
+    build:
+      context: ./deploy/elasticsearch
+      args:
+        ES_VERSION: ${ES_VERSION:-8.17.6}
+    image: seuknowledge-elasticsearch:${ES_VERSION:-8.17.6}
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      - ES_JAVA_OPTS=-Xms${ES_HEAP_MB:-512}m -Xmx${ES_HEAP_MB:-512}m
+      - TZ=Asia/Shanghai
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=1s' > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 40s
+
+  redis:
+    image: redis:${REDIS_VERSION:-7.4.2}-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: seuknowledge-backend:${APP_TAG:-dev}
+    restart: unless-stopped
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DB: ${MYSQL_DB:-seuknowledge}
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+      ES_URIS: http://elasticsearch:9200
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      SERVER_PORT: 18080
+      KB_FILE_STORAGE_PATH: /app/data/files
+      KB_LLAMAPARSE_OUTPUT_DIR: /app/data/llamaparse
+      KB_LLAMAPARSE_ENABLED: ${KB_LLAMAPARSE_ENABLED:-false}
+      LLAMA_CLOUD_API_KEY: ${LLAMA_CLOUD_API_KEY:-}
+      KB_INFRA_FAIL_FAST: "true"
+      LOG_LEVEL_LLM: ${LOG_LEVEL_LLM:-info}
+      SEUKNOWLEDGE_SECURITY_ADMIN_USERNAME: ${SEUKNOWLEDGE_SECURITY_ADMIN_USERNAME:-admin}
+      SEUKNOWLEDGE_SECURITY_ADMIN_PASSWORD: ${SEUKNOWLEDGE_SECURITY_ADMIN_PASSWORD:?Set SEUKNOWLEDGE_SECURITY_ADMIN_PASSWORD in .env}
+      TZ: Asia/Shanghai
+    volumes:
+      - ./runtime/data:/app/data
+      - ./runtime/logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:18080/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    image: seuknowledge-frontend:${APP_TAG:-dev}
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8088}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+
+volumes:
+  mysql-data:
+  es-data:
+  redis-data:
