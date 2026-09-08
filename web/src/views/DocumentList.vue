@@ -101,6 +101,13 @@ const detailRow = ref(null)
 /** 过渡态轮询定时器（解析状态自动刷新） */
 let timer = null
 
+// ===== 批量上传状态（同一次文件选择的多个 change 事件归为一批） =====
+const batchQueue = []
+let batchTimer = null
+let batchFlushing = false
+const ALLOWED_EXT = ['txt', 'md', 'html', 'pdf', 'docx', 'pptx', 'xlsx', 'xls']
+const MAX_FILE_SIZE = 20 * 1024 * 1024 // 与后端单文件上限同口径（spring.servlet.multipart.max-file-size，默认 20MB）
+
 const parseType = (s) => ({ SUCCESS: 'success', FAILED: 'danger', PARSING: 'warning', PENDING: 'info' }[s] || 'info')
 
 const chunkStatusType = (row) => {
@@ -168,37 +175,116 @@ async function load() {
 }
 
 async function doUpload({ file }) {
+  // 批量归组：一次文件选择的 N 个 change 事件在同一 tick 内合并为一批（详见 flushUploadBatch）
+  batchQueue.push(file)
+  if (batchTimer) clearTimeout(batchTimer)
+  batchTimer = setTimeout(flushUploadBatch, 0)
+}
+
+/**
+ * 批量上传流水线：一次选择 → 至多 2 个汇总弹窗 → 逐文件串行请求（故障隔离）→ 1 次汇总 toast + 1 次刷新。
+ *  ① 预校验（坏扩展名/>20MB 本地剔除，不发请求不连坐）
+ *  ② 同名检测（大小写不敏感，对照当前列表快照）
+ *  ③ 汇总覆盖确认（仅存在同名时）：全部覆盖 / 跳过这些（取消与关闭均按跳过 dup 处理，新文件照常）
+ *  ④ 复用确认（仅走到覆盖时）：答案应用到本批全部文件（哈希按内容命中，新文件同内容同样受益）
+ *  ⑤ 串行提交：单文件失败只损失该文件；401（登录失效）中止剩余
+ *  ⑥ 汇总 toast（成功/失败/跳过计数）+ 一次 load()
+ */
+async function flushUploadBatch() {
+  batchTimer = null
+  if (batchFlushing) { batchTimer = setTimeout(flushUploadBatch, 500); return } // 前一批未完：整批延后，避免双流水线抢弹窗
+  const files = batchQueue.splice(0)
+  if (!files.length) return
+  batchFlushing = true
   try {
-    // 同名文件检测（大小写不敏感）→ 询问是否覆盖
-    const dup = list.value.find((d) => d.fileName && d.fileName.toLowerCase() === file.name.toLowerCase())
-    if (dup) {
-      await ElMessageBox.confirm(
-        `文件「${file.name}」已存在（${dup.fileName}），是否覆盖？覆盖将删除旧文档及其向量后重新上传。`,
-        '文件已存在',
-        { type: 'warning', confirmButtonText: '覆盖', cancelButtonText: '取消' }
-      )
-      // 覆盖后追加询问：是否复用解析缓存（内容相同时跳过云端解析，节省消耗）
-      let reuse = false
+    // ① 预校验（与后端 DocumentService.validate 同口径）
+    const valid = []
+    const skipped = []
+    for (const f of files) {
+      const dot = f.name.lastIndexOf('.')
+      const ext = dot >= 0 ? f.name.slice(dot + 1).toLowerCase() : ''
+      if (!ALLOWED_EXT.includes(ext)) { skipped.push(`${f.name}（类型不支持）`); continue }
+      if (f.size > MAX_FILE_SIZE) { skipped.push(`${f.name}（超过 20MB）`); continue }
+      valid.push(f)
+    }
+    if (skipped.length) {
+      ElMessage.warning(`已跳过 ${skipped.length} 个无效文件：${skipped.slice(0, 5).join('、')}${skipped.length > 5 ?' 等' : ''}`)
+    }
+    if (!valid.length) return
+
+    // ② 同名检测（当前列表快照，大小写不敏感）
+    const dupNames = new Set()
+    for (const f of valid) {
+      if (list.value.some((d) => d.fileName && d.fileName.toLowerCase() === f.name.toLowerCase())) {
+        dupNames.add(f.name.toLowerCase())
+      }
+    }
+
+    // ③④ 汇总确认（至多 2 个弹窗）
+    let reuse = false
+    let toUpload = valid
+    let dupSkipped = 0
+    if (dupNames.size) {
+      const dupList = valid.filter((f) => dupNames.has(f.name.toLowerCase()))
+      const fresh = valid.filter((f) => !dupNames.has(f.name.toLowerCase()))
       try {
         await ElMessageBox.confirm(
-          '是否复用已有解析结果？若文件内容与缓存一致将跳过云端解析（节省消耗），分块与向量化仍会正常生成。选择「重新解析」将全量解析。',
-          '复用解析结果',
-          { type: 'info', confirmButtonText: '复用', cancelButtonText: '重新解析' }
+          `以下 ${dupList.length} 个文件已存在：${dupList.map((f) => f.name).join('、')}。` +
+          `覆盖将删除旧文档及其向量/初洗内容后重新上传。`,
+          '存在同名文件',
+          { type: 'warning', confirmButtonText: '全部覆盖', cancelButtonText: '跳过这些' }
         )
-        reuse = true
+        try {
+          await ElMessageBox.confirm(
+            '是否复用已有解析结果？文件内容与缓存一致时将跳过云端解析（节省消耗），分块与向量化仍会正常生成；选择「重新解析」将全量解析。',
+            '复用解析结果',
+            { type: 'info', confirmButtonText: '复用', cancelButtonText: '重新解析' }
+          )
+          reuse = true
+        } catch { reuse = false }
       } catch {
-        // 用户选「重新解析」或关闭弹窗 → 全量解析（不复用缓存）
-        reuse = false
+        // 跳过这些（含关闭）：dup 剔除，仅新文件继续
+        toUpload = fresh
+        dupSkipped = dupList.length
       }
-      await docApi.upload(kbId, [file], true, reuse, curateOn.value)
-    } else {
-      await docApi.upload(kbId, [file], false, false, curateOn.value)
     }
-    ElMessage.success(`上传 ${file.name} 成功${curateOn.value ? '，已启用初洗门，请到左侧「文档初洗」页处理' : ''}`)
+    if (!toUpload.length) {
+      if (dupSkipped) ElMessage.info(`已跳过 ${dupSkipped} 个同名文件，本批无上传`)
+      return
+    }
+
+    // ⑤ 串行逐文件请求（参数 per-file 精确；单文件失败不连坐）
+    const succeeded = []
+    const failed = []
+    const uploaded = new Set() // 批内同名碰撞 → 后者自动覆盖前者（last-write-wins）
+    let authLost = false
+    for (const f of toUpload) {
+      const key = f.name.toLowerCase()
+      const replace = dupNames.has(key) || uploaded.has(key)
+      uploaded.add(key)
+      try {
+        await docApi.upload(kbId, [f], replace, reuse, curateOn.value)
+        succeeded.push(f.name)
+      } catch (e) {
+        if (e && e.response && e.response.status === 401) { authLost = true; break }
+        failed.push(f.name) // 具体错误信息拦截器已逐条 toast
+      }
+    }
+
+    // ⑥ 一条汇总 + 一次刷新
+    const skipCount = skipped.length + dupSkipped
+    const parts = [`成功 ${succeeded.length}`, `失败 ${failed.length}`, `跳过 ${skipCount}`].filter((p) => !p.endsWith(' 0'))
+    const summary = `上传完成：${parts.join(' · ') || '无文件'}`
+    if (authLost) {
+      ElMessage.error('登录已失效，请重新登录；本批剩余文件未上传')
+    } else if (failed.length || skipped.length || dupSkipped) {
+      ElMessage.warning(failed.length ? `${summary}（失败：${failed.slice(0, 5).join('、')}${failed.length > 5 ? ' 等' : ''}）` : summary)
+    } else {
+      ElMessage.success(summary + (curateOn.value ? '，已启用初洗门，请到左侧「文档初洗」页处理' : ''))
+    }
     load()
-  } catch (e) {
-    // 拦截器已提示；用户取消覆盖询问时静默跳过
-    if (e === 'cancel' || e === 'close') return
+  } finally {
+    batchFlushing = false
   }
 }
 
