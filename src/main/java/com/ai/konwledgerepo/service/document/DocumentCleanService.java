@@ -97,22 +97,31 @@ public class DocumentCleanService {
 
     /**
      * P1 页眉页脚剥离：
-     * 第一遍跨页统计归一化行（trim + 数字占位为 &lt;NUM&gt;）的出现率；
+     * 第一遍跨页统计归一化行（trim + 数字占位为 &lt;NUM&gt;）的**页面出现率**（同一页内多次出现只计 1 次）；
      * 第二遍剥离满足「出现率 ≥ headerFooterRatio 且 长度 ≤ headerFooterMaxLen
      * 且 位于页首/页尾 headerFooterWindow 行内」的行。只剥行不删页。
+     * <p>
+     * 单页守卫（P0）：{@code pages < 2} 时直接跳过——单页文档中每一行的出现率都是 1.0，
+     * 没有守卫会把页首/页尾的正常短行（如人工初洗追加的尾行）全部误剥为"模板"。
+     * 与 {@link #removeNoisePages} 的 {@code size() <= 1} 守卫同口径。
      */
     private List<LlamaParseService.PageMarkdown> stripHeaderFooter(List<LlamaParseService.PageMarkdown> pages,
                                                                    List<PageAction> actions) {
         int total = pages.size();
+        if (total < 2) {
+            return pages; // 单页文档无跨页统计意义，P1 不生效（内容保护）
+        }
         List<List<String>> pageLines = new ArrayList<>(total);
         Map<String, Integer> lineCount = new HashMap<>();
         for (LlamaParseService.PageMarkdown page : pages) {
             String md = page.markdown() == null ? "" : page.markdown();
             List<String> lines = Arrays.asList(md.split("\n", -1));
             pageLines.add(lines);
+            // 页面出现率：同一归一化行在同一页多次出现只计 1 次（防止单页内重复把率刷满）
+            Set<String> seen = new HashSet<>();
             for (String line : lines) {
                 String norm = normalize(line);
-                if (norm.isBlank()) {
+                if (norm.isBlank() || !seen.add(norm)) {
                     continue;
                 }
                 lineCount.merge(norm, 1, Integer::sum);
