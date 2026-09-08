@@ -24,7 +24,7 @@ import java.util.List;
 /**
  * 文档解析服务（分发）：按类型（txt/md/html/pdf/docx/pptx/xlsx/xls）提取文本并分块。
  * txt 使用标题感知分块（ChunkSplitter，原逻辑不变）；
- * md 直传使用递归分块（RecursiveChunkSplitter，表格 A+B 分块 + forward-fill，与 LlamaParse md 产物同链路）；
+ * md 直传使用递归分块（RecursiveChunkSplitter，代码围栏原子/行组 + 表格 A+B 分块 + forward-fill，与 LlamaParse md 产物同链路）；
  * html 默认走 LlamaParse 云端转 Markdown + 递归分块（RecursiveChunkSplitter），可显式启用本地 Jsoup 备用解析；
  * docx 必须走 LlamaParse 云端转 Markdown + 递归分块；
  * pdf 在启用 LlamaParse 时走云端转 Markdown + 递归分块，
@@ -197,7 +197,7 @@ public class DocumentParserService {
         return ChunkSplitter.split(content, 0, chunkSize, chunkOverlap);
     }
 
-    /** md 直传：整篇按 Markdown 递归分块（表格 A+B 原子/行组 + forward-fill），与 LlamaParse md 产物同链路 */
+    /** md 直传：整篇按 Markdown 递归分块（代码围栏原子/行组 + 表格 A+B 原子/行组 + forward-fill），与 LlamaParse md 产物同链路 */
     private List<ChunkPiece> parseMarkdown(Path path) throws IOException {
         String content = Files.readString(path, StandardCharsets.UTF_8);
         return RecursiveChunkSplitter.split(content, 0, chunkSize, chunkOverlap);

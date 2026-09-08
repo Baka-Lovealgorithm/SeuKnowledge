@@ -8,10 +8,13 @@ import java.util.regex.Pattern;
 /**
  * 递归分词器（仿 LlamaIndex RecursiveCharacterTextSplitter，面向 LlamaParse 输出的 Markdown）。
  *
- * <p>策略：先由 {@link TableExtractor} 把文本切成"正文段 + 表格段"——正文段按分隔符优先级逐层切分
- * （Markdown 二级标题 → 三级标题 → … → 一级标题 → 空行（段落）→ 换行 → 句子标点 → 空格 → 字符兜底）；
- * 表格段经 forward-fill 规整化后按 A+B 混合产出：小表整表原子块、大表行组+表头（见 {@link #tablePieces}）。
- * 输出块携带标题祖先链路径（ChunkPiece.title，见 {@link Headings}），供引用展示与向量/重排感知结构。
+ * <p>策略：结构识别是<b>行级优先级认领的词法器</b>——先由 {@link CodeExtractor} 把围栏代码段圈走
+ * （小代码块整块原子、大代码块行组+重复围栏头，见 {@link #codePieces}；围栏内 {@code |---|} 不被误判为表格、
+ * {@code # 注释} 不被误判为标题），剩余正文再由 {@link TableExtractor} 切成"正文段 + 表格段"——
+ * 正文段按分隔符优先级逐层切分（Markdown 二级标题 → 三级标题 → … → 一级标题 → 空行（段落）→ 换行 →
+ * 句子标点 → 空格 → 字符兜底）；表格段经 forward-fill 规整化后按 A+B 混合产出（见 {@link #tablePieces}）。
+ * 输出块携带标题祖先链路径（ChunkPiece.title，见 {@link Headings}），供引用展示与向量/重排感知结构；
+ * 代码/表格段旁路窗口直出且不更新标题栈（栈在结构块内冻结）。
  *
  * <p>参数沿用既有分块配置（chunk-size / chunk-overlap）；跨页 carry 语义与 {@link ChunkSplitter#splitWithCarry}
  * 一致：页尾重叠文本并入下一页首个真实片段，下一页以标题行开头时丢弃 carry（章节边界无需衔接）；
@@ -84,27 +87,37 @@ public final class RecursiveChunkSplitter {
             carry = "";
         }
 
-        // 1) 表格段分类：pipe 表格（含 forward-fill 规整化）作为原子段直接产出，正文段递归切分
+        // 1) 结构认领（行级词法器）：代码围栏段优先圈走，剩余正文再进表格识别
         String full = carry.isEmpty() ? text : carry + "\n" + text;
-        List<TableExtractor.Segment> segments = TableExtractor.extract(full);
+        List<CodeExtractor.Segment> topSegments = CodeExtractor.extract(full);
 
-        // 2) 逐段处理：正文段进窗口（标题栈跟踪），表格段直接产出原子块/行组
+        // 2) 逐段处理：正文段进窗口（标题栈跟踪），表格段与代码段旁路窗口直出（标题栈冻结）
         List<ChunkPiece> pieces = new ArrayList<>();
         StringBuilder window = new StringBuilder();
         List<Headings.StackEntry> prevStack = inheritStack == null ? new ArrayList<>() : new ArrayList<>(inheritStack);
-        for (TableExtractor.Segment seg : segments) {
-            if (seg instanceof TableExtractor.TextBlock tb) {
-                List<String> segs = new ArrayList<>();
-                splitRecursive(tb.text(), SEPARATORS, 0, max, segs);
-                for (String s : segs) {
-                    if (window.length() > 0 && window.length() + s.length() > max) {
-                        prevStack = flush(pieces, window, ov, prevStack, pageNum);
-                    }
-                    window.append(s).append('\n');
-                }
-            } else if (seg instanceof TableExtractor.TableBlock tbl) {
+        for (CodeExtractor.Segment top : topSegments) {
+            if (top instanceof CodeExtractor.CodeBlock code) {
                 prevStack = flush(pieces, window, ov, prevStack, pageNum);
-                pieces.addAll(tablePieces(tbl.table(), max, prevStack, pageNum));
+                pieces.addAll(codePieces(code, max, prevStack, pageNum));
+                continue;
+            }
+            if (!(top instanceof CodeExtractor.ProseBlock prose)) {
+                continue;
+            }
+            for (TableExtractor.Segment seg : TableExtractor.extract(prose.text())) {
+                if (seg instanceof TableExtractor.TextBlock tb) {
+                    List<String> segs = new ArrayList<>();
+                    splitRecursive(tb.text(), SEPARATORS, 0, max, segs);
+                    for (String s : segs) {
+                        if (window.length() > 0 && window.length() + s.length() > max) {
+                            prevStack = flush(pieces, window, ov, prevStack, pageNum);
+                        }
+                        window.append(s).append('\n');
+                    }
+                } else if (seg instanceof TableExtractor.TableBlock tbl) {
+                    prevStack = flush(pieces, window, ov, prevStack, pageNum);
+                    pieces.addAll(tablePieces(tbl.table(), max, prevStack, pageNum));
+                }
             }
         }
         prevStack = flush(pieces, window, ov, prevStack, pageNum);
@@ -145,6 +158,82 @@ public final class RecursiveChunkSplitter {
         }
         if (group.length() > headBlock.length()) {
             out.add(new ChunkPiece(group.toString().trim(), pageNum, title));
+        }
+        return out;
+    }
+
+    /**
+     * 代码块产出（A+B 混合，与 {@link #tablePieces} 同构）：
+     * 小代码块（整块含围栏 ≤ chunk-size）一个原子块；大代码块按<b>行组</b>切——
+     * 每组重复开栏行（带语言标签）与闭栏行，组界优先回退到组内最后一个空行（对齐 import/方法等
+     * 空行块边界），回退不到再按行界；组间无 overlap（围栏头 + title 祖先链即锚点，
+     * 字符级重叠对代码是截半行噪音）；单个超上限的行整行独占一组（同表格超大行例外）。
+     * 代码体行逐字保留、一字不改；仅组边界丢弃纯空行。
+     * 代码块 title = 祖先链路径；不更新标题栈（围栏内 {@code #} 注释行不当作标题）。
+     * 未闭合围栏（closed=false）逐组合成闭栏自愈。全空白代码块不产出。
+     */
+    static List<ChunkPiece> codePieces(CodeExtractor.CodeBlock block, int chunkSize,
+                                       List<Headings.StackEntry> stack, int pageNum) {
+        List<ChunkPiece> out = new ArrayList<>();
+        List<String> lines = block.lines();
+        boolean anyContent = false;
+        for (String l : lines) {
+            if (!l.isBlank()) {
+                anyContent = true;
+                break;
+            }
+        }
+        if (!anyContent) {
+            return out;
+        }
+        String title = Headings.path(stack);
+        String head = block.opener() + "\n";
+        String tail = "\n" + block.marker();
+        if (block.toMarkdown().length() <= chunkSize) {
+            // A：整块原子
+            out.add(new ChunkPiece(block.toMarkdown(), pageNum, title));
+            return out;
+        }
+        // B：行组（溢出时优先回退到最后空行，每组重复围栏头尾）
+        int groupMax = Math.max(1, chunkSize - head.length() - tail.length());
+        int n = lines.size();
+        int start = 0;
+        while (start < n) {
+            while (start < n && lines.get(start).isBlank()) {
+                start++; // 组首空行无信息量，丢弃
+            }
+            if (start >= n) {
+                break;
+            }
+            int end = start;
+            int len = 0;
+            int lastBlank = -1; // 组内最后一个空行（首选组界）
+            boolean overflowed = false;
+            while (end < n) {
+                int add = lines.get(end).length() + 1;
+                if (end > start && len + add > groupMax) {
+                    overflowed = true;
+                    break;
+                }
+                if (lines.get(end).isBlank()) {
+                    lastBlank = end;
+                }
+                len += add;
+                end++;
+            }
+            if (overflowed && lastBlank > start) {
+                end = lastBlank;
+            }
+            int cut = end;
+            while (cut > start && lines.get(cut - 1).isBlank()) {
+                cut--; // 去掉组尾空行
+            }
+            if (cut <= start) {
+                cut = start + 1; // 兜底：每组至少 1 行，防空转
+            }
+            String body = String.join("\n", lines.subList(start, cut));
+            out.add(new ChunkPiece(head + body.stripTrailing() + tail, pageNum, title));
+            start = cut;
         }
         return out;
     }
