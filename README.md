@@ -150,7 +150,7 @@ npm run dev
 
 1. 登录（admin/admin123）→ 新建或切换工作空间
 2. **模型配置**：配置文本 + 向量模型（apiKey 建议 `env:` 引用）并执行**连通性测试**；（可选）配置识图 / 重排模型
-3. 建知识库 → 上传文档（自动解析、分块、向量化）
+3. 建知识库 → 上传文档（自动解析、分块、向量化）。文档列表分两条健康线：**解析状态**（`PENDING/PARSING/SUCCESS/FAILED/ERROR`，只代表分块是否落库）与**向量**（`向量 i/t`，代表分块是否真的进了 ES；`SUCCESS` 但 `i<t` 说明向量化尚未追平，悬停看明细）。改名用文件名后的 ✎（只改列表与检索引用名，不重解析、扩展名不可改）；向量化失败或"先补配模型再救历史文档"时点**重建向量**（只重跑 embedding+ES 写入，不产生云端解析消耗）；**重试**才会全量重新解析（初洗中的文档会连带丢弃人工编辑的 md 版本，有二次确认）
 4. （可选）AI 抽取：对文档创建抽取任务 → 在业务知识 / 问答对页审核草稿
 5. 智能问答：选择知识库提问，答案流式输出并附证据引用
 
@@ -192,7 +192,8 @@ npm run dev
 | `KB_LLAMAPARSE_OUTPUT_DIR` | ./data/llamaparse | LlamaParse 原始转换 Markdown 导出目录（初洗前，按内容哈希命名；可为空禁用） |
 | `KB_LLAMAPARSE_TAKE_SCREENSHOT` / `KB_LLAMAPARSE_FILL_MISSING_PAGES` | true / true | 整页截图返回 / 缺页 VLM 补全（后者需 VISION 模型） |
 | `KB_ES_INDEX` / `KB_ES_DIMENSIONS` | kb_chunk / 1024 | ES 索引名与向量维度（**改维度需重建索引**） |
-| `KB_ASYNC_CORE_SIZE` / `KB_ASYNC_MAX_SIZE` / `KB_ASYNC_QUEUE_CAPACITY` | 8 / 32 / 256 | 通用异步线程池 |
+| `KB_ASYNC_CORE_SIZE` / `KB_ASYNC_MAX_SIZE` / `KB_ASYNC_QUEUE_CAPACITY` | 8 / 32 / 256 | 通用异步线程池（文档解析、AI 抽取等无限定符 `@Async`） |
+| `KB_VECTOR_ASYNC_CORE_SIZE` / `KB_VECTOR_ASYNC_MAX_SIZE` / `KB_VECTOR_ASYNC_QUEUE_CAPACITY` | 2 / 4 / 200 | 向量化专用线程池（精修「确认」与「重建向量」走此池，不再排在分钟级抽取任务后面） |
 | `KB_EXTRACT_CONCURRENCY` | 2 | 抽取任务全局并发上限（公平信号量，超限排队等待） |
 | `KB_TRACING_ENABLED` | true | OpenTelemetry 追踪总开关 |
 | `LOG_LEVEL_LLM` | debug | LLM I/O 调试日志级别（含 prompt/输出等敏感内容，生产建议 `info`） |
@@ -217,4 +218,4 @@ mvn test
 $env:SPRING_PROFILES_ACTIVE='dev'; .\mvnw.cmd test
 ```
 
-当前 **66 个测试类、761 个用例**（分块器与标题祖先链、LlamaParse 表格解析、代码围栏分块、Excel 本地解析、文档解析、模型解析/配置、知识库、会话与滚动摘要、抽取任务、多工作空间成员管理、空间组管理与权限取高、重排客户端/节点、标题生成等）。其中 2 个 `@SpringBootTest` 集成测试类（4 个用例）需 MySQL/Redis 环境，纯单元测试 757 个全绿。
+当前 **68 个测试类、800 个用例**（分块器与标题祖先链、LlamaParse 表格解析、代码围栏分块、Excel 本地解析、文档解析、文档重命名/重建向量/文件名校验、向量化状态回写与线程池装配、模型解析/配置、知识库、会话与滚动摘要、抽取任务、多工作空间成员管理、空间组管理与权限取高、重排客户端/节点、标题生成等）。其中 2 个 `@SpringBootTest` 集成测试类（4 个用例）需 MySQL/Redis 环境，纯单元测试 796 个全绿。
