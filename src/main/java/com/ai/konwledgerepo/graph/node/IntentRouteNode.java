@@ -36,6 +36,8 @@ import java.util.regex.Pattern;
  * 任一注入片段置 INJECTION=true（业务链路忽略指令 / 纯注入走固定拒答）。
  * <p>输出：有业务片段 → NEXT=QUERY_REWRITE；无业务片段（纯闲聊/纯注入）→ NEXT=CHAT_ONLY。
  * <p>路由输出为 JSON 约束 {@code {"fragments":[{"text":"…","intent":"…"}]}}（见 JudgeOptions.routerJson），
+ * 输出 token 上限按问题 token 粗估动态取档（指数阶梯 {256,512,1024}，解析失败重试时指数升档、硬顶 1024），
+ * 保证长问题（片段需回显原文）不被截断；
  * JSON 提取采用括号配平取首个平衡对象（多 JSON 块确定性取第一块，容忍围栏/前后噪声）；
  * 解析失败回退旧五标签 substring 解析（单片段）；仍无法解析 2 次后按兜底注入把关处理：
  * 问题命中高精度注入关键词模式 → fail-closed 按纯注入固定拒答（杜绝构造坏输出丢失注入标记的绕过）；
@@ -85,8 +87,6 @@ public class IntentRouteNode extends QaNodeSupport {
         Long workspaceId = QaContext.longValue(state, QaContextKey.WORKSPACE_ID, -1L);
         ChatModel chat = modelFactory.getChatModelByUsage(ModelUsage.ROUTER.value(), workspaceId);
         ModelConfig cfg = modelFactory.resolveChatConfig(ModelUsage.ROUTER.value(), workspaceId);
-        // JSON 约束：多意图片段结构输出，保证可解析（JudgeOptions.routerJson）
-        ChatOptions opts = JudgeOptions.routerJson(chat, cfg);
         List<HistoryEntry> history = QaContext.history(state);
         String recentJson = QaContext.renderRecentJson(history, ROUTER_RECENT_ROUNDS);
         if (recentJson.isBlank() || "[]".equals(recentJson)) {
@@ -98,17 +98,30 @@ public class IntentRouteNode extends QaNodeSupport {
                 "kbName", kbName, "agentPrompt", agentPrompt,
                 "summaryText", summaryText, "recentJson", recentJson, "question", question));
 
+        // 动态输出上限：片段 JSON 需回显问题文本，按问题 token 粗估取指数阶梯 {256,512,1024} 档，
+        // 解析失败重试时升档（JudgeOptions.routerJsonCap / escalate），硬顶 1024
+        int cap = JudgeOptions.routerJsonCap(question);
+        span.setAttribute("router_max_tokens", cap);
+        if (cap > JudgeOptions.ROUTER_JSON_BASE_TOKENS) {
+            log.info("意图路由动态输出上限={}（问题 token 估算≈{}）", cap, JudgeOptions.estimateTokens(question));
+        }
+
         List<RouteFragment> fragments = null;
         String response = null;
         for (int attempt = 1; attempt <= ROUTER_MAX_ATTEMPTS; attempt++) {
+            // JSON 约束：多意图片段结构输出，保证可解析（JudgeOptions.routerJson）
+            ChatOptions opts = JudgeOptions.routerJson(chat, cfg, cap);
             response = LlmTrace.call(qaTracing, chat, prompt, opts);
             fragments = parseFragments(response, question);
             if (fragments != null) {
                 break;
             }
             if (attempt < ROUTER_MAX_ATTEMPTS) {
-                log.warn("意图路由输出无法解析（第 {} 次），重试: response={}", attempt,
+                int escalated = JudgeOptions.escalate(cap);
+                log.warn("意图路由输出无法解析（第 {} 次，上限={}），升档至 {} 重试: response={}", attempt, cap, escalated,
                         response == null ? "<null>" : response.length() > 100 ? response.substring(0, 100) + "…" : response);
+                cap = escalated;
+                span.setAttribute("router_max_tokens", cap);
             }
         }
         if (fragments == null) {
