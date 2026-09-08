@@ -143,6 +143,64 @@ class DocumentCurateServiceTest {
         assertThrows(BizException.class, () -> service.docInfo(1L));
     }
 
+    // ===== saveInitialMd（retry 重解析替换语义） =====
+
+    @Test
+    void saveInitialMd_existingMd_replacesWithFreshV1() {
+        when(curateRepository.existsByDocId(1L)).thenReturn(true);
+        when(curateRepository.maxVersion(1L)).thenReturn(2);
+
+        service.saveInitialMd(1L, List.of(
+                new LlamaParseService.PageMarkdown(1, "新解析第一页"),
+                new LlamaParseService.PageMarkdown(2, "新解析第二页")), 9L);
+
+        // 旧全部版本（含人工编辑的 v2）被整删，随后落新 v1
+        verify(curateRepository).deleteByDocId(1L);
+        ArgumentCaptor<List<DocumentCurate>> rows = ArgumentCaptor.forClass(List.class);
+        verify(curateRepository).saveAll(rows.capture());
+        assertEquals(2, rows.getValue().size());
+        for (DocumentCurate row : rows.getValue()) {
+            assertEquals(1, row.getVersion());
+            assertEquals(1L, row.getDocId());
+        }
+        assertEquals("新解析第一页", rows.getValue().get(0).getContent());
+        // 审计留痕：before 记录替换了旧版本
+        ArgumentCaptor<DocumentCurateLog> logCap = ArgumentCaptor.forClass(DocumentCurateLog.class);
+        verify(curateLogRepository).save(logCap.capture());
+        assertEquals("save_md", logCap.getValue().getAction());
+        assertTrue(logCap.getValue().getBeforeSummary().contains("替换旧初洗 md（至 v2）"));
+    }
+
+    @Test
+    void saveInitialMd_blankPagesWithExisting_keepsOldMd() {
+        // 空守卫前置：新解析无可用页面 → 不查存在性、不删、不写（旧 md 原样保留）
+        service.saveInitialMd(1L, List.of(
+                new LlamaParseService.PageMarkdown(1, "   "),
+                new LlamaParseService.PageMarkdown(2, null)), 9L);
+
+        verify(curateRepository, never()).existsByDocId(anyLong());
+        verify(curateRepository, never()).deleteByDocId(anyLong());
+        verify(curateRepository, never()).saveAll(anyList());
+        verify(curateLogRepository, never()).save(any());
+    }
+
+    @Test
+    void saveInitialMd_firstParse_savesV1WithoutDelete() {
+        when(curateRepository.existsByDocId(1L)).thenReturn(false);
+
+        service.saveInitialMd(1L, List.of(new LlamaParseService.PageMarkdown(1, "首页")), null);
+
+        verify(curateRepository, never()).deleteByDocId(anyLong());
+        ArgumentCaptor<List<DocumentCurate>> rows = ArgumentCaptor.forClass(List.class);
+        verify(curateRepository).saveAll(rows.capture());
+        assertEquals(1, rows.getValue().size());
+        assertEquals(1, rows.getValue().get(0).getVersion());
+        assertEquals(0L, rows.getValue().get(0).getUpdatedBy()); // userId 空 → 系统 0
+        ArgumentCaptor<DocumentCurateLog> logCap = ArgumentCaptor.forClass(DocumentCurateLog.class);
+        verify(curateLogRepository).save(logCap.capture());
+        assertNull(logCap.getValue().getBeforeSummary()); // 首次落库无"替换"before
+    }
+
     // ===== saveMd =====
 
     @Test
