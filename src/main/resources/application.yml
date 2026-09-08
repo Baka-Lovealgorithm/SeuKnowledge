@@ -75,6 +75,16 @@ springdoc:
   swagger-ui:
     path: /swagger-ui.html
 
+# 容器编排探活端点：默认只开放 health，避免暴露运行时敏感指标。
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+
 # ===== SeuKnowledge 自定义配置 =====
 seuknowledge:
   security:
