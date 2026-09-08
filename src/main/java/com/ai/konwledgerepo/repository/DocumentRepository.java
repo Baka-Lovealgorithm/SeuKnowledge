@@ -28,8 +28,15 @@ public interface DocumentRepository extends JpaRepository<Document, Long> {
     /**
      * 原子重试入口：仅允许从 SUCCESS/FAILED/ERROR 迁入 PENDING（禁止 PENDING/PARSING 重试）。
      * 返回 0 表示文档不存在、解析中或已被处理。
+     * <p>
+     * 同时清空 {@code curateStatus}：retry 已在 {@code DocumentService} 里删光旧 chunk，若保留
+     * PREVIEWING/ACCEPTED，文档会以「解析失败但仍在初洗/精修队列」的僵尸态滞留——队列里点进去
+     * 是旧初洗 md + 0 个分块（初洗 md 与 chunk 错位的最后一种可达路径）。重解析若走初洗门，
+     * {@code DocumentParseTx.finalizeSuccessGated} 会重新置 PREVIEWING，门的开关由持久化的
+     * {@code curateRequired} 决定，不受本处清空影响。
      */
     @Modifying
-    @Query("update Document d set d.parseStatus = 'PENDING', d.errorMsg = null, d.chunkCount = 0 where d.id = :id and d.parseStatus not in ('PENDING', 'PARSING')")
+    @Query("update Document d set d.parseStatus = 'PENDING', d.errorMsg = null, d.chunkCount = 0,"
+            + " d.curateStatus = null where d.id = :id and d.parseStatus not in ('PENDING', 'PARSING')")
     int casPendingForRetry(@Param("id") Long id);
 }

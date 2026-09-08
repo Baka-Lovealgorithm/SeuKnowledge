@@ -1,10 +1,12 @@
 package com.ai.konwledgerepo.service.vector;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch._types.Conflicts;
 import co.elastic.clients.elasticsearch.core.BulkRequest;
 import co.elastic.clients.elasticsearch.core.BulkResponse;
 import co.elastic.clients.elasticsearch.core.IndexResponse;
 import co.elastic.clients.elasticsearch.core.bulk.BulkResponseItem;
+import co.elastic.clients.json.JsonData;
 import com.ai.konwledgerepo.config.props.SeuEsProperties;
 import com.ai.konwledgerepo.entity.Chunk;
 import com.ai.konwledgerepo.entity.ChunkStatus;
@@ -38,6 +40,9 @@ public class VectorIngestionService {
     /** ES bulk 批量写入每批 chunk 数：大文档几百 chunk 时一次提交一批（每条约 1MB，100 条远低于 ES 默认 100MB 请求上限） */
     private static final int BULK_BATCH_SIZE = 100;
 
+    /** {@code kb_document.error_msg} 列宽 varchar(500) */
+    private static final int ERROR_MSG_MAX = 500;
+
     private final ElasticsearchClient esClient;
     private final ChunkRepository chunkRepository;
     private final DocumentRepository documentRepository;
@@ -60,15 +65,20 @@ public class VectorIngestionService {
     }
 
     /**
-     * 异步向量化入口（精修确认后触发）：与解析流程一致，在独立线程（无外层事务）执行
+     * 异步向量化入口（精修确认后、文档列表「重建向量」后触发）：与解析流程一致，在独立线程（无外层事务）执行
      * {@link #ingest}，确保各 chunk 的 save 自行开事务并真实提交。
      * <p>
      * 背景：若在 {@code afterCommitExecutor.runAfterCommit} 回调内同步调用 ingest，
      * 回调时外层事务已提交但 {@code TransactionSynchronizationManager} 的资源尚未清理，
      * 后续 chunkRepository.save 会「加入」这个已提交事务而被静默丢弃（不抛异常，ES 已写、
      * 日志显示成功，但 MySQL esId 不回填）。@Async 换线程后无活动事务，修复该问题。
+     * <p>
+     * 为什么显式指定 {@code vectorTaskExecutor}：不带限定符时本方法落在通用 {@code applicationTaskExecutor}
+     * （core 8），会和分钟级的抽取任务同池排队——此时文档已 {@code curateStatus=null + SUCCESS}、
+     * 已离开精修队列，却还没有任何向量，用户看到的就是"确认完成之后一片成功但全都检索不到"。
+     * 独立小池把这段不可见窗口的长度与抽取吞吐解耦。
      */
-    @Async
+    @Async("vectorTaskExecutor")
     public void ingestAsync(Long docId) {
         ingest(docId);
     }
@@ -77,6 +87,10 @@ public class VectorIngestionService {
      * 为文档所有待向量化 chunk 生成向量并写入 ES。
      * 清洗 DEFER 决策：clean_status=SUSPECT 的 chunk 暂不向量化（人工审核通过后由
      * {@link #reindexChunk} 单条索引）；embedding 失败时不阻断（chunk 保持 EMBEDDING，可重试），文档置为 ERROR。
+     * <p>
+     * <b>每条出口都会回写文档级向量态</b>（{@link #applyVectorState}）：此前"模型未配置"与"ES 部分写入失败"
+     * 只写日志，文档停在 SUCCESS、chunk 停在 EMBEDDING/FAILED，且无任何补偿任务——用户只能靠全量重解析自救。
+     * 现在这两种情况都会落到 errorMsg 与列表的向量计数上，并可用「重建向量」原地修复。
      */
     public void ingest(Long docId) {
         Document doc = documentRepository.findById(docId).orElse(null);
@@ -88,6 +102,8 @@ public class VectorIngestionService {
                 .filter(c -> !"SUSPECT".equals(c.getCleanStatus()))
                 .toList();
         if (chunks.isEmpty()) {
+            // 没有待向量化块：仍回写一次，清掉历史失败摘要（并把此前因向量化失败的 ERROR 复位）
+            applyVectorState(doc);
             return;
         }
         EmbeddingModel embeddingModel;
@@ -96,6 +112,7 @@ public class VectorIngestionService {
             embeddingModel = modelFactory.getEmbeddingModelByUsage(ModelUsage.RETRIEVE.value(), workspaceId);
         } catch (Exception e) {
             log.warn("向量模型未配置，文档 {} 向量化暂缓: {}", docId, e.getMessage());
+            noteVectorState(doc, "向量模型未配置，分块尚未向量化；配置好检索模型后点「重建向量」即可，无需重新解析");
             return;
         }
         // DashScope 等供应商单次 embedding 请求有批大小上限（text-embedding-v3 服务端限制每批 ≤10 条），
@@ -112,12 +129,100 @@ public class VectorIngestionService {
         } catch (Exception e) {
             log.error("chunk embedding 失败，文档 {}", docId, e);
             doc.setParseStatus(DocStatus.ERROR.value());
-            doc.setErrorMsg("向量化失败: " + e.getMessage());
+            doc.setErrorMsg(truncate("向量化失败: " + e.getMessage()
+                    + "（修好模型/网络后可点「重建向量」，无需重新解析）", ERROR_MSG_MAX));
             documentRepository.save(doc);
             return;
         }
         boolean allIndexed = indexChunksBulk(doc, chunks, vectors);
+        // 收尾回写：bulk 的逐条失败只落在 chunk 上，这里把它汇总到文档，避免"SUCCESS 但召不回"
+        applyVectorState(doc);
         log.info("文档 {} 向量化完成（{} 块，全部成功={}）", docId, chunks.size(), allIndexed);
+    }
+
+    /**
+     * 向量化收尾：按 chunk 实际状态汇总，回写文档级可见信息。
+     * <ul>
+     *   <li>全部追平 → errorMsg 置空；若此前是本类写的 ERROR（向量失败），复位为 SUCCESS。</li>
+     *   <li>仍有 pending/failed → 写摘要 errorMsg（含可用「重建向量」的指引），<b>不改 parseStatus</b>：
+     *       解析确实成功了，状态机取值不新增，避免牵动 retry CAS 与抽取守卫的判定。</li>
+     * </ul>
+     */
+    void applyVectorState(Document doc) {
+        int indexed = 0;
+        int pending = 0;
+        int failed = 0;
+        int awaitingReview = 0;
+        for (Chunk c : chunkRepository.findByDocIdOrderBySeqAsc(doc.getId())) {
+            boolean suspect = "SUSPECT".equals(c.getCleanStatus());
+            if (suspect) {
+                awaitingReview++;
+            }
+            if (ChunkStatus.FILTERED.is(c.getStatus()) || suspect) {
+                continue; // 按设计不进向量库，不计入分母
+            }
+            if (ChunkStatus.INDEXED.is(c.getStatus())) {
+                indexed++;
+            } else if (ChunkStatus.FAILED.is(c.getStatus())) {
+                failed++;
+            } else if (ChunkStatus.EMBEDDING.is(c.getStatus())) {
+                pending++;
+            }
+        }
+        String summary = vectorStateSummary(indexed, pending, failed, awaitingReview);
+        doc.setErrorMsg(summary);
+        if (summary == null && DocStatus.ERROR.is(doc.getParseStatus())) {
+            // ERROR 在本类之外无人写入（解析失败走 FAILED），故向量追平即可安全复位
+            doc.setParseStatus(DocStatus.SUCCESS.value());
+        }
+        saveQuietly(doc, doc.getId());
+    }
+
+    /**
+     * 收尾回写用 best-effort 保存：chunk 状态才是权威事实（列表向量计数与 ES 都按它走），
+     * 文档摘要只是给人看的注脚。若因并发（如同时有人改初洗 md 触发 @Version 递增）而乐观锁失败，
+     * 绝不能让异常冒泡出去——在自动链路上，parseAsync 的 catch 会把一次成功的解析误判成 FAILED。
+     */
+    private void saveQuietly(Document doc, Long docId) {
+        try {
+            documentRepository.save(doc);
+        } catch (Exception e) {
+            log.warn("文档 {} 向量态摘要回写失败（不影响 chunk 权威状态，可刷新列表后重试）: {}", docId, e.getMessage());
+        }
+    }
+
+    /** 汇总 chunk 计数 → 文档级向量摘要；返回 null 表示完全健康（应清空 errorMsg）。包级纯函数，供单测。 */
+    static String vectorStateSummary(int indexed, int pending, int failed, int awaitingReview) {
+        if (pending == 0 && failed == 0) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder("向量未完成：已索引 ").append(indexed)
+                .append('/').append(indexed + pending + failed);
+        if (failed > 0) {
+            sb.append("，失败 ").append(failed);
+        }
+        if (pending > 0) {
+            sb.append("，待向量化 ").append(pending);
+        }
+        if (awaitingReview > 0) {
+            sb.append("；另有 ").append(awaitingReview).append(" 块待人工审核");
+        }
+        sb.append("；可在文档列表点「重建向量」修复，无需重新解析");
+        return sb.toString();
+    }
+
+    /** 直接给文档写一条向量态说明（向量化被短路跳过时用；不触碰 parseStatus） */
+    private void noteVectorState(Document doc, String message) {
+        doc.setErrorMsg(truncate(message, ERROR_MSG_MAX));
+        documentRepository.save(doc);
+    }
+
+    /** errorMsg 列宽 varchar(500)：异常信息可能很长，截断避免落库时二次抛完整性异常 */
+    static String truncate(String text, int max) {
+        if (text == null || text.length() <= max) {
+            return text;
+        }
+        return text.substring(0, max - 1) + "…";
     }
 
     /**
@@ -172,6 +277,34 @@ public class VectorIngestionService {
             log.info("删除 ES 知识库 {} 全部来源文档完成", kbId);
         } catch (IOException e) {
             log.error("删除 ES 知识库 {} 文档失败", kbId, e);
+        }
+    }
+
+    /**
+     * 文档改名后同步 ES 内的冗余引用名（按 docId 命中，chunk / 业务知识 / 问答对一次改全）。
+     * <p>
+     * 为什么必须同步：{@code docName} 参与 BM25 打分（{@code docName^0.5}）与 rerank 输入，
+     * 也是问答证据引用的展示名；不同步会出现"列表已改名、答案还在引用旧名"。
+     * 用 update_by_query + painless 只改这一个字段，避免为此重新 embedding（真金白银的模型调用）。
+     * <p>
+     * 失败仅告警不抛出：MySQL 侧文件名是权威且已提交，改名不该因 ES 抖动回滚；
+     * 后续「重建向量」或再次改名会重新覆盖该字段。历史会话的引用快照（kb_chat_message.refs）不回改——
+     * 那是当时答案的取证记录。
+     */
+    public void renameInIndex(Long docId, String newDocName) {
+        try {
+            esClient.updateByQuery(u -> u
+                    .index(indexName)
+                    .conflicts(Conflicts.Proceed)
+                    .refresh(true)
+                    .query(q -> q.term(t -> t.field(ChunkDocFields.DOC_ID).value(docId)))
+                    .script(s -> s
+                            .source("ctx._source." + ChunkDocFields.DOC_NAME + " = params.newName")
+                            .params("newName", JsonData.of(newDocName))));
+            log.info("已同步 ES 引用名：docId={} → {}", docId, newDocName);
+        } catch (Exception e) {
+            log.warn("同步 ES 引用名失败 docId={}（MySQL 已改名，可稍后「重建向量」或再次改名覆盖）: {}",
+                    docId, e.getMessage());
         }
     }
 

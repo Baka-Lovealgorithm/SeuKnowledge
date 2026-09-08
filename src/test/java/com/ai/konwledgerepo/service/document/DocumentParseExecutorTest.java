@@ -211,4 +211,64 @@ class DocumentParseExecutorTest {
         verify(curateService, never()).saveInitialMd(any(), any(), any());
         verify(taskLock).release(RedisKeys.docParse(DOC_ID));
     }
+
+    // ===== 零产出守卫：不再无条件落 SUCCESS（修"假 SUCCESS 但检索不到"与初洗 md/分块错位） =====
+
+    @Test
+    void parseAsync_autoPathEmptyChunks_failsInsteadOfSuccess() {
+        Document doc = new Document();
+        doc.setId(DOC_ID);
+        doc.setFileName("scan.pdf");
+        when(parseTx.startParse(DOC_ID)).thenReturn(Optional.of(doc));
+        // 云端返回空页 / 页面级清洗把所有页剥成噪声 → 分块结果为空
+        when(parserService.parse(doc)).thenReturn(List.of());
+
+        executor.parseAsync(DOC_ID, false);
+
+        verify(parseTx, never()).finalizeSuccess(any(), any(), any());
+        verify(parseTx).finalizeFailure(eq(DOC_ID), any());
+        verify(vectorIngestionService, never()).ingest(any());
+        verify(taskLock).release(RedisKeys.docParse(DOC_ID));
+    }
+
+    @Test
+    void parseAsync_gatedPathEmptyChunks_keepsOldMdAndFails() {
+        Document doc = new Document();
+        doc.setId(DOC_ID);
+        doc.setFileName("scan.pdf");
+        doc.setFileType("pdf");
+        doc.setCurateRequired(true);
+        when(parseTx.startParse(DOC_ID)).thenReturn(Optional.of(doc));
+        when(parserService.parseToPages(doc)).thenReturn(List.of());
+        when(parserService.chunkFromPages(List.of())).thenReturn(List.of());
+
+        executor.parseAsync(DOC_ID, false);
+
+        // saveInitialMd 的空守卫保留旧初洗 md；本用例保证不再落 SUCCESS + PREVIEWING
+        verify(parseTx, never()).finalizeSuccessGated(any(), any(), any());
+        verify(parseTx).finalizeFailure(eq(DOC_ID), any());
+        verify(vectorIngestionService, never()).ingest(any());
+    }
+
+    @Test
+    void parseAsync_allChunksAutoDropped_isNotZeroOutput() {
+        Document doc = new Document();
+        doc.setId(DOC_ID);
+        doc.setFileName("noise.pdf");
+        when(parseTx.startParse(DOC_ID)).thenReturn(Optional.of(doc));
+        List<ChunkPiece> pieces = List.of(new ChunkPiece("页眉", 1, null));
+        when(parserService.parse(doc)).thenReturn(pieces);
+        // 全部被 AUTO_DROP：kept 空但 outcomes 非空 —— 属于"解析成功、内容被清洗判光"，不是零产出
+        List<DocumentCleanService.CleanOutcome> dropped = List.of(
+                new DocumentCleanService.CleanOutcome(pieces.get(0), "A1", DocumentCleanService.Disposition.AUTO_DROP,
+                        "A1 碎片"));
+        when(documentCleanService.cleanChunks(pieces))
+                .thenReturn(new DocumentCleanService.ChunkCleanResult(List.of(), dropped));
+        when(parseTx.finalizeSuccess(DOC_ID, List.of(), dropped)).thenReturn(true);
+
+        executor.parseAsync(DOC_ID, false);
+
+        verify(parseTx).finalizeSuccess(DOC_ID, List.of(), dropped);
+        verify(parseTx, never()).finalizeFailure(any(), any());
+    }
 }

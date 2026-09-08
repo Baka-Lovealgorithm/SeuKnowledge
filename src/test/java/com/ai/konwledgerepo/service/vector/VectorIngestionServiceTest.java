@@ -126,7 +126,113 @@ class VectorIngestionServiceTest {
         service.ingest(1L);
 
         verify(embeddingModel, never()).embed(anyList());
-        verify(documentRepository, never()).save(any(Document.class));
+        // 回写照常发生（ SUSPECT 不计入分母 → 摘要为 null → 不误报"向量未完成"），但向量态必须被明确落库
+        ArgumentCaptor<Document> captor = ArgumentCaptor.forClass(Document.class);
+        verify(documentRepository).save(captor.capture());
+        assertNull(captor.getValue().getErrorMsg(), "全是待人工审核块不应写失败摘要");
+    }
+
+    // ===== 向量态收尾回写：修"文档显示成功却检索不到"的静默不一致 =====
+
+    @Test
+    void ingest_modelNotConfigured_writesActionableErrorMsg() {
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc()));
+        when(chunkRepository.findByDocIdOrderBySeqAsc(1L)).thenReturn(List.of(chunk(1L, "标题", "正文")));
+        when(modelFactory.getEmbeddingModelByUsage(anyString(), anyLong()))
+                .thenThrow(new IllegalStateException("未配置 EMBEDDING 模型"));
+
+        service.ingest(1L);
+
+        ArgumentCaptor<Document> captor = ArgumentCaptor.forClass(Document.class);
+        verify(documentRepository).save(captor.capture());
+        // 此前这里只 log.warn 后 return：文档停在 SUCCESS、块停在 EMBEDDING，用户永远看不出来
+        assertTrue(captor.getValue().getErrorMsg().contains("向量模型未配置"), captor.getValue().getErrorMsg());
+        assertTrue(captor.getValue().getErrorMsg().contains("重建向量"), "应给出可动手的救济指引");
+    }
+
+    @Test
+    void ingest_partialIndexFailure_surfacesOnDocument() {
+        Chunk indexed = chunk(1L, "标题", "已索引正文");
+        indexed.setStatus(ChunkStatus.INDEXED.value());
+        Chunk failed = chunk(2L, "标题", "失败正文");
+        failed.setStatus(ChunkStatus.FAILED.value());
+        Document doc = doc();
+        doc.setParseStatus("SUCCESS");
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc));
+        // 无 EMBEDDING 块 → 不触 ES，直接走收尾回写（对应"bulk 部分失败后文档仍显示健康"的场景）
+        when(chunkRepository.findByDocIdOrderBySeqAsc(1L)).thenReturn(List.of(indexed, failed));
+
+        service.ingest(1L);
+
+        ArgumentCaptor<Document> captor = ArgumentCaptor.forClass(Document.class);
+        verify(documentRepository).save(captor.capture());
+        assertEquals("SUCCESS", captor.getValue().getParseStatus(), "解析确实成功，不新增状态取值");
+        assertTrue(captor.getValue().getErrorMsg().contains("已索引 1/2"), captor.getValue().getErrorMsg());
+        assertTrue(captor.getValue().getErrorMsg().contains("失败 1"), captor.getValue().getErrorMsg());
+    }
+
+    @Test
+    void ingest_allIndexed_recoversErrorToSuccessAndClearsErrorMsg() {
+        Chunk indexed = chunk(1L, "标题", "正文");
+        indexed.setStatus(ChunkStatus.INDEXED.value());
+        Document doc = doc();
+        doc.setParseStatus("ERROR");
+        doc.setErrorMsg("向量化失败: 上游超时");
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc));
+        when(chunkRepository.findByDocIdOrderBySeqAsc(1L)).thenReturn(List.of(indexed));
+
+        service.ingest(1L);
+
+        ArgumentCaptor<Document> captor = ArgumentCaptor.forClass(Document.class);
+        verify(documentRepository).save(captor.capture());
+        // ERROR 只由本类的向量化失败写入 → 重建向量追平后应自动复位，否则用户会对着一条陈旧 ERROR 无从下手
+        assertEquals("SUCCESS", captor.getValue().getParseStatus(), "向量全部追平时应复位 ERROR");
+        assertNull(captor.getValue().getErrorMsg());
+    }
+
+    @Test
+    void ingest_embeddingFailure_keepsTruncatedErrorMsg() {
+        Chunk c = chunk(1L, "标题", "正文");
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc()));
+        when(chunkRepository.findByDocIdOrderBySeqAsc(1L)).thenReturn(List.of(c));
+        // 远超 error_msg varchar(500) 的异常信息：截断防止落库二次抛完整性异常
+        when(embeddingModel.embed(anyList())).thenThrow(new RuntimeException("x".repeat(900)));
+
+        service.ingest(1L);
+
+        ArgumentCaptor<Document> captor = ArgumentCaptor.forClass(Document.class);
+        verify(documentRepository).save(captor.capture());
+        assertEquals("ERROR", captor.getValue().getParseStatus(), "embedding 失败应将文档置为 ERROR");
+        assertTrue(captor.getValue().getErrorMsg().length() <= 500,
+                "errorMsg 必须截断到列宽内，实际 " + captor.getValue().getErrorMsg().length());
+    }
+
+    // ===== vectorStateSummary / truncate：纯函数 =====
+
+    @Test
+    void vectorStateSummary_allHealthy_returnsNull() {
+        assertNull(VectorIngestionService.vectorStateSummary(12, 0, 0, 0), "全健康应清空 errorMsg");
+        assertNull(VectorIngestionService.vectorStateSummary(0, 0, 0, 3), "只剩待人工审核不算向量化未完成");
+    }
+
+    @Test
+    void vectorStateSummary_pendingAndFailedAndSuspect_listsAll() {
+        String summary = VectorIngestionService.vectorStateSummary(12, 2, 1, 3);
+
+        assertTrue(summary.contains("已索引 12/15"), summary);
+        assertTrue(summary.contains("失败 1"), summary);
+        assertTrue(summary.contains("待向量化 2"), summary);
+        assertTrue(summary.contains("另有 3 块待人工审核"), summary);
+        assertTrue(summary.contains("重建向量"), summary);
+    }
+
+    @Test
+    void truncate_keepsShortAndLimitsLong() {
+        assertEquals("abc", VectorIngestionService.truncate("abc", 500));
+        assertNull(VectorIngestionService.truncate(null, 500));
+        String out = VectorIngestionService.truncate("y".repeat(600), 500);
+        assertEquals(500, out.length());
+        assertTrue(out.endsWith("…"));
     }
 
     @Test
