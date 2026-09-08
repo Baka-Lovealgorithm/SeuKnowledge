@@ -90,14 +90,6 @@ export const agentApi = {
   update: (kbId, data) => http.put(`/kb/${kbId}/agent`, data)
 }
 
-/** 提示词模板管理（节点提示词 + 渲染预览 + 重置默认） */
-export const promptApi = {
-  list: () => http.get('/prompts'),
-  update: (key, content) => http.put(`/prompts/${key}`, { content }),
-  reset: (key) => http.post(`/prompts/${key}/reset`),
-  preview: (key, variables) => http.post('/prompts/preview', { key, variables })
-}
-
 export const bkApi = {
   list: (kbId, status) => http.get(`/kb/${kbId}/business-knowledge`, { params: { status } }),
   create: (kbId, data) => http.post(`/kb/${kbId}/business-knowledge`, data),

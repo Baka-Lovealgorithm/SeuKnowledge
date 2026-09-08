@@ -49,10 +49,11 @@ const routes = [
     meta: { auth: true, roles: ['OWNER', 'ADMIN'], title: '模型配置' }
   },
   {
-    path: '/prompts',
-    component: () => import('../views/PromptManage.vue'),
-    meta: { auth: true, roles: ['OWNER', 'ADMIN'], title: '提示词管理' }
+    path: '/agent',
+    component: () => import('../views/AgentConfig.vue'),
+    meta: { auth: true, roles: ['OWNER', 'ADMIN'], title: 'Agent 配置' }
   },
+  { path: '/prompts', redirect: '/agent' },
   {
     path: '/members',
     component: () => import('../views/MemberManage.vue'),
@@ -90,7 +91,7 @@ router.beforeEach((to) => {
     }
     if (!role || !to.meta.roles.includes(role)) {
       // 无权限访问管理页：普通成员回到知识库（只读），其余回首页
-      return to.path === '/members' || to.path === '/groups' || to.path === '/models' || to.path === '/prompts' ? '/' : false
+      return to.path === '/members' || to.path === '/groups' || to.path === '/models' || to.path === '/agent' ? '/' : false
     }
   }
   return true
