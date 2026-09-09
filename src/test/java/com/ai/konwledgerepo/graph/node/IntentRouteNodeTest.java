@@ -472,4 +472,50 @@ class IntentRouteNodeTest {
         assertFalse(IntentRouteNode.injectionPatternHit("ZRDDS 能否忽略无效的组播地址进行通信？"));
         assertFalse(IntentRouteNode.injectionPatternHit(null));
     }
+
+    // ===== 动态输出 token 上限：估算取档 + 重试指数升档 =====
+
+    @Test
+    void longQuestion_secondAttemptEscalatesCap() throws Exception {
+        // 200 字 CJK 问题：估算档 512；第 1 次不可解析 → 第 2 次升档至 1024 并成功
+        String q = "字".repeat(200);
+        stubLlm("不确定", "该问题属于 BUSINESS 业务咨询");
+
+        Map<String, Object> out = node.apply(state(q));
+
+        assertEquals(Intent.BUSINESS.value(), out.get(QaContextKey.INTENT));
+        ArgumentCaptor<Prompt> prompts = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat, times(2)).call(prompts.capture());
+        assertEquals(512, (int) prompts.getAllValues().get(0).getOptions().getMaxTokens(), "第 1 次应使用问题估算档");
+        assertEquals(1024, (int) prompts.getAllValues().get(1).getOptions().getMaxTokens(), "重试应指数升档且封顶 1024");
+    }
+
+    @Test
+    void shortQuestion_baseCapThenEscalate_withinCeiling() throws Exception {
+        // 短问题：第 1 次维持现状 256；失败后升 512（JSON 解析成功，intent 聚合正确）
+        stubLlm("不确定", "{\"fragments\":[{\"text\":\"如何申请报销？\",\"intent\":\"BUSINESS\"}]}");
+
+        Map<String, Object> out = node.apply(state("如何申请报销？"));
+
+        assertEquals(Intent.BUSINESS.value(), out.get(QaContextKey.INTENT));
+        assertEquals(QaState.QUERY_REWRITE.name(), out.get(QaContextKey.NEXT));
+        ArgumentCaptor<Prompt> prompts = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat, times(2)).call(prompts.capture());
+        assertEquals(256, (int) prompts.getAllValues().get(0).getOptions().getMaxTokens());
+        assertEquals(512, (int) prompts.getAllValues().get(1).getOptions().getMaxTokens());
+    }
+
+    @Test
+    void veryLongQuestion_capClampedTo1024_bothAttempts() throws Exception {
+        // 超长问题：两次尝试均在硬顶 1024（不再上探，失控风险由兜底反转承接）
+        String q = "字".repeat(2000);
+        stubLlm("不确定", "BUSINESS");
+
+        node.apply(state(q));
+
+        ArgumentCaptor<Prompt> prompts = ArgumentCaptor.forClass(Prompt.class);
+        verify(chat, times(2)).call(prompts.capture());
+        assertEquals(1024, (int) prompts.getAllValues().get(0).getOptions().getMaxTokens());
+        assertEquals(1024, (int) prompts.getAllValues().get(1).getOptions().getMaxTokens());
+    }
 }

@@ -152,15 +152,14 @@ public class DocumentCurateService {
     // ==================== 初始落库（解析链路勾选路径调用） ====================
 
     /**
-     * 初始解析落库：逐页 markdown → kb_document_curate version=1（幂等：已有则跳过）。
+     * 初始解析落库：逐页 markdown → kb_document_curate version=1。
+     * 已存在旧版本时（retry 重解析路径）**原子替换**：同一事务内删全部旧版本（含人工编辑的高版本）
+     * 再落新 v1，保证初洗编辑器展示的 md 与本轮解析出的 chunk 始终对齐；
+     * 新解析**无可用页面时不删不写**（保留旧 md——重解析失败后人工救济的唯一底牌）。
      * 由 {@link DocumentParseExecutor} 在 LlamaParse 解析完成后调用（事务内）。
      */
     @Transactional
     public void saveInitialMd(Long docId, List<LlamaParseService.PageMarkdown> pages, Long userId) {
-        if (curateRepository.existsByDocId(docId)) {
-            log.debug("saveInitialMd 跳过：文档 {} 已有初洗 md", docId);
-            return;
-        }
         List<DocumentCurate> rows = new ArrayList<>();
         for (LlamaParseService.PageMarkdown p : pages) {
             if (p.markdown() == null || p.markdown().isBlank()) {
@@ -174,12 +173,23 @@ public class DocumentCurateService {
             row.setUpdatedBy(userId == null ? 0L : userId);
             rows.add(row);
         }
+        // 空守卫必须在删除之前：云端偶发空结果不允许洗掉已有初洗成果
         if (rows.isEmpty()) {
-            log.warn("saveInitialMd：文档 {} 解析结果无可用页面，不落初洗 md", docId);
+            log.warn("saveInitialMd：文档 {} 解析结果无可用页面，不落初洗 md（已有旧版本则原样保留）", docId);
             return;
         }
+        boolean replaced = curateRepository.existsByDocId(docId);
+        int oldMaxVersion = replaced ? curateRepository.maxVersion(docId) : 0;
+        if (replaced) {
+            curateRepository.deleteByDocId(docId);
+        }
         curateRepository.saveAll(rows);
-        recordLog(docId, "save_md", null, "v1 " + rows.size() + " 页", userId);
+        recordLog(docId, "save_md", replaced ? "替换旧初洗 md（至 v" + oldMaxVersion + "）" : null,
+                "v1 " + rows.size() + " 页", userId);
+        if (replaced) {
+            log.info("saveInitialMd：文档 {} 已有旧初洗 md（至 v{}），retry 重解析结果已整体替换为新 v1（{} 页）",
+                    docId, oldMaxVersion, rows.size());
+        }
     }
 
     // ==================== 编辑 md 并重分块 ====================

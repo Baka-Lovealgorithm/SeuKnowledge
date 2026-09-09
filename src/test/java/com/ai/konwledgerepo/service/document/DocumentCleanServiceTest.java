@@ -95,6 +95,33 @@ class DocumentCleanServiceTest {
         assertTrue(result.pages().get(0).markdown().contains("很长的重复文本"), "超长行不应被剥离");
     }
 
+    @Test
+    void p1_singlePageDocument_neverStrips() {
+        // P0 单页守卫：单页文档每行出现率都是 1.0，无守卫会把页首页尾短行（如人工初洗追加的尾行）全部误剥
+        List<LlamaParseService.PageMarkdown> pages = List.of(
+                page(1, "页眉样式短行\n这是单页文档的正文内容，长度足够避开封面与空白页判定，应当完整保留下来。\n【人工编辑尾行标记】"));
+
+        DocumentCleanService.PageCleanResult result = service.cleanPages(pages);
+
+        String md = result.pages().get(0).markdown();
+        assertTrue(md.contains("页眉样式短行"), "单页文档页首短行不应被剥离");
+        assertTrue(md.contains("【人工编辑尾行标记】"), "单页文档页尾人工行不应被误剥为页脚");
+        assertTrue(result.actions().isEmpty(), "单页文档 P1 应整体跳过并零动作");
+    }
+
+    @Test
+    void p1_lineRepeatedWithinSinglePage_notTemplate() {
+        // 页面出现率语义：短句只在第 1 页出现 2 次、第 2 页不出现 → 1/2=0.5 < 0.8，不算模板
+        // （旧的出现次数口径会被单页重复刷成 2/2=1.0 而误剥）
+        List<LlamaParseService.PageMarkdown> pages = List.of(
+                page(1, "内部编号ABC\n正文甲内容足够长一些用来避开页面级噪声页判定的干扰文本。\n内部编号ABC"),
+                page(2, "正文乙内容足够长一些用来避开页面级噪声页判定的干扰文本。"));
+
+        DocumentCleanService.PageCleanResult result = service.cleanPages(pages);
+
+        assertTrue(result.pages().get(0).markdown().contains("内部编号ABC"), "单页内重复不构成跨页模板，不应剥离");
+    }
+
     // ==================== 页面级：P2/P3/P4/P5/P6 ====================
 
     @Test

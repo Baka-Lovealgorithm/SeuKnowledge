@@ -123,6 +123,59 @@ class RefSnippetTest {
         assertEquals("", RefSnippet.snippet(""));
     }
 
+    // ===== 围栏代码块感知 =====
+
+    private static final String CODE = """
+            ```java
+            public class Demo {
+                public static void main(String[] args) {
+                    System.out.println("hello zrdds demo");
+                }
+            }
+            ```
+            """;
+
+    @Test
+    void fenceBlockFullyPreservedWhenCutInside() {
+        // 前缀把截断点推进到代码块中部 → 整块围栏返回，无省略号、不含前缀与后继文本
+        String content = "前".repeat(290) + "\n\n" + CODE + "\n后续内容" + "末".repeat(300);
+        String out = RefSnippet.snippet(content);
+        assertTrue(out.trim().startsWith("```java"), "应返回整块代码，实际: " + out);
+        assertTrue(out.trim().endsWith("```"));
+        assertFalse(out.contains("后续内容"), "整块只含围栏本体");
+        assertFalse(out.contains("前前前"), "不含前缀文本");
+        assertFalse(out.endsWith("…"));
+    }
+
+    @Test
+    void pipeLinesInsideFenceKeptAsCodeNotTable() {
+        // 围栏内含 | 行：结构认领围栏优先，返回整块代码而非其中的 | 行片段
+        String fence = "```ini\n| key | value |\n|-----|-------|\n" + "| row | val |\n".repeat(30) + "```";
+        String content = "x".repeat(250) + "\n" + fence + "\n" + "y".repeat(200);
+        // 截断点 300 落在围栏内
+        String out = RefSnippet.snippet(content, 300);
+        assertTrue(out.trim().startsWith("```ini"), "应返回整块围栏代码，实际开头: " + out.substring(0, Math.min(60, out.length())));
+        assertTrue(out.trim().endsWith("```"));
+    }
+
+    @Test
+    void unclosedFenceExtendsToTextEnd() {
+        // 无闭栏（跨页截断产物）：围栏块延伸至文本尾
+        String content = "a".repeat(250) + "\n```python\nprint(1)\nprint(2)\n" + "b".repeat(200);
+        String out = RefSnippet.snippet(content, 300);
+        assertTrue(out.trim().startsWith("```python"));
+        assertTrue(out.contains("b".repeat(50)), "未闭合围栏应延伸至文本尾");
+    }
+
+    @Test
+    void plainTextBeforeFenceStillTruncated() {
+        // 截断点在围栏之前的普通文本内 → 普通截断，不整块返回代码
+        String content = "z".repeat(400) + "\n" + CODE;
+        String out = RefSnippet.snippet(content, 300);
+        assertEquals(301, out.length());
+        assertFalse(out.contains("```java"));
+    }
+
     @Test
     void maxZeroReturnsWhole() {
         assertEquals("abc", RefSnippet.snippet("abc", 0));

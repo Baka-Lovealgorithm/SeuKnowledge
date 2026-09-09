@@ -2,6 +2,9 @@ package com.ai.konwledgerepo.repository;
 
 import com.ai.konwledgerepo.entity.BusinessKnowledge;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import java.util.Collection;
 import java.util.List;
@@ -27,4 +30,16 @@ public interface BusinessKnowledgeRepository extends JpaRepository<BusinessKnowl
 
     /** 按知识库硬删除全部记录（含软删版本，清空知识库内容时调用） */
     void deleteByKbId(Long kbId);
+
+    /**
+     * 来源文档改名后同步冗余的展示名（含软删历史版本，保证版本列表里名字一致）。
+     * <p>
+     * 冗余字段（{@code source_doc_name}）仅供列表展示，不参与检索判定；bulk update 跳过 @Version
+     * 自增，属可接受（改名与知识审核并发概率极低，且冲突只会造成显示名短暂滞后）。
+     *
+     * @return 受影响行数
+     */
+    @Modifying
+    @Query("update BusinessKnowledge b set b.sourceDocName = :docName where b.sourceDocId = :docId")
+    int updateSourceDocNameByDocId(@Param("docId") Long docId, @Param("docName") String docName);
 }

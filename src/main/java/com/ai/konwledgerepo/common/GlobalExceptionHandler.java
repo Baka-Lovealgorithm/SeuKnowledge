@@ -69,9 +69,20 @@ public class GlobalExceptionHandler {
         return ApiResponse.error(ErrorCodes.BAD_REQUEST, "参数格式错误: " + e.getName());
     }
 
+    /**
+     * DB 完整性异常。文案必须能指向用户可动手的方向：MySQL 把"字段超长"（ERROR 1406 Data too long，
+     * 翻成 DataTruncation）与"唯一键/外键冲突"归到同一个 DataIntegrityViolationException，
+     * 早期一律提示"数据操作冲突，请检查关联数据"——用户上传一个超长文件名被告知"冲突"，只能反复瞎试。
+     * 长度类问题已在上传/改名的前置校验里拦掉，这里作为兜底保留区分。
+     */
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ApiResponse<Void> handleDataIntegrity(DataIntegrityViolationException e) {
-        log.warn("数据完整性冲突: {}", e.getMessage());
+        String specific = e.getMostSpecificCause().getMessage();
+        log.warn("数据完整性异常: {}", specific != null ? specific : e.getMessage());
+        if (specific != null && (specific.contains("Data too long") || specific.contains("too long for column")
+                || specific.contains("Value too long"))) {
+            return ApiResponse.error(ErrorCodes.BAD_REQUEST, "内容超长，请检查文件名等字段长度后重试");
+        }
         return ApiResponse.error(ErrorCodes.BAD_REQUEST, "数据操作冲突，请检查关联数据");
     }
 

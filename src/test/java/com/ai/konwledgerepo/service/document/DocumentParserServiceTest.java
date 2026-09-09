@@ -345,6 +345,73 @@ class DocumentParserServiceTest {
     }
 
     @Test
+    void parseMd_fencedCode_keptWholeAndFencedPerChunk() throws Exception {
+        String md = "# 快速开始\n\n安装后运行示例：\n\n"
+                + "```bash\n# 设置环境变量\nexport ZRDDS_HOME=/opt/zrdds\nsource $ZRDDS_HOME/env.sh\n"
+                + "cd $ZRDDS_HOME/bin\n./publisher -d 80 -t ShapeType\n```\n\n看到 send data 即成功。";
+        Path file = tempDir.resolve("code.md");
+        Files.writeString(file, md);
+
+        List<ChunkPiece> pieces = parser().parse(mdTableDoc(file, "md"));
+
+        // bash 围栏仅 1 处开栏：任何代码行都只能出现在以 ``` 开头且结尾的块里
+        List<ChunkPiece> codeChunks = pieces.stream().filter(p -> p.content().contains("ZRDDS_HOME")).toList();
+        assertEquals(1, codeChunks.size(), "小代码块应完整落在同一块");
+        assertTrue(codeChunks.get(0).content().startsWith("```bash"));
+        assertTrue(codeChunks.get(0).content().endsWith("```"));
+        // 围栏内 "# 设置环境变量" 不得污染任何块 title（栈冻结）
+        assertTrue(pieces.stream().allMatch(p -> p.title().equals("快速开始")),
+                "所有块 title 应为 快速开始，实际: " + pieces.stream().map(ChunkPiece::title).toList());
+        // 说明文字与代码不混块
+        assertTrue(pieces.stream().anyMatch(p -> p.content().contains("安装后运行示例") && !p.content().contains("export")));
+        assertTrue(pieces.stream().anyMatch(p -> p.content().contains("看到 send data") && !p.content().contains("export")));
+    }
+
+    @Test
+    void parseMd_largeCode_splitIntoFencedRowGroups() throws Exception {
+        StringBuilder sb = new StringBuilder("# 完整示例\n\n```java\n");
+        for (int i = 0; i < 60; i++) {
+            sb.append("    service.registerHandler(type").append(i).append(", new Callback(ctx, opts));\n");
+            if (i % 10 == 9) {
+                sb.append("\n");
+            }
+        }
+        sb.append("```\n");
+        Path file = tempDir.resolve("big-code.md");
+        Files.writeString(file, sb.toString());
+
+        List<ChunkPiece> pieces = parser().parse(mdTableDoc(file, "md"));
+        List<ChunkPiece> groups = pieces.stream().filter(p -> p.content().startsWith("```java")).toList();
+        assertTrue(groups.size() >= 4, "大代码块应切多组围栏块，实际 " + groups.size());
+        assertTrue(groups.stream().allMatch(g -> g.content().endsWith("```")), "每组自成围栏");
+        assertTrue(groups.stream().allMatch(g -> g.content().length() <= 800), "每组不超上限");
+        String all = groups.stream().map(ChunkPiece::content).collect(java.util.stream.Collectors.joining("\n"));
+        for (int i = 0; i < 60; i++) {
+            assertTrue(all.contains("type" + i), "代码行 type" + i + " 不应丢失");
+        }
+    }
+
+    @Test
+    void parseMd_vsTxt_codeAwareFork() throws Exception {
+        // 同一份含围栏内容分别以 md/txt 解析：md 走代码感知，txt 保持旧行为（围栏只是普通行）
+        String md = "# 说明\n\n```python\n# 初始化\nimport zrdds\n```\n\n后续正文。";
+        Path mdFile = tempDir.resolve("fork-code.md");
+        Files.writeString(mdFile, md);
+        Path txtFile = tempDir.resolve("fork-code.txt");
+        Files.writeString(txtFile, md);
+
+        List<ChunkPiece> mdPieces = parser().parse(mdTableDoc(mdFile, "md"));
+        List<ChunkPiece> txtPieces = parser().parse(mdTableDoc(txtFile, "txt"));
+
+        // md：python 注释不污染标题栈
+        assertTrue(mdPieces.stream().allMatch(p -> p.title().equals("说明")),
+                "md 所有块 title 应为 说明，实际: " + mdPieces.stream().map(ChunkPiece::title).toList());
+        // txt：旧 ChunkSplitter 把 "# 初始化" 当标题压栈 → 代码块 title 被污染（证明 fork 生效）
+        assertTrue(txtPieces.stream().anyMatch(p -> p.title().contains("初始化")),
+                "txt 应保持旧行为：# 注释被当作标题");
+    }
+
+    @Test
     void parseHtml_requiresLlamaParse() throws Exception {
         Path file = tempDir.resolve("guide.html");
         Files.writeString(file, "<html><body>content</body></html>");

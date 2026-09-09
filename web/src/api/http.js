@@ -28,7 +28,8 @@ http.interceptors.response.use(
         // 工作空间相关 403（被移出/空间被删除/无空间）：刷新用户信息后整页重载自愈
         if (body.code === 403 && /工作空间|无权访问该工作空间/.test(body.message || '')) {
           handleWorkspaceLost(body.message)
-        } else {
+        } else if (!res.config?.silentError) {
+          // silentError：调用方自行汇总（批量上传逐文件请求），不在这里逐条 toast
           ElMessage.error(body.message || '请求失败')
         }
         return Promise.reject(new Error(body.message || '请求失败'))
@@ -43,7 +44,11 @@ http.interceptors.response.use(
       router.push('/login')
     }
     const msg = err.response?.data?.message || err.message || '网络错误'
-    ElMessage.error(msg)
+    // silentError：调用方自行汇总错误时（如批量上传逐文件请求），抑制拦截器的逐条 toast，
+    // 避免"10 个文件失败 = 10 条 toast + 1 条汇总"的刷屏
+    if (!err.config?.silentError) {
+      ElMessage.error(msg)
+    }
     return Promise.reject(err)
   }
 )

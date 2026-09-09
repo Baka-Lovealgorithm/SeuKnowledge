@@ -84,6 +84,52 @@ class AsyncConfigTest {
         });
     }
 
+    /**
+     * 向量化独立池的核心回归点：ingestAsync 必须有一个不复用通用池的落点，
+     * 否则精修「确认」/「重建向量」会被分钟级抽取任务排在后面——文档已显示成功且离开精修队列，
+     * 却还没有向量（用户侧表现为"一片成功但检索不到"）。
+     */
+    @Test
+    void vectorPoolIsSeparateAndBounded() {
+        runner.run(context -> {
+            assertThat(context).hasBean("vectorTaskExecutor");
+            ThreadPoolTaskExecutor vector = context.getBean("vectorTaskExecutor", ThreadPoolTaskExecutor.class);
+            ThreadPoolTaskExecutor general = context.getBean("taskExecutor", ThreadPoolTaskExecutor.class);
+            assertThat(vector).isNotSameAs(general);
+            assertThat(vector.getCorePoolSize()).isEqualTo(2);
+            assertThat(vector.getMaxPoolSize()).isEqualTo(4);
+            assertThat(vector.getQueueCapacity()).isEqualTo(200);
+            assertThat(vector.getThreadNamePrefix()).isEqualTo("embed-");
+            assertThat(vector.getThreadPoolExecutor().getRejectedExecutionHandler())
+                    .isInstanceOf(ThreadPoolExecutor.CallerRunsPolicy.class);
+        });
+    }
+
+    @Test
+    void vectorPoolHonorsConfigProperties() {
+        runner.withPropertyValues(
+                "seuknowledge.async.vector-core-size=1",
+                "seuknowledge.async.vector-max-size=3",
+                "seuknowledge.async.vector-queue-capacity=8"
+        ).run(context -> {
+            ThreadPoolTaskExecutor pool = context.getBean("vectorTaskExecutor", ThreadPoolTaskExecutor.class);
+            assertThat(pool.getCorePoolSize()).isEqualTo(1);
+            assertThat(pool.getMaxPoolSize()).isEqualTo(3);
+            assertThat(pool.getQueueCapacity()).isEqualTo(8);
+        });
+    }
+
+    /** 核心线程数被配成 0/负数时仍至少留 1 个线程（否则向量化任务永远无人执行） */
+    @Test
+    void vectorPoolNeverCollapsesToZeroThreads() {
+        runner.withPropertyValues("seuknowledge.async.vector-core-size=0", "seuknowledge.async.vector-max-size=0")
+                .run(context -> {
+                    ThreadPoolTaskExecutor pool = context.getBean("vectorTaskExecutor", ThreadPoolTaskExecutor.class);
+                    assertThat(pool.getCorePoolSize()).isGreaterThanOrEqualTo(1);
+                    assertThat(pool.getMaxPoolSize()).isGreaterThanOrEqualTo(pool.getCorePoolSize());
+                });
+    }
+
     @Test
     void taskExecutorNameResolvesAsExecutorByTypeLookup() {
         // 模拟 AsyncExecutionAspectSupport 的解析路径：按名 "taskExecutor" 取 Executor 必须成功
@@ -95,8 +141,9 @@ class AsyncConfigTest {
 
     @Test
     void noAmbiguityForTaskExecutorTypeLookup() {
-        // 按类型取 TaskExecutor 必须因存在两个候选 bean 而歧义（applicationTaskExecutor + visionTaskExecutor），
-        // 这正是必须显式提供 "taskExecutor" 别名（而非依赖类型查找）的原因
+        // 按类型取 TaskExecutor 必须因存在多个候选 bean 而歧义（applicationTaskExecutor + visionTaskExecutor
+        // + vectorTaskExecutor + streamVirtualExecutor），这正是必须显式提供 "taskExecutor" 别名
+        // （而非依赖类型查找）的原因
         runner.run(context -> {
             assertThatThrownBy(() -> context.getBean(org.springframework.core.task.TaskExecutor.class))
                     .isInstanceOf(org.springframework.beans.factory.NoUniqueBeanDefinitionException.class);

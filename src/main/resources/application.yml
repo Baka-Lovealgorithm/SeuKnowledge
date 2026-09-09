@@ -171,6 +171,11 @@ seuknowledge:
     core-size: ${KB_ASYNC_CORE_SIZE:8}             # 通用 @Async 池（解析/抽取/流式问答）核心线程数
     max-size: ${KB_ASYNC_MAX_SIZE:32}              # 通用 @Async 池最大线程数
     queue-capacity: ${KB_ASYNC_QUEUE_CAPACITY:256} # 通用 @Async 池队列容量（满时 CallerRuns 兜底执行）
+    # 向量化（embedding + ES 写入）独立小池：与通用池解耦，避免精修「确认」/「重建向量」被分钟级抽取任务
+    # 排在后面（那段时间里文档显示成功却检索不到）。embedding 是纯外部 API 等待，少量并发即可喂饱。
+    vector-core-size: ${KB_VECTOR_ASYNC_CORE_SIZE:2}      # 向量化池核心线程数
+    vector-max-size: ${KB_VECTOR_ASYNC_MAX_SIZE:4}        # 向量化池最大线程数
+    vector-queue-capacity: ${KB_VECTOR_ASYNC_QUEUE_CAPACITY:200} # 向量化池队列容量（满时 CallerRuns 兜底执行）
   extract:
     concurrency-limit: ${KB_EXTRACT_CONCURRENCY:2}  # 抽取任务全局并发上限（公平信号量，超限排队等待）
   es:

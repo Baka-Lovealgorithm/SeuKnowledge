@@ -30,15 +30,19 @@ export const groupApi = {
 }
 
 export const docApi = {
-  upload: (kbId, files, replace = false, reuseCache = false, curateGate = false) => {
+  upload: (kbId, files, replace = false, reuseCache = false, curateGate = false, config = {}) => {
     const fd = new FormData()
     files.forEach((f) => fd.append('files', f))
-    return http.post(`/kb/${kbId}/documents`, fd, { params: { replace, reuseCache, curateGate } })
+    return http.post(`/kb/${kbId}/documents`, fd, { params: { replace, reuseCache, curateGate }, ...config })
   },
   list: (kbId) => http.get(`/kb/${kbId}/documents`),
   remove: (id) => http.delete(`/documents/${id}`),
   chunks: (id, filter) => http.get(`/documents/${id}/chunks`, { params: { filter } }),
-  retry: (id) => http.post(`/documents/${id}/retry`)
+  retry: (id) => http.post(`/documents/${id}/retry`),
+  /** 重命名（只改元数据与检索引用名，不重解析；扩展名必须保持不变） */
+  rename: (id, fileName) => http.patch(`/documents/${id}/name`, { fileName }),
+  /** 只重建向量、不重新解析（向量化失败/模型未配置后的原地救济） */
+  reindex: (id) => http.post(`/documents/${id}/reindex`)
 }
 
 /** 文档初洗/精修（原"文档策展"）：初洗（读队列/md/chunk + 写 md/接受）与精修（edit/drop/keep/unkeep/merge/confirm） */
@@ -88,14 +92,6 @@ export const chatApi = {
 export const agentApi = {
   get: (kbId) => http.get(`/kb/${kbId}/agent`),
   update: (kbId, data) => http.put(`/kb/${kbId}/agent`, data)
-}
-
-/** 提示词模板管理（节点提示词 + 渲染预览 + 重置默认） */
-export const promptApi = {
-  list: () => http.get('/prompts'),
-  update: (key, content) => http.put(`/prompts/${key}`, { content }),
-  reset: (key) => http.post(`/prompts/${key}/reset`),
-  preview: (key, variables) => http.post('/prompts/preview', { key, variables })
 }
 
 export const bkApi = {

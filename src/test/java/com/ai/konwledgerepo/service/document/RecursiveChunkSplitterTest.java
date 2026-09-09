@@ -142,4 +142,128 @@ class RecursiveChunkSplitterTest {
         assertTrue(table.content().contains("| a | 黄 |"), "合并单元格应 forward-fill 回填");
         assertTrue(table.content().contains("| b | 绿 |"));
     }
+
+    // ===== 代码围栏感知（A+B）=====
+
+    @Test
+    void smallCodeBlock_atomicChunk_keepsFenceAndTitle() {
+        String md = "## 3.1 示例\n\n说明文字。\n\n```java\nint a = 1;\nSystem.out.println(a);\n```\n\n后续说明。";
+        List<ChunkPiece> pieces = RecursiveChunkSplitter.split(md, 1, 800, 0);
+        List<ChunkPiece> codeChunks = pieces.stream().filter(p -> p.content().startsWith("```")).toList();
+        assertEquals(1, codeChunks.size(), "小代码块应整块原子");
+        ChunkPiece code = codeChunks.get(0);
+        assertTrue(code.content().endsWith("```"), "闭栏应保留");
+        assertTrue(code.content().contains("System.out.println(a);"), "代码体逐字保留");
+        assertEquals("3.1 示例", code.title(), "代码块 title 应为祖先链路径");
+        // 代码块与前后正文不同块
+        assertTrue(pieces.stream().anyMatch(p -> p.content().contains("说明文字") && !p.content().contains("int a = 1;")),
+                "前文应独立成块");
+    }
+
+    @Test
+    void largeCodeBlock_rowGroups_repeatFence_andConserveLines() {
+        StringBuilder body = new StringBuilder();
+        for (int i = 0; i < 40; i++) {
+            body.append("    service.step").append(i).append("(context, options, callback); // 步骤 ").append(i).append("\n");
+            if (i % 8 == 7) {
+                body.append("\n");
+            }
+        }
+        String md = "## 大示例\n\n```java\n" + body + "```\n";
+        List<ChunkPiece> pieces = RecursiveChunkSplitter.split(md, 1, 200, 0);
+        List<ChunkPiece> groups = pieces.stream().filter(p -> p.content().startsWith("```")).toList();
+        assertTrue(groups.size() >= 5, "大代码块应切成多行组，实际 " + groups.size());
+        String recon = new String();
+        for (ChunkPiece g : groups) {
+            assertTrue(g.content().endsWith("\n```") || g.content().endsWith("```"), "行组应自成围栏: " + g.content());
+            assertTrue(g.content().length() <= 200, "行组不应超上限，实际 " + g.content().length());
+            assertEquals("大示例", g.title());
+            String[] lines = g.content().split("\n");
+            for (int k = 1; k < lines.length - 1; k++) {
+                if (!lines[k].isBlank()) {
+                    recon = recon.isEmpty() ? lines[k] : recon + "\n" + lines[k];
+                }
+            }
+        }
+        // 非空代码行全量保真、原顺序、不重复（组间无 overlap）
+        String expected = body.toString().lines().filter(l -> !l.isBlank()).reduce("", (a, b) -> a.isEmpty() ? b : a + "\n" + b);
+        assertEquals(expected, recon, "代码行应跨组守恒且按原顺序");
+    }
+
+    @Test
+    void largeCodeBlock_prefersBlankLineAsGroupBoundary() {
+        // 两个方法块（块间空行分隔），行组应在空行处分界而非把方法劈开
+        String methodA = "    void methodA() {\n        doWorkA(arg1, arg2);\n    }";
+        String methodB = "    void methodB() {\n        doWorkB(arg1, arg2);\n    }";
+        String md = "```java\n" + methodA + "\n\n" + methodB + "\n```";
+        List<ChunkPiece> pieces = RecursiveChunkSplitter.split(md, 1, 60, 0);
+        List<ChunkPiece> groups = pieces.stream().filter(p -> p.content().startsWith("```")).toList();
+        assertTrue(groups.size() >= 2);
+        boolean cleanBoundary = groups.stream().noneMatch(g -> g.content().contains("methodA") && g.content().contains("methodB"));
+        assertTrue(cleanBoundary, "组界应对齐空行块边界，不把两个方法混进一组");
+    }
+
+    @Test
+    void headingStackFreezeInsideCodeBlock() {
+        // 围栏内 # 注释行不得污染标题栈：代码块与后续正文都应留在原章节下
+        String md = "# 部署\n\n```python\n# 初始化环境\npip install zrdds\n```\n\n继续正文说明。";
+        List<ChunkPiece> pieces = RecursiveChunkSplitter.split(md, 1, 800, 0);
+        assertTrue(pieces.stream().allMatch(p -> "部署".equals(p.title())),
+                "所有块 title 应为 部署，实际: " + pieces.stream().map(ChunkPiece::title).toList());
+    }
+
+    @Test
+    void asciiTableInsideCodeBlock_notTableified() {
+        // 共存关键：围栏内 ASCII 表不得被 TableExtractor 认领（不规整化、不 forward-fill）
+        String md = "## 配置\n\n```ini\n[key]\n|a|b|\n|-|-|\n|x||\n```\n\n正文。";
+        List<ChunkPiece> pieces = RecursiveChunkSplitter.split(md, 1, 800, 0);
+        ChunkPiece code = pieces.stream().filter(p -> p.content().startsWith("```")).findFirst().orElseThrow();
+        assertTrue(code.content().contains("|a|b|"), "围栏内 pipe 行应逐字保留，不重排为表格格式");
+        assertFalse(code.content().contains("| --- |"), "不应出现表格规整化分隔行");
+        assertFalse(code.content().contains("| x | b |"), "不应发生 forward-fill");
+    }
+
+    @Test
+    void codeAndTableAndText_mixedOrderPreserved() {
+        // 正文 → 表格 → 代码 → 正文 混排：产出顺序与文档顺序一致
+        String md = "前段正文。\n\n| 列A | 列B |\n|---|---|\n| 1 | 2 |\n\n```c\nint x = 1;\n```\n\n尾段正文。";
+        List<ChunkPiece> pieces = RecursiveChunkSplitter.split(md, 1, 800, 0);
+        int text1 = firstMatch(pieces, p -> p.content().contains("前段正文"));
+        int table = firstMatch(pieces, p -> p.content().contains("| --- |"));
+        int code = firstMatch(pieces, p -> p.content().startsWith("```c"));
+        int text2 = firstMatch(pieces, p -> p.content().contains("尾段正文"));
+        assertTrue(text1 >= 0 && table > text1 && code > table && text2 > code,
+                "混排顺序应为 正文<表格<代码<正文，实际 " + text1 + "," + table + "," + code + "," + text2);
+    }
+
+    @Test
+    void overlapNeverLeaksIntoCodeChunks() {
+        // 前置正文（含 overlap）+ 代码块：代码块首组必须从围栏开始，不携带正文尾巴
+        String longText = "这是足够长的正文内容用于触发窗口溢出与重叠。".repeat(20);
+        String md = longText + "\n\n```java\nint a = 1;\n```\n\n后续正文。";
+        List<ChunkPiece> pieces = RecursiveChunkSplitter.split(md, 1, 150, 40);
+        List<ChunkPiece> code = pieces.stream().filter(p -> p.content().contains("int a = 1;")).toList();
+        assertEquals(1, code.size());
+        assertTrue(code.get(0).content().startsWith("```java"), "代码块不得携带 overlap 前缀，实际: " + code.get(0).content());
+    }
+
+    @Test
+    void unclosedFence_synthesizesClose_andNoCarry() {
+        // 页尾未闭合围栏：块内合成闭栏自愈，不向下一页遗留 carry
+        String page = "```java\nint a = 1;\nint b = 2;";
+        RecursiveChunkSplitter.SplitResult sr = RecursiveChunkSplitter.splitWithCarry(page, 1, 800, 0, null, null);
+        assertEquals(1, sr.pieces().size());
+        assertTrue(sr.pieces().get(0).content().endsWith("```"), "未闭合围栏应合成闭栏");
+        assertTrue(sr.pieces().get(0).content().startsWith("```java"));
+        assertEquals("", sr.carryOut(), "结构块边界不应产生 carry");
+    }
+
+    private static int firstMatch(List<ChunkPiece> pieces, java.util.function.Predicate<ChunkPiece> p) {
+        for (int i = 0; i < pieces.size(); i++) {
+            if (p.test(pieces.get(i))) {
+                return i;
+            }
+        }
+        return -1;
+    }
 }
