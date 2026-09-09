@@ -1,19 +1,23 @@
 package com.ai.konwledgerepo.entity;
 
 /**
- * 模型用途绑定（DB 存储 value() 字符串，保持与旧数据一致）。
+ * 模型用途绑定（DB 存储 value() 字符串，保持与旧数据一致）：同一{@link ModelType 调用契约}内的角色槽位。
+ * <p>CHAT 契约下的角色（EXTRACT/GENERATE/VERIFY/ROUTER/MEMORY/CHITCHAT/TITLE）可互相顶替，
+ * 只是成本/质量差异；{@link #RETRIEVE} 不得再按角色拆分（入库与检索必须同一枚向量模型）。
  */
 public enum ModelUsage {
 
     GENERATE,
     EXTRACT,
+    /** 向量检索（入库与召回共用；EMBEDDING 类型的唯一用途） */
     RETRIEVE,
+    /** 识图（VISION 类型的唯一用途，与文本不可互相顶替，故识图是类型而非本契约下的用途） */
     VISION,
     /** 重排（交叉编码器精排） */
     RERANK,
     /** 答案自检/事实一致性校验（可单独配置更小的 judge 模型；未配置时回退通用/默认 chat） */
     VERIFY,
-    /** 标题生成（会话标题概括/提炼，可单独配置标题专用模型；未配置时回退 CHAT GENERATE） */
+    /** 会话标题概括/提炼（原 model_type=TITLE，已并入 CHAT 契约下的用途；解析链见 ModelConfigResolver#resolveTitleConfigId） */
     TITLE,
     /** 意图路由/问题改写（可单独配置更小的路由模型；未配置时回退通用/默认 chat） */
     ROUTER,

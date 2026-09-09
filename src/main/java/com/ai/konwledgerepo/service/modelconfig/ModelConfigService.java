@@ -116,7 +116,12 @@ public class ModelConfigService {
         cfg.setThinkingParams(req.thinkingParams());
     }
 
-    /** 校验模型类型与用途绑定组合：CHAT→抽取/生成/校验/路由；EMBEDDING→检索；VISION→识图；RERANK→重排；TITLE→标题（用途均可留空=通用） */
+    /**
+     * 校验模型类型与用途绑定组合：CHAT→抽取/生成/校验/路由/记忆/闲聊/标题；EMBEDDING→检索；
+     * VISION→识图；RERANK→重排（用途留空=该类型通用）。
+     * <p>类型白名单的唯一出口在 {@code ModelConfigRequest} 的 {@code @Pattern}（历史类型 TITLE 在那里被拒），
+     * 本方法只判「类型 × 用途」组合，不判类型是否还能新建。
+     */
     private void validateUsageType(String modelType, String usage) {
         if (usage == null || usage.isBlank()) {
             return;
@@ -124,7 +129,8 @@ public class ModelConfigService {
         ModelType type = ModelType.of(modelType);
         if (type == null || !type.validUsage(usage)) {
             throw new BizException("模型类型 " + modelType + " 不支持用途绑定 " + usage
-                    + "（CHAT→EXTRACT/GENERATE/VERIFY/ROUTER/MEMORY，EMBEDDING→RETRIEVE，VISION→VISION，RERANK→RERANK，TITLE→TITLE）");
+                    + "（CHAT→EXTRACT/GENERATE/VERIFY/ROUTER/MEMORY/CHITCHAT/TITLE，EMBEDDING→RETRIEVE，"
+                    + "VISION→VISION，RERANK→RERANK）");
         }
     }
 

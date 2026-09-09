@@ -179,8 +179,8 @@ class ModelFactoryTest {
     }
 
     @Test
-    void getTitleChatModel_titleTypeConfigured_usesTitleModel() {
-        ModelConfig config = cfg(10L, "TITLE", "TITLE");
+    void getTitleChatModel_titleUsageConfigured_usesTitleModel() {
+        ModelConfig config = cfg(10L, "CHAT", "TITLE");
         when(resolver.resolveTitleConfigId(WS)).thenReturn(10L);
         when(resolver.getConfig(10L)).thenReturn(config);
         ChatModel model = mock(ChatModel.class);
@@ -193,7 +193,7 @@ class ModelFactoryTest {
 
     @Test
     void getTitleChatModel_noTitleConfig_fallsBackToGenerate() {
-        // TITLE 未配置 → resolveTitleConfigId 内部回退到 CHAT GENERATE
+        // 标题绑定（CHAT+TITLE）与历史 TITLE 行均未命中 → resolveTitleConfigId 回退 CHAT GENERATE
         ModelConfig config = cfg(1L, "CHAT", "GENERATE");
         when(resolver.resolveTitleConfigId(WS)).thenReturn(1L);
         when(resolver.getConfig(1L)).thenReturn(config);

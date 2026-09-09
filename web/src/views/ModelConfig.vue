@@ -2,7 +2,7 @@
   <div>
     <div class="toolbar">
       <el-button type="primary" @click="openCreate">新增模型配置</el-button>
-      <span class="muted">模型按类型分组展示：文本 / 识图 / 向量 / 重排 / 标题</span>
+      <span class="muted">按调用契约分组：文本 / 识图 / 向量 / 重排；只有文本模型需要选用途（同一契约下的角色槽位，可互相顶替，只是更贵或更差）</span>
     </div>
 
     <el-tabs v-model="activeType" class="model-tabs">
@@ -12,7 +12,15 @@
           <span class="tab-count">({{ grouped(g.type).length }})</span>
         </template>
         <el-table :data="grouped(g.type)" v-loading="loading" border>
-          <el-table-column prop="name" label="名称" min-width="130" />
+          <el-table-column prop="name" label="名称" min-width="150">
+            <template #default="{ row }">
+              {{ row.name }}
+              <el-tooltip v-if="isLegacyTitleRow(row)" placement="top"
+                          content="历史 model_type=TITLE 的存量配置，由解析链兜底继续生效；在此编辑保存后自动并入文本模型的「标题」用途，无需迁移数据">
+                <el-tag size="small" type="warning">旧·标题类型</el-tag>
+              </el-tooltip>
+            </template>
+          </el-table-column>
           <el-table-column prop="provider" label="供应商" width="120" />
           <el-table-column prop="usage" label="用途" width="100">
             <template #default="{ row }">
@@ -41,7 +49,7 @@
       </el-tab-pane>
     </el-tabs>
 
-    <el-dialog v-model="dialogVisible" :title="editing ? '编辑模型配置' : '新增模型配置'" width="560px">
+    <el-dialog v-model="dialogVisible" :title="dialogTitle" width="560px">
       <el-form :model="form" label-width="110px">
         <el-form-item label="配置名称" required>
           <el-input v-model="form.name" />
@@ -53,36 +61,38 @@
           </el-select>
         </el-form-item>
         <el-form-item label="模型类型" required>
-          <el-radio-group v-model="form.modelType">
+          <el-radio-group v-model="form.modelType" @change="onTypeChange">
             <el-radio value="CHAT">文本模型</el-radio>
-            <el-radio value="EMBEDDING">向量模型</el-radio>
             <el-radio value="VISION">识图模型</el-radio>
+            <el-radio value="EMBEDDING">向量模型</el-radio>
             <el-radio value="RERANK">重排模型</el-radio>
-            <el-radio value="TITLE">标题模型</el-radio>
           </el-radio-group>
+          <div class="muted form-hint">识图必须是独立类型：它与文本同走 chat 端点但能力不同，混进文本后会被「通用文本模型」顶上，把图片发给不支持图像的模型</div>
         </el-form-item>
-        <el-form-item label="用途绑定">
-          <el-select v-model="form.usage" style="width: 100%" clearable placeholder="通用（不绑定用途）">
-            <el-option v-if="features.aiExtraction && form.modelType === 'CHAT'" label="抽取 EXTRACT（AI 抽取/归一化）" value="EXTRACT" />
-            <el-option v-if="form.modelType === 'CHAT'" label="生成 GENERATE（问答生成/意图/改写）" value="GENERATE" />
-            <el-option v-if="form.modelType === 'CHAT'" label="校验 VERIFY（答案自检/事实核对）" value="VERIFY" />
-            <el-option v-if="form.modelType === 'CHAT'" label="路由 ROUTER（意图路由/问题改写）" value="ROUTER" />
-            <el-option v-if="form.modelType === 'CHAT'" label="记忆 MEMORY（会话摘要/压缩，未配置复用 ROUTER）" value="MEMORY" />
-            <el-option v-if="form.modelType === 'CHAT'" label="闲聊 CHITCHAT（闲聊回复，未配置复用通用）" value="CHITCHAT" />
-            <el-option v-if="form.modelType === 'EMBEDDING'" label="检索 RETRIEVE（向量化/召回）" value="RETRIEVE" />
-            <el-option v-if="form.modelType === 'VISION'" label="识图 VISION（PDF 图片/OCR）" value="VISION" />
-            <el-option v-if="form.modelType === 'RERANK'" label="重排 RERANK（交叉编码器精排）" value="RERANK" />
-            <el-option v-if="form.modelType === 'TITLE'" label="标题 TITLE（会话标题概括）" value="TITLE" />
+        <el-form-item v-if="form.modelType === 'CHAT'" label="用途绑定">
+          <el-select v-model="form.usage" style="width: 100%" clearable placeholder="通用（不绑定用途，作为文本模型的兜底）">
+            <el-option v-if="features.aiExtraction" label="抽取 EXTRACT（业务知识/问答对抽取）" value="EXTRACT" />
+            <el-option label="生成 GENERATE（问答答案生成）" value="GENERATE" />
+            <el-option label="校验 VERIFY（答案自检/事实核对）" value="VERIFY" />
+            <el-option label="路由 ROUTER（意图路由/问题改写）" value="ROUTER" />
+            <el-option label="记忆 MEMORY（会话摘要/压缩）" value="MEMORY" />
+            <el-option label="闲聊 CHITCHAT（闲聊回复）" value="CHITCHAT" />
+            <el-option label="标题 TITLE（会话标题概括）" value="TITLE" />
           </el-select>
+          <div class="muted form-hint">一条配置只占一个用途（未绑定的用途回退到「通用」配置）；同一个模型要服务多个用途，请另建一条同模型名的配置</div>
+        </el-form-item>
+        <el-form-item v-else label="用途绑定">
+          <span class="muted">{{ singleUsageOf(form.modelType) }}（该类型只有一个用途，与类型同名，无需选择）</span>
         </el-form-item>
         <el-form-item label="模型名" required>
-          <el-input v-model="form.modelName" :placeholder="form.modelType === 'RERANK' ? '如 gte-rerank-v2（重排模型，DASHSCOPE / OpenAI 兼容）' : '如 qwen-plus / text-embedding-v3 / deepseek-chat / qwen-vl-plus / gpt-4o'" />
+          <el-input v-model="form.modelName" :placeholder="namePlaceholder" />
         </el-form-item>
         <el-form-item label="API Key">
-          <el-input v-model="form.apiKey" placeholder="真实 key 或 env:环境变量名（推荐，避免落库）" show-password />
+          <el-input v-model="form.apiKey" placeholder="推荐填 env:环境变量名（真实 Key 走环境变量注入，不落库）；也可直填 Key" show-password />
+          <div v-if="editing && !form.apiKey" class="muted form-hint">留空表示保留已保存的 Key 不变</div>
         </el-form-item>
         <el-form-item v-if="form.provider === 'OPENAI_COMPAT'" label="Base URL" required>
-          <el-input v-model="form.baseUrl" :placeholder="form.modelType === 'RERANK' ? '如 https://api.siliconflow.cn/v1（需支持 /v1/rerank，/v1 必需）' : '如 https://api.deepseek.com（不要带 /v1，系统自动拼接 /v1/chat/completions）'" />
+          <el-input v-model="form.baseUrl" :placeholder="baseUrlPlaceholder" />
         </el-form-item>
         <el-form-item v-if="form.modelType === 'RERANK' && form.provider === 'DASHSCOPE'" label="Base URL">
           <el-input v-model="form.baseUrl" placeholder="留空使用 DashScope 官方 text-rerank 端点" />
@@ -93,8 +103,9 @@
         <el-form-item label="Max Tokens">
           <el-input-number v-model="form.maxTokens" :min="1" :max="32000" />
         </el-form-item>
-        <el-form-item label="设为默认">
+        <el-form-item v-if="showDefaultSwitch" label="设为默认">
           <el-switch v-model="form.isDefault" />
+          <span class="muted" style="margin-left: 8px">该类型的通用兜底配置</span>
         </el-form-item>
         <el-form-item label="关闭思考">
           <el-switch v-model="form.disableThinking" />
@@ -117,7 +128,7 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { modelApi } from '../api'
 import { features } from '../config/features'
@@ -128,18 +139,28 @@ const dialogVisible = ref(false)
 const saving = ref(false)
 const editing = ref(null)
 
-// ===== 按类型分组：文本 / 识图 / 向量 / 重排 =====
+// ===== 按调用契约分组：文本 / 识图 / 向量 / 重排 =====
+// 「标题」不再是类型：它只是文本契约下的一个用途（历史 model_type=TITLE 的存量行由解析链兜底，见下方 isLegacyTitleRow）
 const GROUPS = [
   { type: 'CHAT', label: '文本模型' },
   { type: 'VISION', label: '识图模型' },
   { type: 'EMBEDDING', label: '向量模型' },
-  { type: 'RERANK', label: '重排模型' },
-  { type: 'TITLE', label: '标题模型' }
+  { type: 'RERANK', label: '重排模型' }
 ]
 const activeType = ref('CHAT')
+
+// 唯一用途与类型同名的三类：表单不显示用途下拉，保存时按此值提交
+const SINGLE_USAGE = { VISION: 'VISION', EMBEDDING: 'RETRIEVE', RERANK: 'RERANK' }
+const USAGE = { EXTRACT: '抽取', GENERATE: '生成', RETRIEVE: '检索', VISION: '识图', RERANK: '重排', VERIFY: '校验', TITLE: '标题', ROUTER: '路由', MEMORY: '记忆', CHITCHAT: '闲聊' }
+const usageLabel = (u) => USAGE[u] || u
+const singleUsageOf = (type) => USAGE[SINGLE_USAGE[type]] || SINGLE_USAGE[type] || '通用'
+
+/** 历史 model_type=TITLE 的存量行：并入文本 tab，编辑保存即自愈为 CHAT + TITLE 用途 */
+const isLegacyTitleRow = (row) => row.modelType === 'TITLE'
 // AI 抽取关闭时，不暴露已有的 EXTRACT 配置；数据仍保留在后端，可随开关恢复。
 const grouped = (type) => list.value.filter((m) =>
-  m.modelType === type && (features.aiExtraction || m.usage !== 'EXTRACT')
+  (m.modelType === type || (type === 'CHAT' && isLegacyTitleRow(m)))
+  && (features.aiExtraction || m.usage !== 'EXTRACT')
 )
 
 const emptyForm = () => ({
@@ -149,17 +170,30 @@ const emptyForm = () => ({
 })
 const form = reactive(emptyForm())
 
-const USAGE = { EXTRACT: '抽取', GENERATE: '生成', RETRIEVE: '检索', VISION: '识图', RERANK: '重排', VERIFY: '校验', TITLE: '标题', ROUTER: '路由', MEMORY: '记忆', CHITCHAT: '闲聊' }
-const usageLabel = (u) => USAGE[u] || u
-
-// 模型类型切换时清掉不兼容的用途绑定（如从 CHAT 切到 RERANK 时残留 GENERATE）
-watch(() => form.modelType, (t) => {
-  const valid = {
-    CHAT: [...(features.aiExtraction ? ['EXTRACT'] : []), 'GENERATE', 'VERIFY', 'ROUTER', 'MEMORY', 'CHITCHAT'],
-    EMBEDDING: ['RETRIEVE'], VISION: ['VISION'], RERANK: ['RERANK'], TITLE: ['TITLE']
-  }[t] || []
-  if (form.usage && !valid.includes(form.usage)) form.usage = ''
+const legacyTitle = ref(false)
+const dialogTitle = computed(() => {
+  if (!editing.value) return '新增模型配置'
+  return legacyTitle.value ? '编辑模型配置（历史标题类型 → 文本模型·标题用途）' : '编辑模型配置'
 })
+// 「默认」是解析链的第 3 档，只有通用行（用途留空）才用得上；已绑定用途的配置由第 1 档直接命中
+const showDefaultSwitch = computed(() => !form.usage)
+
+const namePlaceholder = computed(() => ({
+  CHAT: '如 qwen-plus / deepseek-chat',
+  VISION: '如 qwen-vl-plus / qwen3-omni-flash（须支持图像输入）',
+  EMBEDDING: '如 text-embedding-v4（维度需与 KB_ES_DIMENSIONS 一致）',
+  RERANK: '如 gte-rerank-v2'
+}[form.modelType] || ''))
+
+const baseUrlPlaceholder = computed(() => {
+  if (form.modelType === 'RERANK') return '如 https://api.siliconflow.cn/v1（需支持 /v1/rerank，/v1 必需）'
+  return '如 https://api.deepseek.com（不要带 /v1，系统自动拼接 /v1/chat/completions）'
+})
+
+// 切换类型时把用途重算成目标类型的合法值：非文本类型锁唯一用途，文本类型回落「通用」
+function onTypeChange(type) {
+  form.usage = SINGLE_USAGE[type] || ''
+}
 
 async function load() {
   loading.value = true
@@ -168,18 +202,26 @@ async function load() {
 
 function openCreate() {
   editing.value = null
+  legacyTitle.value = false
   Object.assign(form, emptyForm())
-  form.modelType = activeType.value // 新增时默认落在当前分组类型
+  // 新增时默认落在当前分组类型；非文本类型直接带上它唯一的用途
+  const type = activeType.value
+  form.modelType = type
+  form.usage = SINGLE_USAGE[type] || ''
   dialogVisible.value = true
 }
 
 function openEdit(row) {
   editing.value = row
+  legacyTitle.value = isLegacyTitleRow(row)
   Object.assign(form, {
-    name: row.name, provider: row.provider, modelType: row.modelType, usage: row.usage || '',
+    name: row.name, provider: row.provider,
+    // 历史 TITLE 行按文本模型编辑（自愈）；用途沿用行上的值
+    modelType: legacyTitle.value ? 'CHAT' : row.modelType,
+    usage: row.usage || '',
     modelName: row.modelName,
     apiKey: '', baseUrl: row.baseUrl || '', temperature: row.temperature, maxTokens: row.maxTokens,
-    isDefault: row.isDefault, enabled: row.enabled,
+    isDefault: legacyTitle.value ? false : row.isDefault, enabled: row.enabled,
     disableThinking: !!row.disableThinking, thinkingParams: row.thinkingParams || ''
   })
   dialogVisible.value = true
@@ -194,12 +236,13 @@ async function save() {
       modelName: form.modelName,
       apiKey: form.apiKey || undefined, baseUrl: form.baseUrl || undefined,
       temperature: form.temperature, maxTokens: form.maxTokens,
-      isDefault: form.isDefault, enabled: form.enabled,
+      // 已绑定用途的配置不占「默认」档（否则会挤掉该类型真正的通用默认行）
+      isDefault: form.usage ? false : form.isDefault, enabled: form.enabled,
       disableThinking: form.disableThinking, thinkingParams: form.thinkingParams || undefined
     }
     if (editing.value) await modelApi.update(editing.value.id, payload)
     else await modelApi.create(payload)
-    ElMessage.success('保存成功')
+    ElMessage.success(legacyTitle.value ? '保存成功：已并入文本模型的「标题」用途' : '保存成功')
     dialogVisible.value = false
     load()
   } finally { saving.value = false }
@@ -225,5 +268,6 @@ onMounted(load)
 .toolbar { margin-bottom: 16px; display: flex; align-items: center; gap: 12px; }
 .muted { color: #909399; font-size: 12px; }
 .tab-count { color: #909399; font-size: 12px; margin-left: 2px; }
+.form-hint { margin-top: 2px; line-height: 1.5; }
 .model-tabs :deep(.el-tabs__content) { padding-top: 12px; }
 </style>

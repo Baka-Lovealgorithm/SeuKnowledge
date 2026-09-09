@@ -19,11 +19,18 @@ public record ModelConfigRequest(
         String provider,
 
         @NotBlank(message = "模型类型不能为空")
-        @Pattern(regexp = "CHAT|EMBEDDING|VISION|RERANK|TITLE", message = "模型类型仅支持 CHAT / EMBEDDING / VISION / RERANK / TITLE")
+        @Pattern(regexp = "CHAT|EMBEDDING|VISION|RERANK",
+                message = "模型类型仅支持 CHAT / EMBEDDING / VISION / RERANK（会话标题请用 CHAT + 用途 TITLE）")
         String modelType,
 
-        /** 按用途绑定：EXTRACT / GENERATE / RETRIEVE / VISION / RERANK / VERIFY / TITLE / ROUTER / MEMORY；为空表示通用 */
-        @Pattern(regexp = "EXTRACT|GENERATE|RETRIEVE|VISION|RERANK|VERIFY|TITLE|ROUTER|MEMORY", message = "用途仅支持 EXTRACT / GENERATE / RETRIEVE / VISION / RERANK / VERIFY / TITLE / ROUTER / MEMORY")
+        /**
+         * 按用途绑定（角色槽位）：EXTRACT / GENERATE / RETRIEVE / VISION / RERANK / VERIFY / TITLE /
+         * ROUTER / MEMORY / CHITCHAT；为空表示通用。
+         * <p>白名单必须与 {@link com.ai.konwledgerepo.entity.ModelUsage} 逐值对齐——
+         * 漏值的表现是「前端能选、服务层合法、这里 400」（回归：CHITCHAT）。
+         */
+        @Pattern(regexp = "EXTRACT|GENERATE|RETRIEVE|VISION|RERANK|VERIFY|TITLE|ROUTER|MEMORY|CHITCHAT",
+                message = "用途仅支持 EXTRACT / GENERATE / RETRIEVE / VISION / RERANK / VERIFY / TITLE / ROUTER / MEMORY / CHITCHAT")
         String usage,
 
         @NotBlank(message = "模型名不能为空")

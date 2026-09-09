@@ -105,15 +105,44 @@ class ModelConfigServiceTest {
         verify(repo, never()).save(any());
     }
 
+    /** 标题已从「模型类型」降级为 CHAT 契约下的用途：合法组合是 CHAT + TITLE */
     @Test
-    void create_titleUsage_succeeds() {
-        ModelConfigRequest titleReq = new ModelConfigRequest("标题模型", "DASHSCOPE", "TITLE", "TITLE",
+    void create_chatWithTitleUsage_succeeds() {
+        ModelConfigRequest titleReq = new ModelConfigRequest("标题模型", "DASHSCOPE", "CHAT", "TITLE",
                 "qwen-turbo", "env:test_key", null, BigDecimal.valueOf(0.7), 2048, false, true, false, null);
         when(repo.save(any())).thenAnswer(inv -> inv.getArgument(0));
         ModelConfigResponse resp = service.create(titleReq, WS);
-        assertEquals("TITLE", resp.modelType());
+        assertEquals("CHAT", resp.modelType());
         assertEquals("TITLE", resp.usage());
         verify(repo).save(any());
+    }
+
+    /**
+     * 闲聊用途在服务层同样合法（历史上它只在 {@code ModelUsage}/{@code validUsage} 里存在、
+     * 却被 DTO 的 {@code @Pattern} 白名单漏掉，表现为前端能选、保存 400）。
+     */
+    @Test
+    void create_chatWithChitchatUsage_succeeds() {
+        ModelConfigRequest chitchatReq = new ModelConfigRequest("闲聊模型", "DASHSCOPE", "CHAT", "CHITCHAT",
+                "qwen-flash", "env:test_key", null, BigDecimal.valueOf(0.7), 2048, false, true, false, null);
+        when(repo.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        ModelConfigResponse resp = service.create(chitchatReq, WS);
+        assertEquals("CHITCHAT", resp.usage());
+        verify(repo).save(any());
+    }
+
+    /**
+     * 历史类型 TITLE 的「能不能新建」不在服务层拦——类型白名单的唯一出口是
+     * {@code ModelConfigRequest.@Pattern}（见 ModelConfigRequestValidationTest）。
+     * 这里固化该事实：服务层对 TITLE+TITLE 组合放行（存量行原样重新保存才不会报错）。
+     */
+    @Test
+    void create_legacyTitleTypeCombination_passesServiceLayerCheck() {
+        ModelConfigRequest legacy = new ModelConfigRequest("历史标题行", "DASHSCOPE", "TITLE", "TITLE",
+                "qwen-turbo", "env:test_key", null, BigDecimal.valueOf(0.7), 2048, false, true, false, null);
+        when(repo.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        ModelConfigResponse resp = service.create(legacy, WS);
+        assertEquals("TITLE", resp.modelType(), "服务层不判类型是否还能新建，只判类型×用途组合");
     }
 
     @Test

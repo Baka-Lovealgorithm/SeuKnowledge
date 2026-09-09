@@ -18,6 +18,8 @@ import java.util.Optional;
 /**
  * 模型配置解析器：按「用途匹配 → 通用 → 同类型默认」链解析配置 id，
  * 结果缓存于 Redis（TTL 可配），miss 回源 DB。
+ * <p>例外：标题槽位走 {@link #resolveTitleConfigId} 专用链（精确 → 历史类型 → 生成档），
+ * 因为标题已并入 CHAT 契约，通用档会把它顶替成「通用文本模型」。
  */
 @Component
 public class ModelConfigResolver {
@@ -98,10 +100,37 @@ public class ModelConfigResolver {
         return cfg;
     }
 
-    /** TITLE 类型链：usage=TITLE → 通用 → 同类型默认。 */
+    /**
+     * 标题槽位解析：{@code CHAT+TITLE 精确}（现行绑定）→ {@code TITLE} 历史类型链（存量行，<b>零数据迁移</b>）
+     * → {@code CHAT+GENERATE}（沿用改版前的兜底）。
+     * <p><b>第一档必须只精确匹配，不能复用 {@link #tryResolveConfigId} 的整条链</b>：CHAT 类型下只要存在
+     * 「用途留空的通用行」，通用档就会抢在历史 TITLE 行之前命中，把通用文本模型当成标题模型——
+     * 这正是把标题并入 CHAT 契约后要避免的静默漂移（回归锁见
+     * {@code ModelConfigResolverTest#resolveTitleConfigId_legacyTitleRowNotShadowedByGenericChatRow}）。
+     * <p>反向注意：{@code CHAT+TITLE} 行本身也是一条 CHAT 行，在「该空间既无通用行、又无默认行」的极端配置下，
+     * 它可能被第 4 档（最早启用的同类型行）选作其它文本槽位的最后兜底——这是并入契约的固有代价，
+     * 配置页已用「绑定用途即不再占默认档」压低该概率。
+     * <p>缓存键沿用 {@code (CHAT, TITLE)}，语义是「标题槽位的赢家」，与本方法一一对应；任何配置写入都会
+     * {@link #evictCache()} 清掉。
+     */
     public Long resolveTitleConfigId(Long workspaceId) {
-        Optional<Long> titleId = tryResolveConfigId(workspaceId, ModelType.TITLE.value(), ModelUsage.TITLE.value());
-        return titleId.orElseGet(() -> resolveConfigId(workspaceId, ModelType.CHAT.value(), ModelUsage.GENERATE.value()));
+        String key = RedisKeys.modelResolve(workspaceId, ModelType.CHAT.value(), ModelUsage.TITLE.value());
+        Optional<Long> cachedId = cachedConfigId(key);
+        if (cachedId.isPresent()) {
+            return cachedId.get();
+        }
+        Long slotId = exactUsageConfigId(workspaceId, ModelType.CHAT.value(), ModelUsage.TITLE.value())
+                .or(() -> tryResolveConfigId(workspaceId, ModelType.TITLE.value(), ModelUsage.TITLE.value()))
+                .orElseGet(() -> resolveConfigId(workspaceId, ModelType.CHAT.value(), ModelUsage.GENERATE.value()));
+        redisCacheService.setString(key, String.valueOf(slotId), modelTtl);
+        return slotId;
+    }
+
+    /** 只认「类型 + 用途」精确绑定行（不吃通用档与默认档）。 */
+    private Optional<Long> exactUsageConfigId(Long workspaceId, String modelType, String usage) {
+        return modelConfigRepository
+                .findFirstByWorkspaceIdAndModelTypeAndUsageAndEnabledTrueOrderByIdAsc(workspaceId, modelType, usage)
+                .map(ModelConfig::getId);
     }
 
     /** 清除 Redis 解析缓存。 */
