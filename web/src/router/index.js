@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { features } from '../config/features'
 
 const routes = [
   { path: '/login', component: () => import('../views/Login.vue') },
@@ -26,7 +27,8 @@ const routes = [
   {
     path: '/extract',
     component: () => import('../views/ExtractTask.vue'),
-    meta: { auth: true, title: 'AI 抽取任务' }
+    // 页面及代码保留；默认通过 aiExtraction 开关隐藏并阻止直接访问。
+    meta: { auth: true, title: 'AI 抽取任务', feature: 'aiExtraction' }
   },
   {
     path: '/review',
@@ -76,6 +78,9 @@ router.beforeEach((to) => {
   const token = localStorage.getItem('token')
   if (to.meta.auth && !token) {
     return '/login'
+  }
+  if (to.meta.feature && !features[to.meta.feature]) {
+    return '/kb'
   }
   if (to.meta.roles) {
     // 角色按「当前工作空间」解析（切换工作空间后 seu_user 中的 role 为上一空间值，需按 seu_ws 匹配）

@@ -4,7 +4,7 @@
       <!-- ===== 区块一：节点提示词模板 ===== -->
       <el-tab-pane label="节点提示词" name="templates">
         <div class="toolbar">
-          <span class="muted">问答链路 / 抽取 / 记忆等节点的 AI 提示词模板（平台级，全部知识库生效）。编辑保存后立即生效，无需重启。</span>
+          <span class="muted">问答链路 / 记忆等节点的 AI 提示词模板（平台级，全部知识库生效）。编辑保存后立即生效，无需重启。</span>
         </div>
         <el-table :data="templates" v-loading="loading" border>
           <el-table-column prop="name" label="名称" width="140" />
@@ -116,6 +116,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { agentApi, kbApi, promptApi } from '../api'
+import { features } from '../config/features'
 
 const activeTab = ref('templates')
 
@@ -138,6 +139,9 @@ const META = {
   'summary-memory': { name: '会话记忆摘要', desc: '滚动摘要压缩（每 10 条消息触发）', vars: ['oldSummary', 'historyJson'] }
 }
 
+// 仅隐藏抽取模板的管理入口，模板数据及后端播种逻辑保持不变。
+const EXTRACTION_TEMPLATE_KEYS = new Set(['extract-business', 'extract-qa'])
+
 const templates = ref([])
 const loading = ref(false)
 
@@ -158,6 +162,7 @@ async function loadTemplates() {
   try {
     const list = await promptApi.list()
     templates.value = list
+      .filter((t) => features.aiExtraction || !EXTRACTION_TEMPLATE_KEYS.has(t.key))
       .map((t) => ({
         ...t,
         name: (META[t.key] || {}).name || t.key,

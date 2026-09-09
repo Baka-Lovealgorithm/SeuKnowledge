@@ -14,7 +14,7 @@
         <el-menu-item v-if="auth.canWrite" index="/qa">
           <el-icon><QuestionFilled /></el-icon><span>问答对</span>
         </el-menu-item>
-        <el-menu-item v-if="auth.canWrite" index="/extract">
+        <el-menu-item v-if="features.aiExtraction && auth.canWrite" index="/extract">
           <el-icon><MagicStick /></el-icon><span>AI 抽取</span>
         </el-menu-item>
         <el-menu-item v-if="auth.canWrite" index="/review">
@@ -98,6 +98,7 @@ import { ArrowDown, Avatar, ChatDotRound, Checked, Collection, Cpu, EditPen, Fol
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from './stores/auth'
 import { authApi, workspaceApi } from './api'
+import { features } from './config/features'
 import NoWorkspace from './views/NoWorkspace.vue'
 
 const route = useRoute()
