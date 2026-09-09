@@ -97,19 +97,22 @@ mysql -uroot -p < sql/schema.sql
 
 系统不绑定具体模型厂商：文本与向量模型是问答/抽取的基础，通过 **DashScope（阿里云百炼）** 或任意 **OpenAI 兼容服务**（DeepSeek、ollama、one-api、SiliconFlow 等）提供。
 
-**模型类型与用途**：
+**模型类型与用途**：类型 = **调用契约**（顶替会出功能性错误，故必须分开）；用途 = 同一契约下的**角色槽位**（顶替只是更贵或更差，可回退）。
 
-| 模型类型 | 用途 | 必配？ | 说明 |
+| 模型类型 | 用途（角色槽位） | 必配？ | 说明 |
 |---|---|---|---|
-| CHAT | GENERATE（答案生成/抽取）/ VERIFY（自检校验）/ ROUTER（意图路由/问题改写）/ MEMORY（会话记忆摘要）/ CHITCHAT（闲聊回复） | **必配**（至少 GENERATE） | 文本模型；不同用途可绑不同模型（如生成用大模型，自检/路由/记忆/闲聊用小模型以省成本），未绑定时回退通用配置 |
-| EMBEDDING | RETRIEVE（向量检索） | **必配** | 向量模型，维度需与 `KB_ES_DIMENSIONS`（默认 1024）一致 |
-| VISION | VISION（PDF/PPTX 图片页与扫描页转写） | 可选 | 识图模型 |
-| RERANK | RERANK（交叉编码器精排） | 可选 | 重排模型 |
-| TITLE | TITLE（会话标题概括） | 可选 | 未配置时回退 CHAT GENERATE |
+| CHAT 文本 | GENERATE（答案生成）/ VERIFY（自检校验）/ ROUTER（意图路由＋问题改写）/ EXTRACT（知识抽取）/ MEMORY（会话摘要）/ CHITCHAT（闲聊回复）/ TITLE（会话标题） | **必配**（至少一条） | 不同用途可绑不同模型（如生成用大模型，自检/路由/记忆/闲聊/标题用小模型省成本）。一条配置只占一个用途，未绑定的用途回退该类型的「通用」配置（用途留空那条）；同一模型要占多个用途需另建条目 |
+| EMBEDDING 向量 | RETRIEVE（向量化与检索） | **必配** | 向量模型，维度需与 `KB_ES_DIMENSIONS`（默认 1024）一致；**入库与检索必须同一枚**，不得再按角色拆分 |
+| VISION 识图 | VISION（PDF/PPTX 图片页与扫描页转写） | 可选 | 与文本同走 chat 端点但能力不同，故为独立类型：若并入文本，会被「通用文本模型」顶上而把图片发给不支持图像的模型 |
+| RERANK 重排 | RERANK（交叉编码器精排） | 可选 | 未配置/超时自动降级为按检索分截断 |
+
+> **标题曾是独立类型 `TITLE`**，现已并入 CHAT 的 `TITLE` 用途。存量 `model_type='TITLE'` 配置**无需迁移**：解析链为
+> 「CHAT+TITLE 精确 → 历史 TITLE 类型 → CHAT+GENERATE」（第一档只认精确绑定，否则会被 CHAT 通用行顶替），
+> 在配置页编辑保存后自动并入文本模型。
 
 **配置步骤**（登录后在「模型配置」页操作）：
 
-1. 新建「文本模型 CHAT」：选供应商（DASHSCOPE / OPENAI_COMPAT）→ 填模型名（如 `deepseek-chat`）→ 填 Base URL（OPENAI_COMPAT 填服务根地址，**不要带 `/v1`**，系统自动拼接）→ 填 API Key → 勾选用途（GENERATE，可同时绑 VERIFY/ROUTER/MEMORY/CHITCHAT 或另建条目）→ 设为默认
+1. 新建「文本模型 CHAT」：选供应商（DASHSCOPE / OPENAI_COMPAT）→ 填模型名（如 `deepseek-chat`）→ 填 Base URL（OPENAI_COMPAT 填服务根地址，**不要带 `/v1`**，系统自动拼接）→ 填 API Key → 勾选用途（GENERATE；VERIFY/ROUTER/EXTRACT/MEMORY/CHITCHAT/TITLE 可另建条目分别绑定）→ 用途留空即为该类型的「通用」兜底配置
 2. 新建「向量模型 EMBEDDING」：如 DashScope `text-embedding-v4` 或 OpenAI 兼容服务
 3. 可选：VISION 识图模型（PDF 扫描页）、RERANK 重排模型（精排质量，如 `gte-rerank-v2`）
 4. 每条配置点击**连通性测试**，通过后保存
@@ -218,4 +221,4 @@ mvn test
 $env:SPRING_PROFILES_ACTIVE='dev'; .\mvnw.cmd test
 ```
 
-当前 **68 个测试类、800 个用例**（分块器与标题祖先链、LlamaParse 表格解析、代码围栏分块、Excel 本地解析、文档解析、文档重命名/重建向量/文件名校验、向量化状态回写与线程池装配、模型解析/配置、知识库、会话与滚动摘要、抽取任务、多工作空间成员管理、空间组管理与权限取高、重排客户端/节点、标题生成等）。其中 2 个 `@SpringBootTest` 集成测试类（4 个用例）需 MySQL/Redis 环境，纯单元测试 796 个全绿。
+当前 **70 个测试类、839 个用例**（分块器与标题祖先链、LlamaParse 表格解析、代码围栏分块、Excel 本地解析、文档解析、文档重命名/重建向量/文件名校验、向量化状态回写与线程池装配、模型解析/配置、模型类型×用途组合矩阵、标题槽位解析链（含历史 `TITLE` 类型兼容）、知识库、会话与滚动摘要、抽取任务、多工作空间成员管理、空间组管理与权限取高、重排客户端/节点、标题生成等）。其中 2 个 `@SpringBootTest` 集成测试类（4 个用例）需 MySQL/Redis 环境，纯单元测试 835 个全绿。
