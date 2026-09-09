@@ -49,6 +49,8 @@ KB_LLAMAPARSE_ENABLED=true
 LLAMA_CLOUD_API_KEY=your-llamaparse-key
 ```
 
+`.env` 还支持 `VITE_ENABLE_AI_EXTRACTION`（默认 `false`，见 `.env.example`）：前端**构建期**开关，关闭时隐藏「AI 抽取」相关入口与模型配置页的抽取（EXTRACT）用途绑定。设为 `true` 后需要重新构建前端镜像（`docker compose up -d --build frontend`）才能生效；已有的抽取配置数据保留在后端，可随开关恢复。
+
 构建并启动整套服务：
 
 ```powershell
