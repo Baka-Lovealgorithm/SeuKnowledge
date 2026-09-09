@@ -63,7 +63,7 @@
         </el-form-item>
         <el-form-item label="用途绑定">
           <el-select v-model="form.usage" style="width: 100%" clearable placeholder="通用（不绑定用途）">
-            <el-option v-if="form.modelType === 'CHAT'" label="抽取 EXTRACT（AI 抽取/归一化）" value="EXTRACT" />
+            <el-option v-if="features.aiExtraction && form.modelType === 'CHAT'" label="抽取 EXTRACT（AI 抽取/归一化）" value="EXTRACT" />
             <el-option v-if="form.modelType === 'CHAT'" label="生成 GENERATE（问答生成/意图/改写）" value="GENERATE" />
             <el-option v-if="form.modelType === 'CHAT'" label="校验 VERIFY（答案自检/事实核对）" value="VERIFY" />
             <el-option v-if="form.modelType === 'CHAT'" label="路由 ROUTER（意图路由/问题改写）" value="ROUTER" />
@@ -120,6 +120,7 @@
 import { onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { modelApi } from '../api'
+import { features } from '../config/features'
 
 const list = ref([])
 const loading = ref(false)
@@ -136,7 +137,10 @@ const GROUPS = [
   { type: 'TITLE', label: '标题模型' }
 ]
 const activeType = ref('CHAT')
-const grouped = (type) => list.value.filter((m) => m.modelType === type)
+// AI 抽取关闭时，不暴露已有的 EXTRACT 配置；数据仍保留在后端，可随开关恢复。
+const grouped = (type) => list.value.filter((m) =>
+  m.modelType === type && (features.aiExtraction || m.usage !== 'EXTRACT')
+)
 
 const emptyForm = () => ({
   name: '', provider: 'DASHSCOPE', modelType: 'CHAT', usage: '', modelName: '',
@@ -150,7 +154,10 @@ const usageLabel = (u) => USAGE[u] || u
 
 // 模型类型切换时清掉不兼容的用途绑定（如从 CHAT 切到 RERANK 时残留 GENERATE）
 watch(() => form.modelType, (t) => {
-  const valid = { CHAT: ['EXTRACT', 'GENERATE', 'VERIFY', 'ROUTER', 'MEMORY', 'CHITCHAT'], EMBEDDING: ['RETRIEVE'], VISION: ['VISION'], RERANK: ['RERANK'], TITLE: ['TITLE'] }[t] || []
+  const valid = {
+    CHAT: [...(features.aiExtraction ? ['EXTRACT'] : []), 'GENERATE', 'VERIFY', 'ROUTER', 'MEMORY', 'CHITCHAT'],
+    EMBEDDING: ['RETRIEVE'], VISION: ['VISION'], RERANK: ['RERANK'], TITLE: ['TITLE']
+  }[t] || []
   if (form.usage && !valid.includes(form.usage)) form.usage = ''
 })
 

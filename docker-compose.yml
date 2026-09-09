@@ -97,6 +97,8 @@ services:
     build:
       context: .
       dockerfile: web/Dockerfile
+      args:
+        VITE_ENABLE_AI_EXTRACTION: ${VITE_ENABLE_AI_EXTRACTION:-false}
     image: seuknowledge-frontend:${APP_TAG:-dev}
     restart: unless-stopped
     ports:
