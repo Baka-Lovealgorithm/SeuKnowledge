@@ -206,35 +206,22 @@ class ModelFactoryTest {
     }
 
     @Test
-    void resolveMemoryChatConfig_memoryConfigured_returnsMemoryConfig() {
+    void resolveChatConfig_returnsResolvedConfig() {
+        // 记忆槽位不再有专用方法：与其它文本用途同一条链（此处以 MEMORY 为例）
         ModelConfig config = cfg(11L, "CHAT", "MEMORY");
-        when(resolver.tryResolveConfigId(WS, "CHAT", "MEMORY")).thenReturn(Optional.of(11L));
+        when(resolver.resolveConfigId(WS, "CHAT", "MEMORY")).thenReturn(11L);
         when(resolver.getConfig(11L)).thenReturn(config);
 
-        ModelConfig result = factory.resolveMemoryChatConfig(WS);
+        ModelConfig result = factory.resolveChatConfig("MEMORY", WS);
 
         assertSame(config, result);
     }
 
     @Test
-    void resolveMemoryChatConfig_noMemory_fallsBackToRouter() {
-        // MEMORY 未配置 → 与 getMemoryChatModel 同款 ROUTER 回退
-        ModelConfig config = cfg(12L, "CHAT", "ROUTER");
-        when(resolver.tryResolveConfigId(WS, "CHAT", "MEMORY")).thenReturn(Optional.empty());
-        when(resolver.resolveConfigId(WS, "CHAT", "ROUTER")).thenReturn(12L);
-        when(resolver.getConfig(12L)).thenReturn(config);
-
-        ModelConfig result = factory.resolveMemoryChatConfig(WS);
-
-        assertSame(config, result);
-    }
-
-    @Test
-    void resolveMemoryChatConfig_resolutionFails_returnsNull() {
+    void resolveChatConfig_resolutionFails_returnsNull() {
         // 解析异常 → null（调用方按无配置处理，如 JudgeOptions 仅限 maxTokens）
-        when(resolver.tryResolveConfigId(WS, "CHAT", "MEMORY")).thenReturn(Optional.empty());
-        when(resolver.resolveConfigId(WS, "CHAT", "ROUTER")).thenThrow(new BizException("模型不可用"));
+        when(resolver.resolveConfigId(WS, "CHAT", "MEMORY")).thenThrow(new BizException("模型不可用"));
 
-        assertNull(factory.resolveMemoryChatConfig(WS));
+        assertNull(factory.resolveChatConfig("MEMORY", WS));
     }
 }

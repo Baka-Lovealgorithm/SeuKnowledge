@@ -65,7 +65,7 @@ class ChatSummaryServiceTest {
         ChatResponse response = mock(ChatResponse.class);
         when(response.getResult()).thenReturn(generation);
         when(chat.call(any(Prompt.class))).thenReturn(response);
-        when(modelFactory.getMemoryChatModel(anyLong())).thenReturn(chat);
+        when(modelFactory.getChatModelByUsage(eq("MEMORY"), anyLong())).thenReturn(chat);
         // 同步执行器，方便测试异步触发
         service = new ChatSummaryService(redis, sessionRepository, messageStore, historyService, catalog, modelFactory,
                 QaTracing.disabled(),

@@ -6,6 +6,7 @@ import com.ai.konwledgerepo.common.RedisKeys;
 import com.ai.konwledgerepo.config.props.SeuCacheProperties;
 import com.ai.konwledgerepo.entity.ChatSession;
 import com.ai.konwledgerepo.entity.ModelConfig;
+import com.ai.konwledgerepo.entity.ModelUsage;
 import com.ai.konwledgerepo.graph.JudgeOptions;
 import com.ai.konwledgerepo.model.ModelFactory;
 import com.ai.konwledgerepo.repository.ChatSessionRepository;
@@ -43,7 +44,7 @@ import java.util.concurrent.Executor;
  * 从 DB 直取（不封顶对话缓存窗口），摘要连续失败积压的增量恢复后可一次补压，
  * 超过 {@link #MAX_DELTA_MESSAGES} 条时截断取最近部分并告警（极端场景显式记录，快照仍推进）。
  * <p>
- * 模型：优先 MEMORY 用途配置，未配置时回退 ROUTER 模型（便宜且已常见配置）。
+ * 模型：MEMORY 用途配置，未绑定时走与其它文本槽位同一条解析链（通用档 → 默认档），无专用回退。
  * 调用统一走 {@link LlmTrace}（与标题生成同款）：60s 超时防异步任务悬挂、generation span
  * 记录 token 用量（Langfuse 成本可见）、llm.log 记录 prompt/输出；JudgeOptions 按模型配置
  * 关思考并限制输出长度，防 reasoning 膨胀。
@@ -161,8 +162,8 @@ public class ChatSummaryService {
                 String historyJson = mapper.writeValueAsString(valid);
                 String prompt = promptCatalog.render("summary-memory", Map.of(
                         "oldSummary", oldSummary.isBlank() ? "（无）" : oldSummary, "historyJson", historyJson));
-                ChatModel model = modelFactory.getMemoryChatModel(workspaceId);
-                ModelConfig cfg = modelFactory.resolveMemoryChatConfig(workspaceId);
+                ChatModel model = modelFactory.getChatModelByUsage(ModelUsage.MEMORY.value(), workspaceId);
+                ModelConfig cfg = modelFactory.resolveChatConfig(ModelUsage.MEMORY.value(), workspaceId);
                 String newSummary = LlmTrace.call(qaTracing, model, prompt, JudgeOptions.of(model, cfg, SUMMARY_MAX_TOKENS));
                 if (newSummary != null) {
                     newSummary = newSummary.trim();

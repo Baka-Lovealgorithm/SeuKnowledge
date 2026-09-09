@@ -21,8 +21,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 解析链测试，聚焦标题的三档顺序：
- * {@code CHAT+TITLE}（现行绑定）→ {@code TITLE} 类型链（<b>历史存量行，零迁移</b>）→ {@code CHAT+GENERATE}。
+ * 解析链测试，聚焦两条链的顺序：标题的三档专用链
+ * {@code CHAT+TITLE}（现行绑定）→ {@code TITLE} 类型链（<b>历史存量行，零迁移</b>）→ {@code CHAT+GENERATE}；
+ * 以及其余用途（含记忆）共用的标准链，验证它们<b>没有</b>专用回退。
  * <p>
  * Redis 用 mock（{@code Optional} 返回值默认 empty → 一律走 DB 回源路径），
  * repository 未 stub 的方法返回 empty/空集合，等价于「该档没有配置」。
@@ -109,6 +110,22 @@ class ModelConfigResolverTest {
     void resolveTitleConfigId_nothingConfigured_throws() {
         BizException e = assertThrows(BizException.class, () -> resolver.resolveTitleConfigId(WS));
         assertTrue(e.getMessage().contains("CHAT"), "异常应指明缺的是 CHAT 类型: " + e.getMessage());
+    }
+
+    /**
+     * 除标题外，CHAT 各用途槽位（含记忆 MEMORY）都只有标准四级链，<b>不得存在专用回退</b>：
+     * 未绑定时按顺序回退「通用档」，即使该空间另有已启用的 ROUTER 精确行也不参与。
+     * <p>历史上 MEMORY 曾写作「未命中 → 回退 ROUTER」，但它的判空用了整条链（通用档必然先命中），
+     * 回退分支永不可达、可达时又必然抛「未配置启用的 CHAT 模型」，故已删除。此用例锁定该决定不被改回去。
+     */
+    @Test
+    void resolveConfigId_chatMemory_noSpecialRouterDetour() {
+        stubExact("CHAT", "MEMORY", null);
+        stubExact("CHAT", "ROUTER", cfg(11L, "CHAT", "ROUTER"));
+        stubGeneric("CHAT", cfg(14L, "CHAT", null));
+
+        assertEquals(14L, resolver.resolveConfigId(WS, "CHAT", "MEMORY"),
+                "记忆未绑定应回退通用档，而非绕道 ROUTER 精确行");
     }
 
     /** 解析结果写缓存（key 由 type+usage 决定），避免每次问答回源 */
