@@ -24,9 +24,11 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -51,6 +53,8 @@ class AnswerVerifyNodeTest {
     private ChatModel chat;
     private QaTracing qaTracing;
     private AnswerVerifyNode node;
+    /** 计数型同线程 executor 的派发次数：测试里区分并行/串行分支的唯一可观测信号（并行=2，串行=0） */
+    private final AtomicInteger executorCalls = new AtomicInteger();
 
     @BeforeEach
     void setUp() {
@@ -73,6 +77,28 @@ class AnswerVerifyNodeTest {
         }
         when(chat.call(any(Prompt.class)))
                 .thenReturn(responses[0], java.util.Arrays.copyOfRange(responses, 1, responses.length));
+    }
+
+    /**
+     * 构造节点，只切换 parallel（其余配置与 {@link #setUp()} 一致）。
+     * <p>executor 刻意用「计数型同线程 executor」，一举两得：
+     * <ul>
+     *   <li>{@code CompletableFuture.supplyAsync(body, sameThread)} 在调用线程内联执行，阶段一必定先于
+     *       阶段二完成，于是按调用顺序打桩的 {@link #stubLlm} 依然成立，不必改成按 prompt 内容打桩
+     *       （真并发下那种打桩有竞态）；本用例测的是并行分支的聚合语义，不是线程调度。</li>
+     *   <li>{@link #executorCalls} 记录经 executor 派发的次数：并行分支必为 2（两阶段各一次），
+     *       串行分支恒为 0。没有它，「parallel 失效退化成串行」这种回归不会被任何断言发现
+     *       —— 两条路径的预期结果本来就相同。</li>
+     * </ul>
+     */
+    private AnswerVerifyNode nodeWithParallel(boolean parallel) {
+        return new AnswerVerifyNode(modelFactory, qaTracing, new PromptCatalog(),
+                new ExtractJsonParser(new ObjectMapper()),
+                command -> {
+                    executorCalls.incrementAndGet();
+                    command.run();
+                },
+                new SeuQaProperties(20, 2, 32, 30, parallel, false, false, 0.4, false, 60, 200));
     }
 
     private OverAllState state(String answer, List<ChunkEvidence> chunks) {
@@ -205,6 +231,47 @@ class AnswerVerifyNodeTest {
         String missing = (String) out.get(QaContextKey.MISSING_INFO);
         assertTrue(missing.contains("与证据矛盾"), "矛盾断言应并入 MISSING_INFO: " + missing);
         assertTrue(missing.contains("无证据支撑"), "无支撑断言应并入 MISSING_INFO: " + missing);
+    }
+
+    /**
+     * 并行路径（生产默认 {@code KB_QA_PARALLEL=true}，即线上真正跑的那条）的断言聚合结果，
+     * 必须与上面的串行用例逐项一致 —— 两条路径共用 {@code AnswerVerifyNode.aggregate}。
+     */
+    @Test
+    void faithfulness_parallelPath_resultsIdenticalToSerial() throws Exception {
+        stubLlm("{\"score\": 85, \"missing\": \"\"}",
+                "[{\"claim\":\"报销需填写申请表\",\"verdict\":\"SUPPORTED\",\"evidence\":1},"
+                        + "{\"claim\":\"报销需 CEO 审批\",\"verdict\":\"CONTRADICTED\",\"evidence\":1},"
+                        + "{\"claim\":\"报销需年假抵扣\",\"verdict\":\"UNSUPPORTED\",\"evidence\":null}]");
+        Map<String, Object> out = nodeWithParallel(true).apply(
+                state("报销需填写申请表。", List.of(ev(1, "报销需填写申请表，附发票原件。"))));
+
+        assertEquals(1.0 / 3.0, (Double) out.get(QaContextKey.FAITHFULNESS_SCORE), 0.001,
+                "并行路径同样 1 SUPPORTED / 3 断言 = 1/3");
+        assertEquals(1.0 / 3.0, (Double) out.get(QaContextKey.VERIFY_SCORE), 0.001,
+                "VERIFY_SCORE=min(0.85, 1/3)=1/3，与串行一致");
+        List<String> unsupported = (List<String>) out.get(QaContextKey.UNSUPPORTED_CLAIMS);
+        List<String> contradicted = (List<String>) out.get(QaContextKey.CONTRADICTED_CLAIMS);
+        assertEquals(1, unsupported.size());
+        assertEquals(1, contradicted.size());
+        assertTrue(unsupported.get(0).contains("年假抵扣"));
+        assertTrue(contradicted.get(0).contains("CEO 审批"));
+        String missing = (String) out.get(QaContextKey.MISSING_INFO);
+        assertTrue(missing.contains("与证据矛盾") && missing.contains("无证据支撑"),
+                "缺失信息融合与串行一致: " + missing);
+        assertEquals(QaState.RETRY_FALLBACK.name(), out.get(QaContextKey.NEXT));
+        verify(chat, times(2)).call(any(Prompt.class));
+        assertEquals(2, executorCalls.get(), "两阶段都应由并行分支经 executor 派发（=0 说明退化成了串行，本用例将失去意义）");
+    }
+
+    /** 并行路径下阶段一异常必须拆包后向上传播（不能被阶段二的 fail-open 顺手吞掉） */
+    @Test
+    void faithfulness_parallelPhase1Throws_propagatesToCaller() {
+        when(chat.call(any(Prompt.class))).thenThrow(new RuntimeException("VERIFY 模型不可用"));
+
+        assertThrows(RuntimeException.class, () -> nodeWithParallel(true).apply(
+                state("报销需填写申请表。", List.of(ev(1, "报销需填写申请表。")))));
+        assertEquals(2, executorCalls.get(), "两阶段都已派发（=0 说明退化成了串行）；阶段一异常仍须向上传播");
     }
 
     @Test

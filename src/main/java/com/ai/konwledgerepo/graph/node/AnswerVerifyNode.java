@@ -30,6 +30,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Supplier;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
@@ -62,6 +63,13 @@ public class AnswerVerifyNode extends QaNodeSupport {
 
     /** 断言判定结果 */
     public record ClaimVerdict(String claim, String verdict, Integer evidence) {
+    }
+
+    /** 阶段二聚合结果：SUPPORTED 占比与两类问题断言清单（fail-open 时 faithfulness=1.0、清单为空） */
+    private record FaithSummary(double faithfulness, int supportedCount, int totalClaims,
+                                List<String> unsupported, List<String> contradicted) {
+        /** 中性结果：压根没跑阶段二，或跑了但无有效断言 */
+        static final FaithSummary FAIL_OPEN = new FaithSummary(1.0, 0, 0, List.of(), List.of());
     }
 
     private final ModelFactory modelFactory;
@@ -146,33 +154,32 @@ public class AnswerVerifyNode extends QaNodeSupport {
 
             Long workspaceId = QaContext.longValue(state, QaContextKey.WORKSPACE_ID, -1L);
 
-            // ===== 阶段一：相关性 + 完整性自评（GENERATE 模型，保持原语义） =====
-            // ===== 阶段二：事实一致性校验（VERIFY 模型，claim-level faithfulness） =====
-            // 解析失败按 fail-open（faithfulness=1.0）不阻断链路
+            // ===== 阶段一：相关性 + 完整性自评（VERIFY 模型） =====
+            // ===== 阶段二：事实一致性校验（同一 VERIFY 模型，claim-level faithfulness） =====
+            // 阶段二解析失败按 fail-open（faithfulness=1.0）不阻断链路
             boolean needPhase2 = !chunks.isEmpty() && answer != null && !answer.isBlank();
+            // 阶段一：两条路径共用同一份实现（lambda 直接捕获上面的 final 局部量，免去 8 参数签名）
+            Supplier<VerifyResult> phase1 = () -> {
+                ChatModel chat = modelFactory.getChatModelByUsage(ModelUsage.VERIFY.value(), workspaceId);
+                ModelConfig cfg = modelFactory.resolveChatConfig(ModelUsage.VERIFY.value(), workspaceId);
+                String rules = buildVerifyRules(agentPrompt, injection);
+                String input = promptCatalog.render("answer-verify-input", Map.of(
+                        "prevContext", prevContext, "prevAnswerText", prevAnswerText,
+                        "evidence", evidence, "question", question, "answer", answer,
+                        "originalQuestion", originalQuestion));
+                List<Message> messages = List.of(new SystemMessage(rules), new UserMessage(input));
+                String response = LlmTrace.call(qaTracing, chat, messages,
+                        JudgeOptions.of(chat, cfg, MAX_VERIFY_TOKENS, jsonMode));
+                return parseResult(response);
+            };
+
             VerifyResult result;
-            double faithfulness;
-            List<String> unsupported;
-            List<String> contradicted;
-            int supportedCount;
-            int totalClaims;
+            FaithSummary faith;
 
             if (parallel && needPhase2) {
-                // 两阶段并行：max(阶段一, 阶段二) 省一次 LLM 串行时长
+                // 两阶段并行：max(阶段一, 阶段二) 省一次 LLM 串行时长；ContextPropagator 只在异步侧包，串行侧语义不变
                 CompletableFuture<VerifyResult> phase1F = CompletableFuture.supplyAsync(
-                        ContextPropagator.wrapSupplier(() -> {
-                            ChatModel phase1Chat = modelFactory.getChatModelByUsage(ModelUsage.VERIFY.value(), workspaceId);
-                            ModelConfig phase1Cfg = modelFactory.resolveChatConfig(ModelUsage.VERIFY.value(), workspaceId);
-                            String phase1Rules = buildVerifyRules(agentPrompt, injection);
-                            String phase1Input = promptCatalog.render("answer-verify-input", Map.of(
-                                    "prevContext", prevContext, "prevAnswerText", prevAnswerText,
-                                    "evidence", evidence, "question", question, "answer", answer,
-                                    "originalQuestion", originalQuestion));
-                            List<Message> phase1Messages = List.of(new SystemMessage(phase1Rules), new UserMessage(phase1Input));
-                            String phase1Resp = LlmTrace.call(qaTracing, phase1Chat, phase1Messages,
-                                    JudgeOptions.of(phase1Chat, phase1Cfg, MAX_VERIFY_TOKENS, jsonMode));
-                            return parseResult(phase1Resp);
-                        }), qaExecutor);
+                        ContextPropagator.wrapSupplier(phase1), qaExecutor);
                 CompletableFuture<List<ClaimVerdict>> phase2F = CompletableFuture.supplyAsync(
                         ContextPropagator.wrapSupplier(() ->
                                 checkFaithfulness(agentPrompt, evidence, question, answer, workspaceId)), qaExecutor);
@@ -187,9 +194,6 @@ public class AnswerVerifyNode extends QaNodeSupport {
                     }
                     throw new RuntimeException(cause);
                 }
-                span.setAttribute("score", result.score());
-                span.setAttribute("missing_info", result.missingInfo());
-
                 // 阶段二结果（异常按 fail-open，不阻断链路）
                 List<ClaimVerdict> verdicts;
                 try {
@@ -198,90 +202,30 @@ public class AnswerVerifyNode extends QaNodeSupport {
                     log.warn("AnswerVerify 事实一致性校验失败，按 fail-open 处理: {}", e.getMessage());
                     verdicts = List.of();
                 }
-                if (verdicts.isEmpty()) {
-                    log.warn("AnswerVerify 阶段二未产出有效断言（输出为空/解析失败/断言全被剔除），faithfulness fail-open=1.0");
-                    faithfulness = 1.0;
-                    unsupported = List.of();
-                    contradicted = List.of();
-                    supportedCount = 0;
-                    totalClaims = 0;
-                } else {
-                    supportedCount = (int) verdicts.stream().filter(v -> "SUPPORTED".equals(v.verdict())).count();
-                    faithfulness = (double) supportedCount / verdicts.size();
-                    totalClaims = verdicts.size();
-                    List<String> unsup = new ArrayList<>();
-                    List<String> contr = new ArrayList<>();
-                    for (ClaimVerdict v : verdicts) {
-                        if ("UNSUPPORTED".equals(v.verdict())) {
-                            unsup.add(truncate(v.claim()));
-                        } else if ("CONTRADICTED".equals(v.verdict())) {
-                            contr.add(truncate(v.claim()));
-                        }
-                    }
-                    unsupported = unsup;
-                    contradicted = contr;
-                    span.setAttribute("faithfulness", faithfulness);
-                    span.setAttribute("claims", totalClaims);
-                    span.setAttribute("unsupported_count", unsupported.size());
-                    span.setAttribute("contradicted_count", contradicted.size());
-                    log.info("AnswerVerify 事实一致性: faithfulness={} 断言={} 无支撑={} 矛盾={}",
-                            String.format("%.2f", faithfulness), totalClaims, unsupported.size(), contradicted.size());
-                }
+                faith = aggregate(verdicts);
             } else {
                 // 串行路径（parallel=false 或无需阶段二）
-                ChatModel chat = modelFactory.getChatModelByUsage(ModelUsage.VERIFY.value(), workspaceId);
-                ModelConfig cfg = modelFactory.resolveChatConfig(ModelUsage.VERIFY.value(), workspaceId);
-                String rules = buildVerifyRules(agentPrompt, injection);
-                String input = promptCatalog.render("answer-verify-input", Map.of(
-                        "prevContext", prevContext, "prevAnswerText", prevAnswerText,
-                        "evidence", evidence, "question", question, "answer", answer,
-                        "originalQuestion", originalQuestion));
-                List<Message> messages = List.of(new SystemMessage(rules), new UserMessage(input));
-                String response = LlmTrace.call(qaTracing, chat, messages, JudgeOptions.of(chat, cfg, MAX_VERIFY_TOKENS, jsonMode));
-                result = parseResult(response);
-                span.setAttribute("score", result.score());
-                span.setAttribute("missing_info", result.missingInfo());
-
-                faithfulness = 1.0;
-                unsupported = new ArrayList<>();
-                contradicted = new ArrayList<>();
-                supportedCount = 0;
-                totalClaims = 0;
-                if (needPhase2) {
-                    List<ClaimVerdict> verdicts = checkFaithfulness(agentPrompt, evidence, question, answer, workspaceId);
-                    if (verdicts.isEmpty()) {
-                        log.warn("AnswerVerify 阶段二未产出有效断言（输出为空/解析失败/断言全被剔除），faithfulness fail-open=1.0");
-                    } else {
-                        supportedCount = (int) verdicts.stream().filter(v -> "SUPPORTED".equals(v.verdict())).count();
-                        faithfulness = (double) supportedCount / verdicts.size();
-                        totalClaims = verdicts.size();
-                        for (ClaimVerdict v : verdicts) {
-                            if ("UNSUPPORTED".equals(v.verdict())) {
-                                unsupported.add(truncate(v.claim()));
-                            } else if ("CONTRADICTED".equals(v.verdict())) {
-                                contradicted.add(truncate(v.claim()));
-                            }
-                        }
-                        span.setAttribute("faithfulness", faithfulness);
-                        span.setAttribute("claims", totalClaims);
-                        span.setAttribute("unsupported_count", unsupported.size());
-                        span.setAttribute("contradicted_count", contradicted.size());
-                        log.info("AnswerVerify 事实一致性: faithfulness={} 断言={} 无支撑={} 矛盾={}",
-                                String.format("%.2f", faithfulness), totalClaims, unsupported.size(), contradicted.size());
-                    }
-                }
+                result = phase1.get();
+                // needPhase2=false（空答案）时压根没跑阶段二，不得走 aggregate 打「未产出有效断言」那条 warn
+                faith = needPhase2
+                        ? aggregate(checkFaithfulness(agentPrompt, evidence, question, answer, workspaceId))
+                        : FaithSummary.FAIL_OPEN;
             }
+
+            // ===== 打点：两条路径共用一处（原先 score/missing_info 在两个分支各写一遍） =====
+            span.setAttribute("score", result.score());
+            span.setAttribute("missing_info", result.missingInfo());
 
             // ===== 组合分 + MISSING_INFO 融合 + 提前终止标记 =====
-            if (faithfulness < 1.0 || supportedCount > 0) {
-                span.setAttribute("faithfulness", faithfulness);
-                span.setAttribute("claims", totalClaims);
-                span.setAttribute("unsupported_count", unsupported.size());
-                span.setAttribute("contradicted_count", contradicted.size());
+            if (faith.faithfulness() < 1.0 || faith.supportedCount() > 0) {
+                span.setAttribute("faithfulness", faith.faithfulness());
+                span.setAttribute("claims", faith.totalClaims());
+                span.setAttribute("unsupported_count", faith.unsupported().size());
+                span.setAttribute("contradicted_count", faith.contradicted().size());
             }
-            double combined = Math.min(result.score(), faithfulness);
+            double combined = Math.min(result.score(), faith.faithfulness());
             span.setAttribute("combined_score", combined);
-            String missingInfo = mergeMissingInfo(result.missingInfo(), unsupported, contradicted);
+            String missingInfo = mergeMissingInfo(result.missingInfo(), faith.unsupported(), faith.contradicted());
 
             // 提前终止：delta 为空（确定性）或模型判定 noImprovement（仅 earlyAbortActive 时生效）
             boolean noImprovement = false;
@@ -301,9 +245,9 @@ public class AnswerVerifyNode extends QaNodeSupport {
             return Map.of(
                     QaContextKey.VERIFY_SCORE, combined,
                     QaContextKey.MISSING_INFO, missingInfo,
-                    QaContextKey.FAITHFULNESS_SCORE, faithfulness,
-                    QaContextKey.UNSUPPORTED_CLAIMS, unsupported,
-                    QaContextKey.CONTRADICTED_CLAIMS, contradicted,
+                    QaContextKey.FAITHFULNESS_SCORE, faith.faithfulness(),
+                    QaContextKey.UNSUPPORTED_CLAIMS, faith.unsupported(),
+                    QaContextKey.CONTRADICTED_CLAIMS, faith.contradicted(),
                     QaContextKey.NO_IMPROVEMENT, noImprovement,
                     QaContextKey.PREV_CHUNK_IDS, currentKeys,
                     QaContextKey.NEXT, QaState.RETRY_FALLBACK.name());
@@ -357,6 +301,32 @@ public class AnswerVerifyNode extends QaNodeSupport {
             log.warn("AnswerVerify 事实一致性校验失败，按 fail-open 处理: {}", e.getMessage());
             return List.of();
         }
+    }
+
+    /**
+     * 阶段二断言聚合：并行/串行两条路径共用的<b>唯一</b>实现（只读入参、只写日志，不碰 span 与状态）。
+     * <p>历史上这两条路径各有一份逐字符相同的复制，而线上默认 {@code KB_QA_PARALLEL=true} 跑的恰是没有
+     * 测试覆盖的那份；改这里必须同时看 {@code AnswerVerifyNodeTest} 的串行与并行两组用例。
+     */
+    private static FaithSummary aggregate(List<ClaimVerdict> verdicts) {
+        if (verdicts.isEmpty()) {
+            log.warn("AnswerVerify 阶段二未产出有效断言（输出为空/解析失败/断言全被剔除），faithfulness fail-open=1.0");
+            return FaithSummary.FAIL_OPEN;
+        }
+        int supportedCount = (int) verdicts.stream().filter(v -> "SUPPORTED".equals(v.verdict())).count();
+        List<String> unsupported = new ArrayList<>();
+        List<String> contradicted = new ArrayList<>();
+        for (ClaimVerdict v : verdicts) {
+            if ("UNSUPPORTED".equals(v.verdict())) {
+                unsupported.add(truncate(v.claim()));
+            } else if ("CONTRADICTED".equals(v.verdict())) {
+                contradicted.add(truncate(v.claim()));
+            }
+        }
+        double faithfulness = (double) supportedCount / verdicts.size();
+        log.info("AnswerVerify 事实一致性: faithfulness={} 断言={} 无支撑={} 矛盾={}",
+                String.format("%.2f", faithfulness), verdicts.size(), unsupported.size(), contradicted.size());
+        return new FaithSummary(faithfulness, supportedCount, verdicts.size(), unsupported, contradicted);
     }
 
     /** 缺失信息融合：原缺失 + 无支撑/矛盾断言（前 2 条，整体 ≤ MAX_MISSING_LEN） */
