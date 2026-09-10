@@ -5,6 +5,7 @@ import co.elastic.clients.elasticsearch._types.Conflicts;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch.core.BulkRequest;
 import co.elastic.clients.elasticsearch.core.BulkResponse;
+import co.elastic.clients.elasticsearch.core.DeleteByQueryRequest;
 import co.elastic.clients.elasticsearch.core.IndexResponse;
 import co.elastic.clients.elasticsearch.core.bulk.BulkResponseItem;
 import co.elastic.clients.json.JsonData;
@@ -266,14 +267,36 @@ public class VectorIngestionService {
      * <p>
      * BUSINESS / QA 与 chunk 共用索引且也携带 docId，因此不能只按 docId 删除。
      * 这里仅匹配 CHUNK；同时匹配没有 sourceType 的旧版索引数据，以兼容既有知识库。
+     * <p>
+     * ⚠️ {@code catch (IOException)} 是有意的窄口径，<b>别顺手"统一"成 catch (Exception)</b>：
+     * ES 返回错误码时抛的 {@code ElasticsearchException} 是 RuntimeException，让它冒泡是有意的——
+     * 删不干净等于向量残留，而召回侧只读 ES {@code _source}（{@code VectorSearchService.rrfMerge}
+     * 不回查 MySQL），残留会被当作有效证据引用已删除的文档内容。宁可报接口错误，也不要静默出错答案。
+     * 已知遗留：连接类失败（IOException）仍然只告警，同样可能残留幽灵向量，目前无逐文档补偿入口，
+     * 兜底可用「清空知识库内容」（按 kbId 全来源删除）。
      */
     public void deleteByDocId(Long docId) {
         try {
-            esClient.deleteByQuery(d -> d.index(indexName)
-                    .query(documentChunkQuery(docId)));
+            esClient.deleteByQuery(deleteByDocIdRequest(indexName, docId));
         } catch (IOException e) {
             log.error("删除 ES chunk 失败 docId={}", docId, e);
         }
+    }
+
+    /**
+     * 按文档删除 ES chunk 的请求（纯函数，供单测钉住口径）。
+     * <p>
+     * 为什么单独抽出：{@code ElasticsearchClient} 的父类非 public，Mockito 无法 mock，
+     * 直接调 {@code esClient.deleteByQuery(fn)} 的请求内容在单测里看不见，
+     * 抽出后 {@code conflicts} 这类参数才有回归锁。
+     * <p>
+     * {@code conflicts=Proceed}：同文件两处 updateByQuery 都设了，删除原本漏设——并发向量化时
+     * delete_by_query 会以 409 整体失败（而删除本就该幂等）。
+     */
+    static DeleteByQueryRequest deleteByDocIdRequest(String indexName, Long docId) {
+        return DeleteByQueryRequest.of(b -> b.index(indexName)
+                .conflicts(Conflicts.Proceed)
+                .query(documentChunkQuery(docId)));
     }
 
     /**
@@ -318,15 +341,24 @@ public class VectorIngestionService {
                         .minimumShouldMatch("1")))));
     }
 
-    /** 按知识库删除全部来源的 ES 文档（CHUNK / BUSINESS / QA，清空知识库内容时调用） */
+    /**
+     * 按知识库删除全部来源的 ES 文档（CHUNK / BUSINESS / QA，清空知识库内容时调用）。
+     * catch 窄口径的理由见 {@link #deleteByDocId}。
+     */
     public void deleteByKbId(Long kbId) {
         try {
-            esClient.deleteByQuery(d -> d.index(indexName)
-                    .query(q -> q.term(t -> t.field("kbId").value(kbId))));
+            esClient.deleteByQuery(deleteByKbIdRequest(indexName, kbId));
             log.info("删除 ES 知识库 {} 全部来源文档完成", kbId);
         } catch (IOException e) {
             log.error("删除 ES 知识库 {} 文档失败", kbId, e);
         }
+    }
+
+    /** 见 {@link #deleteByDocIdRequest}：同样补 {@code conflicts=Proceed}，否则并发写入下清空会被 409 打断 */
+    static DeleteByQueryRequest deleteByKbIdRequest(String indexName, Long kbId) {
+        return DeleteByQueryRequest.of(b -> b.index(indexName)
+                .conflicts(Conflicts.Proceed)
+                .query(q -> q.term(t -> t.field(ChunkDocFields.KB_ID).value(kbId))));
     }
 
     /**
@@ -384,7 +416,7 @@ public class VectorIngestionService {
                                 chunk.getContent(), vector, chunk.getCleanStatus()))));
             }
             try {
-                BulkResponse response = esClient.bulk(bulk.build());
+                BulkResponse response = callBulk(bulk.build());
                 List<BulkResponseItem> items = response.items();
                 for (int i = 0; i < batch.size(); i++) {
                     Chunk chunk = batch.get(i);
@@ -398,7 +430,13 @@ public class VectorIngestionService {
                         chunk.setStatus(ChunkStatus.INDEXED.value());
                     }
                 }
-            } catch (IOException e) {
+            } catch (Exception e) {
+                // 必须宽到 Exception：ES "连不上"是 IOException（走这里），但 ES 返回错误码
+                // （429/503/映射冲突 400 等）抛的是 ElasticsearchException（RuntimeException）。
+                // 少兜住这一类，异常会冒出 ingest → @Async ingestAsync 只落一行日志，
+                // 连本方法 javadoc 承诺的"每条出口都回写文档级向量态"都被跳过：
+                // 文档 SUCCESS、errorMsg 空、chunk 永停 EMBEDDING、列表连"向量未完成"都不显示。
+                // 这里当作整批失败处理，用户仍可用「重建向量」原地补救。
                 log.error("chunk 批量写入 ES 失败（批 {} 条）", batch.size(), e);
                 for (Chunk chunk : batch) {
                     chunk.setStatus(ChunkStatus.FAILED.value());
@@ -409,6 +447,15 @@ public class VectorIngestionService {
         }
         chunkRepository.saveAll(chunks);
         return allIndexed;
+    }
+
+    /**
+     * ES bulk 调用点。单独成方法只为一处可测：{@code ElasticsearchClient} 的父类非 public，
+     * Mockito 无法 mock，本类的 ES 错误分支以前完全写不出回归用例（传 null client 就直接 NPE）。
+     * 测试覆盖本方法即可分别注入 IOException（连不上）与 ElasticsearchException（错误码）两类失败。
+     */
+    BulkResponse callBulk(BulkRequest request) throws IOException {
+        return esClient.bulk(request);
     }
 
     /**

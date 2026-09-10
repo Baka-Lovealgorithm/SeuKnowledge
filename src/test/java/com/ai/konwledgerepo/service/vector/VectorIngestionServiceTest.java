@@ -1,6 +1,12 @@
 package com.ai.konwledgerepo.service.vector;
 
+import co.elastic.clients.elasticsearch._types.Conflicts;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
+import co.elastic.clients.elasticsearch.core.BulkRequest;
+import co.elastic.clients.elasticsearch.core.BulkResponse;
+import co.elastic.clients.elasticsearch.core.DeleteByQueryRequest;
+import co.elastic.clients.elasticsearch.core.bulk.BulkResponseItem;
+import co.elastic.clients.elasticsearch.core.bulk.OperationType;
 import com.ai.konwledgerepo.config.props.SeuEsProperties;
 import com.ai.konwledgerepo.entity.Chunk;
 import com.ai.konwledgerepo.entity.ChunkStatus;
@@ -371,6 +377,91 @@ class VectorIngestionServiceTest {
 
         assertEquals(false, ok, "内容为空不应写入");
         verify(embeddingModel, never()).embed(anyString());
+    }
+
+    // ===== ES 删除请求口径：conflicts=Proceed（同文件两处 updateByQuery 早就设了，删除漏设） =====
+
+    @Test
+    void deleteByDocIdRequest_proceedsOnConflictsAndTargetsChunkOnly() {
+        DeleteByQueryRequest req = VectorIngestionService.deleteByDocIdRequest("kb_chunk", 7L);
+
+        assertEquals(List.of("kb_chunk"), req.index());
+        assertEquals(Conflicts.Proceed, req.conflicts(),
+                "删除是幂等操作：并发向量化时的版本冲突不该让整个 delete_by_query 以 409 失败");
+        Query query = req.query();
+        assertTrue(query.isBool(), "按文档删除要带 sourceType 限定（BUSINESS/QA 也带 docId）");
+        assertEquals(7L, query.bool().filter().get(0).term().value().longValue());
+    }
+
+    @Test
+    void deleteByKbIdRequest_proceedsOnConflictsAndMatchesKbIdField() {
+        DeleteByQueryRequest req = VectorIngestionService.deleteByKbIdRequest("kb_chunk", 3L);
+
+        assertEquals(Conflicts.Proceed, req.conflicts());
+        assertEquals(ChunkDocFields.KB_ID, req.query().term().field(), "字段名走常量，别再写字面量");
+        assertEquals(3L, req.query().term().value().longValue());
+    }
+
+    // ===== bulk 失败兜底：ES 返回错误码（RuntimeException）不能冒出 ingest =====
+
+    /**
+     * ES「连不上」抛 IOException、「返回错误码」抛 ElasticsearchException（RuntimeException）。
+     * 以前只 catch IOException → 后者会穿出 ingest，而 ingestAsync 是 @Async void 且全仓没有
+     * AsyncUncaughtExceptionHandler，异常只落一行日志，并连带跳过 applyVectorState ——
+     * 文档停在 SUCCESS、errorMsg 空、chunk 永停 EMBEDDING，正是本类 javadoc 承诺已消灭的形态。
+     * ElasticsearchClient 无法被 Mockito mock（父类非 public），故覆盖 {@code callBulk} 注入失败。
+     */
+    @Test
+    void ingest_bulkThrowsRuntimeException_marksBatchFailedAndStillWritesVectorState() {
+        Chunk c = chunk(1L, "标题", "正文");
+        Document doc = doc();
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc));
+        when(chunkRepository.findByDocIdOrderBySeqAsc(1L)).thenReturn(List.of(c));
+        when(embeddingModel.embed(anyList())).thenReturn(List.of(new float[]{0.1f}));
+        VectorIngestionService failing = new VectorIngestionService(null, chunkRepository, documentRepository,
+                workspaceIdResolver, modelFactory, new SeuEsProperties("kb_chunk", 1024)) {
+            @Override
+            BulkResponse callBulk(BulkRequest request) {
+                throw new IllegalStateException("模拟 ElasticsearchException：cluster_block_exception index read-only");
+            }
+        };
+
+        failing.ingest(1L);
+
+        assertEquals(ChunkStatus.FAILED.value(), c.getStatus(), "ES 错误码要与连不上同处理：整批置 FAILED");
+        ArgumentCaptor<Document> captor = ArgumentCaptor.forClass(Document.class);
+        verify(documentRepository).save(captor.capture());
+        assertTrue(captor.getValue().getErrorMsg().contains("向量未完成"),
+                "异常没有绕过收尾回写：" + captor.getValue().getErrorMsg());
+        assertTrue(captor.getValue().getErrorMsg().contains("重建向量"), "要留下可动手的救济指引");
+    }
+
+    /** 对照：bulk 成功时 chunk 应 INDEXED，证明上一条的 FAILED 来自 catch 分支而非"根本没跑到" */
+    @Test
+    void ingest_bulkSucceeds_marksChunkIndexed() {
+        Chunk c = chunk(1L, "标题", "正文");
+        Document doc = doc();
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc));
+        when(chunkRepository.findByDocIdOrderBySeqAsc(1L)).thenReturn(List.of(c));
+        when(embeddingModel.embed(anyList())).thenReturn(List.of(new float[]{0.1f}));
+        BulkResponseItem okItem = BulkResponseItem.of(i -> i.id("1").index("kb_chunk")
+                .status(201).operationType(OperationType.Index));
+        BulkResponse ok = BulkResponse.of(b -> b.took(1).errors(false).items(List.of(okItem)));
+        VectorIngestionService working = new VectorIngestionService(null, chunkRepository, documentRepository,
+                workspaceIdResolver, modelFactory, new SeuEsProperties("kb_chunk", 1024)) {
+            @Override
+            BulkResponse callBulk(BulkRequest request) {
+                return ok;
+            }
+        };
+
+        working.ingest(1L);
+
+        assertEquals(ChunkStatus.INDEXED.value(), c.getStatus());
+        assertEquals("1", c.getEsId());
+        ArgumentCaptor<Document> captor = ArgumentCaptor.forClass(Document.class);
+        verify(documentRepository).save(captor.capture());
+        assertNull(captor.getValue().getErrorMsg(), "全部追平不应留下摘要");
     }
 
     // ===== 构造辅助 =====
