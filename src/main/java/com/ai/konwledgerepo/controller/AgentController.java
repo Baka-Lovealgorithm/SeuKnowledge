@@ -33,8 +33,9 @@ public class AgentController {
 
     @GetMapping("/kb/{kbId}/agent")
     public ApiResponse<AgentResponse> get(@PathVariable Long kbId,
+                                          @RequestAttribute("userId") Long userId,
                                           @RequestAttribute("workspaceId") Long workspaceId) {
-        String kbName = workspaceAccess.requireKb(kbId, workspaceId).getName();
+        String kbName = workspaceAccess.requireKbAccess(kbId, workspaceId, userId, false).getName();
         return ApiResponse.ok(agentService.getResponse(kbId, kbName));
     }
 
@@ -42,8 +43,9 @@ public class AgentController {
     @EditorOrAbove
     public ApiResponse<AgentResponse> update(@PathVariable Long kbId,
                                              @RequestBody @Valid AgentRequest request,
+                                             @RequestAttribute("userId") Long userId,
                                              @RequestAttribute("workspaceId") Long workspaceId) {
-        String kbName = workspaceAccess.requireKb(kbId, workspaceId).getName();
+        String kbName = workspaceAccess.requireKbAccess(kbId, workspaceId, userId, true).getName();
         return ApiResponse.ok(agentService.update(kbId, kbName, request));
     }
 }

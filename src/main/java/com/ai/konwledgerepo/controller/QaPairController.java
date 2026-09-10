@@ -38,8 +38,9 @@ public class QaPairController {
     @GetMapping("/kb/{kbId}/qa-pairs")
     public ApiResponse<List<QaPairResponse>> list(@PathVariable Long kbId,
                                                   @RequestParam(required = false) String status,
+                                                  @RequestAttribute("userId") Long userId,
                                                   @RequestAttribute("workspaceId") Long workspaceId) {
-        workspaceAccess.requireKb(kbId, workspaceId);
+        workspaceAccess.requireKbAccess(kbId, workspaceId, userId, false);
         return ApiResponse.ok(service.list(kbId, status));
     }
 
@@ -47,8 +48,9 @@ public class QaPairController {
     @EditorOrAbove
     public ApiResponse<QaPairResponse> create(@PathVariable Long kbId,
                                               @RequestBody @Valid QaPairRequest request,
+                                              @RequestAttribute("userId") Long userId,
                                               @RequestAttribute("workspaceId") Long workspaceId) {
-        workspaceAccess.requireKb(kbId, workspaceId);
+        workspaceAccess.requireKbAccess(kbId, workspaceId, userId, true);
         return ApiResponse.ok(service.create(kbId, request));
     }
 
@@ -56,14 +58,18 @@ public class QaPairController {
     @EditorOrAbove
     public ApiResponse<QaPairResponse> update(@PathVariable Long id,
                                               @RequestBody @Valid QaPairRequest request,
+                                              @RequestAttribute("userId") Long userId,
                                               @RequestAttribute("workspaceId") Long workspaceId) {
+        workspaceAccess.requireKbAccess(service.kbIdOf(id, workspaceId), workspaceId, userId, true);
         return ApiResponse.ok(service.update(id, request, workspaceId));
     }
 
     @DeleteMapping("/qa-pairs/{id}")
     @EditorOrAbove
     public ApiResponse<Void> delete(@PathVariable Long id,
+                                    @RequestAttribute("userId") Long userId,
                                     @RequestAttribute("workspaceId") Long workspaceId) {
+        workspaceAccess.requireKbAccess(service.kbIdOf(id, workspaceId), workspaceId, userId, true);
         service.delete(id, workspaceId);
         return ApiResponse.ok();
     }
@@ -71,41 +77,53 @@ public class QaPairController {
     @PostMapping("/qa-pairs/{id}/approve")
     @EditorOrAbove
     public ApiResponse<QaPairResponse> approve(@PathVariable Long id,
+                                               @RequestAttribute("userId") Long userId,
                                                @RequestAttribute("workspaceId") Long workspaceId) {
+        workspaceAccess.requireKbAccess(service.kbIdOf(id, workspaceId), workspaceId, userId, true);
         return ApiResponse.ok(service.approve(id, workspaceId));
     }
 
     @PostMapping("/qa-pairs/{id}/reject")
     @EditorOrAbove
     public ApiResponse<QaPairResponse> reject(@PathVariable Long id,
+                                              @RequestAttribute("userId") Long userId,
                                               @RequestAttribute("workspaceId") Long workspaceId) {
+        workspaceAccess.requireKbAccess(service.kbIdOf(id, workspaceId), workspaceId, userId, true);
         return ApiResponse.ok(service.reject(id, workspaceId));
     }
 
     @PostMapping("/qa-pairs/{id}/disable")
     @EditorOrAbove
     public ApiResponse<QaPairResponse> disable(@PathVariable Long id,
+                                               @RequestAttribute("userId") Long userId,
                                                @RequestAttribute("workspaceId") Long workspaceId) {
+        workspaceAccess.requireKbAccess(service.kbIdOf(id, workspaceId), workspaceId, userId, true);
         return ApiResponse.ok(service.disable(id, workspaceId));
     }
 
     @PostMapping("/qa-pairs/{id}/enable")
     @EditorOrAbove
     public ApiResponse<QaPairResponse> enable(@PathVariable Long id,
+                                              @RequestAttribute("userId") Long userId,
                                               @RequestAttribute("workspaceId") Long workspaceId) {
+        workspaceAccess.requireKbAccess(service.kbIdOf(id, workspaceId), workspaceId, userId, true);
         return ApiResponse.ok(service.enable(id, workspaceId));
     }
 
     @PostMapping("/qa-pairs/{id}/normalize")
     @EditorOrAbove
     public ApiResponse<QaPairResponse> normalize(@PathVariable Long id,
+                                                 @RequestAttribute("userId") Long userId,
                                                  @RequestAttribute("workspaceId") Long workspaceId) {
+        workspaceAccess.requireKbAccess(service.kbIdOf(id, workspaceId), workspaceId, userId, true);
         return ApiResponse.ok(service.normalize(id, workspaceId));
     }
 
     @GetMapping("/qa-pairs/{id}/versions")
     public ApiResponse<List<QaPairResponse>> versions(@PathVariable Long id,
+                                                      @RequestAttribute("userId") Long userId,
                                                       @RequestAttribute("workspaceId") Long workspaceId) {
+        workspaceAccess.requireKbAccess(service.kbIdOfAnyVersion(id, workspaceId), workspaceId, userId, false);
         return ApiResponse.ok(service.versions(id, workspaceId));
     }
 
@@ -113,7 +131,9 @@ public class QaPairController {
     @EditorOrAbove
     public ApiResponse<QaPairResponse> rollback(@PathVariable Long id,
                                                 @PathVariable int version,
+                                                @RequestAttribute("userId") Long userId,
                                                 @RequestAttribute("workspaceId") Long workspaceId) {
+        workspaceAccess.requireKbAccess(service.kbIdOf(id, workspaceId), workspaceId, userId, true);
         return ApiResponse.ok(service.rollback(id, version, workspaceId));
     }
 }

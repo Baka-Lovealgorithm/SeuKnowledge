@@ -260,6 +260,23 @@ public class QaPairService {
     }
 
     /**
+     * 按记录 id 取所属知识库 id（含空间归属校验），供 Controller 层做知识库级 ACL 判定。
+     * 本身不做 ACL——ACL 由调用方统一走 {@link WorkspaceAccess#requireKbAccess}，
+     * 保证写路径的 kb 权限判定口径唯一。
+     */
+    public Long kbIdOf(Long id, Long workspaceId) {
+        return requireInWorkspace(id, workspaceId).getKbId();
+    }
+
+    /** 按版本记录 id 取所属知识库 id（容忍软删，供 versions 等只读接口做 ACL 判定） */
+    public Long kbIdOfAnyVersion(Long id, Long workspaceId) {
+        QaPair any = repository.findById(id)
+                .orElseThrow(() -> new BizException("记录不存在"));
+        workspaceAccess.requireKb(any.getKbId(), workspaceId);
+        return any.getKbId();
+    }
+
+    /**
      * ES 索引同步（多源召回）：审核通过（APPROVED）写入索引，软删/拒绝/禁用等移出索引。
      * 实现见 {@link SourceIndexer}。
      */
