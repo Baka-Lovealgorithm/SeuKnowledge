@@ -86,7 +86,15 @@ export const chatApi = {
   ask: (id, question) => http.post(`/chat/session/${id}/ask`, { question }),
   rename: (id, title) => http.put(`/chat/session/${id}`, { title }),
   remove: (id) => http.delete(`/chat/session/${id}`),
-  cancelAsk: (id) => http.post(`/chat/session/${id}/ask/cancel`)
+  cancelAsk: (id) => http.post(`/chat/session/${id}/ask/cancel`),
+  // 评价答案：rating = UP / DOWN / NONE(撤销)；reason 仅点踩有效，可省略（跳过）
+  rate: (messageId, rating, reason, note) =>
+    http.post(`/chat/message/${messageId}/feedback`, { rating, reason: reason || null, note: note || null })
+}
+
+export const statsApi = {
+  overview: (days) => http.get('/stats/qa/overview', { params: { days } }),
+  dislikes: (days, page, size) => http.get('/stats/qa/dislikes', { params: { days, page, size } })
 }
 
 export const agentApi = {

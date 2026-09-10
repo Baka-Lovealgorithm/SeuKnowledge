@@ -70,8 +70,19 @@ const routes = [
     path: '/chat',
     component: () => import('../views/Chat.vue'),
     meta: { auth: true, title: '智能问答' }
+  },
+  {
+    path: '/stats',
+    component: () => import('../views/QaStats.vue'),
+    meta: { auth: true, roles: ['OWNER', 'ADMIN'], title: '问答反馈汇总' }
   }
 ]
+
+/**
+ * 管理类页面清单：从路由表的 meta.roles 派生，新增管理页自动生效
+ * （原先是守卫里手写的 || 串联，加新页时漏列会让无权限用户停在空白页）。
+ */
+const MANAGED_PAGES = routes.filter((r) => r.meta && r.meta.roles).map((r) => r.path)
 
 const router = createRouter({ history: createWebHistory(), routes })
 
@@ -95,8 +106,9 @@ router.beforeEach((to) => {
       role = raw.role || ''
     }
     if (!role || !to.meta.roles.includes(role)) {
-      // 无权限访问管理页：普通成员回到知识库（只读），其余回首页
-      return to.path === '/members' || to.path === '/groups' || to.path === '/models' || to.path === '/agent' ? '/' : false
+      // 无权限访问管理页：这些页面回到知识库（只读首页），其余中止导航留在原页。
+      // 用清单而不是逐条 || 串联，避免新加管理页时漏列导致无权限用户落到空白页。
+      return MANAGED_PAGES.includes(to.path) ? '/' : false
     }
   }
   return true

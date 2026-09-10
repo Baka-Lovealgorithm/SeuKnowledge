@@ -65,6 +65,20 @@
                 <div v-if="r.content" class="ref-snippet"><MdContent :content="r.content" /></div>
               </div>
             </div>
+            <!-- 答案评价：需要该回答的 messageId（由 SSE done/stopped 事件或历史接口提供）。
+                 拿不到 id 时整条不渲染，而不是点了报错——旧后端/异常路径下自然降级。 -->
+            <div v-if="m.role === 'ASSISTANT' && !m.pending && m.id" class="msg-rate">
+              <el-button link size="small" :class="{ 'rate-active-up': m.feedback === 'UP' }" @click="rateUp(m)">
+                {{ m.feedback === 'UP' ? '👍 已标记有用' : '👍 有用' }}
+              </el-button>
+              <el-button link size="small" :class="{ 'rate-active-down': m.feedback === 'DOWN' }" @click="rateDown(m)">
+                {{ m.feedback === 'DOWN' ? '👎 已反馈' : '👎 没解决' }}
+              </el-button>
+              <span v-if="m.feedback === 'DOWN' && m.feedbackReason" class="rate-hint">
+                {{ reasonLabel(m.feedbackReason) }}
+              </span>
+              <span v-else-if="m.feedback" class="rate-hint">再点一次可撤销</span>
+            </div>
           </div>
         </div>
       </el-main>
@@ -105,6 +119,20 @@
     <template #footer>
       <el-button @click="renameVisible = false">取消</el-button>
       <el-button type="primary" @click="confirmRename">保存</el-button>
+    </template>
+  </el-dialog>
+
+  <!-- 点踩原因：允许跳过。强制填写会把点踩率压到没有统计价值。 -->
+  <el-dialog v-model="rateVisible" title="这条回答哪里没解决？" width="440px">
+    <el-radio-group v-model="rateReason" class="rate-reasons">
+      <el-radio v-for="r in RATE_REASONS" :key="r.code" :value="r.code">{{ r.label }}</el-radio>
+    </el-radio-group>
+    <el-input v-model="rateNote" type="textarea" :rows="2" maxlength="200" show-word-limit
+              placeholder="补充说明（可选，200 字内）" class="rate-note" />
+    <template #footer>
+      <el-button text @click="submitRate()">跳过</el-button>
+      <el-button @click="rateVisible = false">取消</el-button>
+      <el-button type="primary" @click="submitRate(rateReason)">提交</el-button>
     </template>
   </el-dialog>
 
@@ -271,6 +299,75 @@ function parseRefs(json) {
   } catch { return [] }
 }
 
+// ===== 答案评价（点赞 / 点踩）=====
+// code 必须与后端 FeedbackReason 枚举逐值对齐；新增原因时两边一起改。
+const RATE_REASONS = [
+  { code: 'NOT_ON_TARGET', label: '没答到点上' },
+  { code: 'OUTDATED', label: '信息过时' },
+  { code: 'WRONG_CITATION', label: '引用不对' },
+  { code: 'TOO_VERBOSE', label: '太啰嗦' },
+  { code: 'OTHER', label: '其它' }
+]
+const rateVisible = ref(false)
+const rateTarget = ref(null)
+const rateReason = ref('')
+const rateNote = ref('')
+
+function reasonLabel(code) {
+  const hit = RATE_REASONS.find((r) => r.code === code)
+  return hit ? hit.label : code
+}
+
+/**
+ * 把后端回传的答案消息 id 挂到界面上这条消息（点踩要靠它定位 kb_chat_message 行）。
+ * 兼容三种情况：旧后端不带 data、仅落用户消息的路径 id 为 null、以及消息已被切走。
+ */
+function attachMessageId(idx, payload) {
+  const id = payload && typeof payload === 'object' ? payload.messageId : null
+  if (id && messages.value[idx]) messages.value[idx].id = id
+}
+
+/**
+ * 提交评价并就地更新该条消息（不重拉整段历史）。
+ * 失败时不改本地状态——http 拦截器已弹出后端原因，避免界面显示一个库里并不存在的评价。
+ */
+async function submitFeedback(m, rating, reason, note) {
+  if (!m || !m.id) return
+  try {
+    await chatApi.rate(m.id, rating, reason || null, note || null)
+  } catch (e) {
+    return
+  }
+  const cleared = rating === 'NONE'
+  m.feedback = cleared ? null : rating
+  m.feedbackReason = cleared || rating !== 'DOWN' ? null : (reason || null)
+  m.feedbackNote = cleared || rating !== 'DOWN' ? null : (note || null)
+  ElMessage.success(cleared ? '已撤销评价' : '感谢反馈')
+}
+
+function rateUp(m) {
+  // 已赞再点 = 撤销
+  submitFeedback(m, m.feedback === 'UP' ? 'NONE' : 'UP')
+}
+
+function rateDown(m) {
+  if (m.feedback === 'DOWN') {
+    submitFeedback(m, 'NONE')
+    return
+  }
+  rateTarget.value = m
+  rateReason.value = ''
+  rateNote.value = ''
+  rateVisible.value = true
+}
+
+/** reason 传空即"跳过原因"，只记一次点踩 */
+function submitRate(reason) {
+  const m = rateTarget.value
+  rateVisible.value = false
+  submitFeedback(m, 'DOWN', reason, rateNote.value)
+}
+
 // 多源引用展示：文档分块 / 业务知识 / 问答对
 function refTypeLabel(t) {
   if (t === 'BUSINESS') return '业务知识'
@@ -396,9 +493,12 @@ async function send() {
           if (cur()) { refsList.value[idx] = parseRefs(data.content) }
         } else if (data.type === 'done') {
           receivedDone = true
+          // 事件负载统一包在 content 里（SseStreamContext.event），故取 content.messageId
+          attachMessageId(idx, data.content)
           stageStore.set(sentSessionId, { id: 'DONE', text: '回答完成', done: true })
         } else if (data.type === 'stopped') {
           receivedStop = true
+          attachMessageId(idx, data.content)
           clearReplay(sentSessionId)
           if (cur() && messages.value[idx]) {
             messages.value[idx].pending = false
@@ -626,6 +726,16 @@ onMounted(loadKbs)
 .ref-meta { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .ref-expand-btn { margin-left: 2px; }
 .ref-snippet { margin-top: 6px; background: #f5f7fa; border: 1px solid #ebeef5; border-radius: 6px; padding: 8px 10px; font-size: 12px; max-height: 180px; overflow: auto; }
+
+/* 答案评价条：与引用区一样贴在气泡底部，未落库（无 id）时整条不渲染 */
+.msg-rate { margin-top: 8px; display: flex; align-items: center; gap: 6px; }
+.msg-rate .el-button { color: #909399; }
+.msg-rate .el-button:hover { color: #409eff; }
+.rate-active-up { color: #409eff !important; font-weight: 600; }
+.rate-active-down { color: #f56c6c !important; font-weight: 600; }
+.rate-hint { font-size: 12px; color: #a8abb2; }
+.rate-reasons { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.rate-note { margin-top: 10px; }
 .ref-detail-body { max-height: 60vh; overflow: auto; font-size: 13px; }
 .ref-index { display: inline-block; min-width: 22px; font-weight: 700; color: #409eff; font-family: Consolas, Menlo, monospace; margin-right: 2px; }
 .msg-row.user .ref-index { color: #fff; }

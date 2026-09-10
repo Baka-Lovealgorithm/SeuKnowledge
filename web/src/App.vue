@@ -38,6 +38,9 @@
         <el-menu-item index="/chat">
           <el-icon><ChatDotRound /></el-icon><span>智能问答</span>
         </el-menu-item>
+        <el-menu-item v-if="auth.isAdmin" index="/stats">
+          <el-icon><TrendCharts /></el-icon><span>问答反馈</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
     <el-container>
@@ -94,7 +97,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowDown, Avatar, ChatDotRound, Checked, Collection, Cpu, EditPen, FolderOpened, MagicStick, OfficeBuilding, QuestionFilled, Setting, User } from '@element-plus/icons-vue'
+import { ArrowDown, Avatar, ChatDotRound, Checked, Collection, Cpu, EditPen, FolderOpened, MagicStick, OfficeBuilding, QuestionFilled, Setting, TrendCharts, User } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from './stores/auth'
 import { authApi, workspaceApi } from './api'
