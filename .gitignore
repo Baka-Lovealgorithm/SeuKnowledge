@@ -87,3 +87,7 @@ excelTest/
 
 ### 临时对比/验证测试（依赖本地 data/ 样本，类注释标注「不入库」）###
 src/test/java/com/ai/konwledgerepo/service/document/DocumentCleanCompareTest.java
+
+### 本地实验产物（chm 提取 / 代码抽取验证，仅本机使用，不入库）###
+CodeExtractorTest/
+chmTest/

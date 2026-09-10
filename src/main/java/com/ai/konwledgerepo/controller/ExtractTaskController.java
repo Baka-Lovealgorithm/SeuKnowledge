@@ -39,8 +39,9 @@ public class ExtractTaskController {
     }
 
     @GetMapping
-    public ApiResponse<List<ExtractTaskResponse>> list(@RequestAttribute("workspaceId") Long workspaceId) {
-        return ApiResponse.ok(service.list(workspaceId));
+    public ApiResponse<List<ExtractTaskResponse>> list(@RequestAttribute("userId") Long userId,
+                                                       @RequestAttribute("workspaceId") Long workspaceId) {
+        return ApiResponse.ok(service.list(workspaceId, userId));
     }
 
     @GetMapping("/{id}")

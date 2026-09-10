@@ -12,6 +12,7 @@ import com.ai.konwledgerepo.entity.KnowledgeBase;
 import com.ai.konwledgerepo.entity.SysUser;
 import com.ai.konwledgerepo.entity.Workspace;
 import com.ai.konwledgerepo.entity.WorkspaceMember;
+import com.ai.konwledgerepo.repository.KbAccessRepository;
 import com.ai.konwledgerepo.repository.KnowledgeBaseRepository;
 import com.ai.konwledgerepo.repository.SysUserRepository;
 import com.ai.konwledgerepo.repository.WorkspaceMemberRepository;
@@ -42,6 +43,7 @@ public class WorkspaceService {
     private final WorkspaceMemberRepository memberRepository;
     private final SysUserRepository userRepository;
     private final KnowledgeBaseRepository kbRepository;
+    private final KbAccessRepository accessRepository;
     private final RedisCacheService redisCacheService;
     private final PasswordEncoder passwordEncoder;
 
@@ -49,12 +51,14 @@ public class WorkspaceService {
                             WorkspaceMemberRepository memberRepository,
                             SysUserRepository userRepository,
                             KnowledgeBaseRepository kbRepository,
+                            KbAccessRepository accessRepository,
                             RedisCacheService redisCacheService,
                             PasswordEncoder passwordEncoder) {
         this.workspaceRepository = workspaceRepository;
         this.memberRepository = memberRepository;
         this.userRepository = userRepository;
         this.kbRepository = kbRepository;
+        this.accessRepository = accessRepository;
         this.redisCacheService = redisCacheService;
         this.passwordEncoder = passwordEncoder;
     }
@@ -103,14 +107,16 @@ public class WorkspaceService {
         return toResponse(workspace, member.getRole());
     }
 
-    /** 删除工作空间：归档全部知识库并移除全部成员；仅 OWNER */
+    /** 删除工作空间：归档全部知识库、清理其授权记录并移除全部成员；仅 OWNER */
     @Transactional
     public void deleteWorkspace(Long operatorId, Long workspaceId) {
         Workspace workspace = requireWorkspace(workspaceId);
         requireOwner(operatorId, workspaceId);
-        List<KnowledgeBase> kbs = kbRepository.findByWorkspaceIdAndArchivedFalseOrderByIdDesc(workspaceId);
+        // 取全部知识库（含已归档）：归档行同样持有 ACL，一并清理避免孤儿授权行
+        List<KnowledgeBase> kbs = kbRepository.findByWorkspaceId(workspaceId);
         for (KnowledgeBase kb : kbs) {
             kb.setArchived(true);
+            accessRepository.deleteByKbId(kb.getId());
         }
         kbRepository.saveAll(kbs);
         List<WorkspaceMember> members = memberRepository.findByWorkspaceIdOrderByIdDesc(workspaceId);
@@ -140,7 +146,7 @@ public class WorkspaceService {
         SysUser user = new SysUser();
         user.setUsername(request.username());
         user.setPassword(passwordEncoder.encode(request.password()));
-        user.setRole("MEMBER");
+        user.setRole(WorkspaceMember.ROLE_MEMBER);
         user.setEnabled(true);
         userRepository.save(user);
 

@@ -11,6 +11,7 @@ import com.ai.konwledgerepo.entity.KnowledgeBase;
 import com.ai.konwledgerepo.entity.SysUser;
 import com.ai.konwledgerepo.entity.Workspace;
 import com.ai.konwledgerepo.entity.WorkspaceMember;
+import com.ai.konwledgerepo.repository.KbAccessRepository;
 import com.ai.konwledgerepo.repository.KnowledgeBaseRepository;
 import com.ai.konwledgerepo.repository.SysUserRepository;
 import com.ai.konwledgerepo.repository.WorkspaceMemberRepository;
@@ -41,6 +42,7 @@ class WorkspaceServiceTest {
     private WorkspaceMemberRepository memberRepo;
     private SysUserRepository userRepo;
     private KnowledgeBaseRepository kbRepo;
+    private KbAccessRepository accessRepo;
     private RedisCacheService cache;
     private WorkspaceService service;
 
@@ -54,8 +56,10 @@ class WorkspaceServiceTest {
         memberRepo = mock(WorkspaceMemberRepository.class);
         userRepo = mock(SysUserRepository.class);
         kbRepo = mock(KnowledgeBaseRepository.class);
+        accessRepo = mock(KbAccessRepository.class);
         cache = mock(RedisCacheService.class);
-        service = new WorkspaceService(workspaceRepo, memberRepo, userRepo, kbRepo, cache, mock(PasswordEncoder.class));
+        service = new WorkspaceService(workspaceRepo, memberRepo, userRepo, kbRepo, accessRepo, cache,
+                mock(PasswordEncoder.class));
 
         ws1 = workspace(1L, "空间一", 1L);
         ws2 = workspace(2L, "空间二", 5L);
@@ -286,12 +290,13 @@ class WorkspaceServiceTest {
         KnowledgeBase kb = new KnowledgeBase();
         kb.setId(5L);
         kb.setWorkspaceId(1L);
-        when(kbRepo.findByWorkspaceIdAndArchivedFalseOrderByIdDesc(1L)).thenReturn(List.of(kb));
+        when(kbRepo.findByWorkspaceId(1L)).thenReturn(List.of(kb));
         when(memberRepo.findByWorkspaceIdOrderByIdDesc(1L)).thenReturn(List.of(owner));
 
         service.deleteWorkspace(1L, 1L);
 
         assertTrue(kb.getArchived(), "删除工作空间应归档其全部知识库");
+        verify(accessRepo).deleteByKbId(5L);
         verify(workspaceRepo).delete(ws1);
         verify(memberRepo).deleteAll(any());
         verify(cache).deleteByPattern(RedisKeys.memberListPattern(1L));

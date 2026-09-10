@@ -10,11 +10,9 @@ import com.ai.konwledgerepo.dto.ChatMessageResponse;
 import com.ai.konwledgerepo.dto.ChatSessionResponse;
 import com.ai.konwledgerepo.entity.ChatMessage;
 import com.ai.konwledgerepo.entity.ChatSession;
-import com.ai.konwledgerepo.entity.KnowledgeBase;
 import com.ai.konwledgerepo.entity.MessageRole;
 import com.ai.konwledgerepo.repository.ChatMessageRepository;
 import com.ai.konwledgerepo.repository.ChatSessionRepository;
-import com.ai.konwledgerepo.repository.KnowledgeBaseRepository;
 import com.ai.konwledgerepo.service.knowledgebase.KnowledgeBaseService;
 import com.ai.konwledgerepo.service.workspace.WorkspaceAccess;
 import org.springframework.stereotype.Service;
@@ -37,7 +35,6 @@ public class ChatSessionService {
 
     private final ChatSessionRepository sessionRepository;
     private final ChatMessageRepository messageRepository;
-    private final KnowledgeBaseRepository kbRepository;
     private final KnowledgeBaseService kbService;
     private final WorkspaceAccess workspaceAccess;
     private final RedisCacheService redisCacheService;
@@ -45,14 +42,12 @@ public class ChatSessionService {
 
     public ChatSessionService(ChatSessionRepository sessionRepository,
                               ChatMessageRepository messageRepository,
-                              KnowledgeBaseRepository kbRepository,
                               KnowledgeBaseService kbService,
                               WorkspaceAccess workspaceAccess,
                               RedisCacheService redisCacheService,
                               SeuCacheProperties cacheProps) {
         this.sessionRepository = sessionRepository;
         this.messageRepository = messageRepository;
-        this.kbRepository = kbRepository;
         this.kbService = kbService;
         this.workspaceAccess = workspaceAccess;
         this.redisCacheService = redisCacheService;
@@ -76,7 +71,8 @@ public class ChatSessionService {
 
     /**
      * 会话列表（限当前工作空间）：按最后对话时间倒序（最近对话排最前）。
-     * 会话按知识库归属过滤（含已归档知识库的历史会话，保证可见性）。
+     * 会话按「当前用户可见的知识库」过滤（含已归档知识库的历史会话，保证可见性）——
+     * RESTRICTED 库授权被撤销后，其会话不再出现在列表，与按 id 读取的 ACL 口径一致。
      * 顺带补偿旧数据：lastMessageAt 为空 → 取该会话最后一条消息时间（无消息取创建时间）；
      * 仍为默认标题且已有首条提问 → 自动截取首问命名。
      * 结果缓存于 Redis（sessionlist:{userId}:{workspaceId}，TTL 60s），会话增删改/新消息后失效。
@@ -87,9 +83,7 @@ public class ChatSessionService {
         if (cached.isPresent()) {
             return cached.get().stream().map(this::toSession).toList();
         }
-        List<Long> kbIds = kbRepository.findByWorkspaceId(workspaceId).stream()
-                .map(kb -> kb.getId())
-                .toList();
+        List<Long> kbIds = kbService.visibleKbIds(workspaceId, userId).stream().toList();
         if (kbIds.isEmpty()) {
             return List.of();
         }
@@ -192,15 +186,15 @@ public class ChatSessionService {
         return msgs;
     }
 
-    /** 会话读取：校验归属用户 + 知识库属于当前工作空间（防跨空间按会话 id 越权） */
+    /** 会话读取：校验归属用户 + 知识库属于当前工作空间且用户对其有读权限（防跨空间/撤权后按会话 id 越权） */
     public ChatSession getSession(Long sessionId, Long userId, Long workspaceId) {
         ChatSession session = sessionRepository.findById(sessionId)
                 .orElseThrow(() -> new BizException("会话不存在"));
         if (!session.getUserId().equals(userId)) {
             throw new BizException(ErrorCodes.FORBIDDEN, "无权访问该会话");
         }
-        KnowledgeBase kb = kbService.getEntityCached(session.getKbId());
-        workspaceAccess.requireBelongs(kb.getWorkspaceId(), workspaceId, "无权访问该会话");
+        // 与列表同口径：RESTRICTED 库授权撤销后，旧会话也不能再按 id 读取
+        workspaceAccess.requireKbAccess(session.getKbId(), workspaceId, userId, false);
         return session;
     }
 

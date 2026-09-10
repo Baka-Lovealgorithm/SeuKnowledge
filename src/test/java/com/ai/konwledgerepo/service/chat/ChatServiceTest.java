@@ -13,6 +13,7 @@ import com.ai.konwledgerepo.dto.ChatSessionResponse;
 import com.ai.konwledgerepo.entity.ChatMessage;
 import com.ai.konwledgerepo.entity.ChatSession;
 import com.ai.konwledgerepo.entity.KnowledgeBase;
+import com.ai.konwledgerepo.entity.WorkspaceMember;
 import com.ai.konwledgerepo.graph.AgentConfig;
 import com.ai.konwledgerepo.graph.QaContext;
 import com.ai.konwledgerepo.graph.QaContextKey;
@@ -82,6 +83,7 @@ class ChatServiceTest {
     private ChatSessionRepository sessionRepository;
     private ChatMessageRepository messageRepository;
     private KnowledgeBaseRepository kbRepository;
+    private WorkspaceMemberRepository memberRepository;
     private KnowledgeBaseService kbService;
     private QaGraphRunner qaGraphRunner;
     private AgentService agentService;
@@ -103,13 +105,14 @@ class ChatServiceTest {
         SeuQaProperties qaProps = new SeuQaProperties(20, 2, 32, 30, true, false, false, 0.4, false, 60, 200);
         SeuCacheProperties cacheProps =
                 new SeuCacheProperties(300, 600, 600, 300, 300, 60, 60, 600, 86400);
-        // WorkspaceAccess 用真实实例（归属校验走真实逻辑），ACL 仓库与成员仓库 mock 空授权（PUBLIC 库不受影响）
+        // WorkspaceAccess 用真实实例（归属校验走真实逻辑），ACL 仓库 mock 空授权（PUBLIC 库不受影响）
+        memberRepository = mock(WorkspaceMemberRepository.class);
         WorkspaceAccess workspaceAccess = new WorkspaceAccess(kbRepository, mock(DocumentRepository.class),
-                mock(KbAccessRepository.class), mock(WorkspaceMemberRepository.class),
+                mock(KbAccessRepository.class), memberRepository,
                 mock(com.ai.konwledgerepo.repository.GroupMemberRepository.class),
                 mock(com.ai.konwledgerepo.repository.KbGroupRepository.class));
         ChatSessionService sessionService = new ChatSessionService(
-                sessionRepository, messageRepository, kbRepository, kbService, workspaceAccess, redisCacheService, cacheProps);
+                sessionRepository, messageRepository, kbService, workspaceAccess, redisCacheService, cacheProps);
         ChatHistoryService historyService = new ChatHistoryService(messageRepository, redisCacheService, qaProps, cacheProps);
         ChatMessageStore messageStore = new ChatMessageStore(
                 messageRepository, sessionRepository, redisCacheService, historyService, sessionService);
@@ -127,6 +130,14 @@ class ChatServiceTest {
         service = new ChatService(sessionService, answerService, streamService, mock(MessageFeedbackService.class));
         when(sessionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(messageRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        // 默认：当前用户是空间 MEMBER，且知识库为 PUBLIC（读路径放行；写路径的 ACL 由 WorkspaceAccessTest 覆盖）
+        WorkspaceMember member = new WorkspaceMember();
+        member.setWorkspaceId(WS_ID);
+        member.setUserId(USER_ID);
+        member.setRole(WorkspaceMember.ROLE_MEMBER);
+        when(memberRepository.findByWorkspaceIdAndUserId(WS_ID, USER_ID)).thenReturn(Optional.of(member));
+        // 默认知识库：当前空间下 PUBLIC 库（getSession / QaExecutionService 的 requireKbAccess 需实体存在）
+        when(kbRepository.findById(KB_ID)).thenReturn(Optional.of(kb(KB_ID, "测试库", WS_ID)));
     }
 
     @AfterEach
@@ -225,7 +236,7 @@ class ChatServiceTest {
         assertEquals(3, sessions.get(0).getMessageCount());
         assertEquals(created, sessions.get(0).getCreatedAt());
         assertEquals(last, sessions.get(0).getLastMessageAt());
-        verify(kbRepository, never()).findByWorkspaceId(any());
+        verify(kbService, never()).visibleKbIds(any(), any());
         verify(sessionRepository, never()).findByUserIdAndKbIdInOrderByLastMessageAtDesc(any(), any());
         verify(redisCacheService, never()).setList(anyString(), any(), any(Duration.class));
     }
@@ -234,8 +245,7 @@ class ChatServiceTest {
     void listSessions_cacheMiss_loadsFromDbAndCaches() {
         when(redisCacheService.getList(eq(RedisKeys.sessionList(USER_ID, WS_ID)), eq(ChatSessionResponse.class)))
                 .thenReturn(Optional.empty());
-        when(kbRepository.findByWorkspaceId(WS_ID)).thenReturn(
-                List.of(kb(5L, "知识库一", WS_ID), kb(6L, "知识库二", WS_ID)));
+        when(kbService.visibleKbIds(WS_ID, USER_ID)).thenReturn(new java.util.LinkedHashSet<>(List.of(5L, 6L)));
         ChatSession s1 = session(SESSION_ID, USER_ID, 5L);
         s1.setTitle("会话一");
         ChatSession s2 = session(11L, USER_ID, 6L);
@@ -258,7 +268,7 @@ class ChatServiceTest {
     void listSessions_noKbsInWorkspace_returnsEmpty() {
         when(redisCacheService.getList(eq(RedisKeys.sessionList(USER_ID, WS_ID)), eq(ChatSessionResponse.class)))
                 .thenReturn(Optional.empty());
-        when(kbRepository.findByWorkspaceId(WS_ID)).thenReturn(List.of());
+        when(kbService.visibleKbIds(WS_ID, USER_ID)).thenReturn(java.util.Set.of());
 
         List<ChatSession> sessions = service.listSessions(USER_ID, WS_ID);
 
@@ -545,7 +555,9 @@ class ChatServiceTest {
     @Test
     void ask_kbInAnotherWorkspace_forbidden() {
         when(sessionRepository.findById(SESSION_ID)).thenReturn(Optional.of(session(SESSION_ID, USER_ID, KB_ID)));
-        when(kbService.getEntityCached(KB_ID)).thenReturn(kb(KB_ID, "测试库", 99L));
+        KnowledgeBase otherWs = kb(KB_ID, "测试库", 99L);
+        when(kbService.getEntityCached(KB_ID)).thenReturn(otherWs);
+        when(kbRepository.findById(KB_ID)).thenReturn(Optional.of(otherWs));
 
         BizException ex = assertThrows(BizException.class,
                 () -> service.ask(SESSION_ID, USER_ID, "你好", WS_ID));

@@ -50,7 +50,7 @@ class ExtractTaskServiceTest {
         kb.setId(1L);
         kb.setWorkspaceId(WS);
         when(kbRepository.findById(1L)).thenReturn(Optional.of(kb));
-        service = new ExtractTaskService(taskRepository, executor, kbRepository,
+        service = new ExtractTaskService(taskRepository, executor,
                 mock(BusinessKnowledgeRepository.class), mock(QaPairRepository.class),
                 mock(BusinessKnowledgeService.class), mock(QaPairService.class), new ObjectMapper(),
                 new AfterCommitExecutor(),
@@ -60,7 +60,8 @@ class ExtractTaskServiceTest {
                         mock(com.ai.konwledgerepo.repository.KbAccessRepository.class),
                         mock(com.ai.konwledgerepo.repository.WorkspaceMemberRepository.class),
                         mock(com.ai.konwledgerepo.repository.GroupMemberRepository.class),
-                        mock(com.ai.konwledgerepo.repository.KbGroupRepository.class)));
+                        mock(com.ai.konwledgerepo.repository.KbGroupRepository.class)),
+                mock(com.ai.konwledgerepo.service.knowledgebase.KnowledgeBaseService.class));
     }
 
     private ExtractTask task(long id, String status, String docIdsJson, String failedDocIdsJson) {

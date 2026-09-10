@@ -105,22 +105,46 @@ public class KnowledgeBaseService {
         return filterVisible(result, workspaceId, userId);
     }
 
-    /** 按用户过滤可见知识库：管理员/创建者全量；其余剔除未授权的 RESTRICTED 库 */
+    /**
+     * 按用户过滤可见知识库：管理员/创建者全量；其余剔除未授权的 RESTRICTED 库。
+     * 同时对可见项填充 canEdit（与写路径 ACL 同口径），供前端按行渲染编辑类按钮。
+     */
     private List<KbResponse> filterVisible(List<KbResponse> all, Long workspaceId, Long userId) {
         if (userId == null) {
             return all;
         }
+        boolean admin = isWorkspaceAdmin(workspaceId, userId);
+        Set<Long> granted = admin ? null : grantedKbIds(workspaceId, userId);
+        return all.stream()
+                .filter(kb -> admin || isVisibleTo(kb, granted, userId))
+                .map(kb -> kb.withCanEdit(
+                        workspaceAccess.canEdit(kb.id(), workspaceId, userId, kb.createdBy(), kb.visibility())))
+                .toList();
+    }
+
+    /**
+     * 当前用户在该工作空间内可见的知识库 id 集合。
+     * 供会话列表 / 抽取任务列表等「按知识库归属查询」的接口过滤，避免撤权后仍能读到旧数据。
+     * 与 {@link #filterVisible} 同源，保证「列表可见」与「按 id 可访问」口径一致。
+     */
+    public Set<Long> visibleKbIds(Long workspaceId, Long userId) {
+        return list(workspaceId, userId).stream()
+                .map(KbResponse::id)
+                .collect(Collectors.toSet());
+    }
+
+    /** 知识库对指定用户是否可见：PUBLIC 全空间可见；RESTRICTED 仅授权者与创建者可见 */
+    private boolean isVisibleTo(KbResponse kb, Set<Long> granted, Long userId) {
+        return !KbVisibility.isRestricted(kb.visibility())
+                || granted.contains(kb.id())
+                || (kb.createdBy() != null && kb.createdBy().equals(userId));
+    }
+
+    /** 是否空间 OWNER/ADMIN（管理员始终可见/可管理全部知识库） */
+    private boolean isWorkspaceAdmin(Long workspaceId, Long userId) {
         String role = memberRepository.findByWorkspaceIdAndUserId(workspaceId, userId)
                 .map(WorkspaceMember::getRole).orElse(null);
-        if (Roles.OWNER.equals(role) || Roles.ADMIN.equals(role)) {
-            return all;
-        }
-        Set<Long> granted = grantedKbIds(workspaceId, userId);
-        return all.stream()
-                .filter(kb -> !KbVisibility.isRestricted(kb.visibility())
-                        || granted.contains(kb.id())
-                        || (kb.createdBy() != null && kb.createdBy().equals(userId)))
-                .toList();
+        return Roles.OWNER.equals(role) || Roles.ADMIN.equals(role);
     }
 
     /**

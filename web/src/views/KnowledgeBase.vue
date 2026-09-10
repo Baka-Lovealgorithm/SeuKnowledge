@@ -24,11 +24,11 @@
         <template #default="{ row }">
           <el-button link type="primary" @click="enterDocs(row)">文档</el-button>
           <el-button v-if="canManage(row)" link type="primary" @click="openAccess(row)">共享</el-button>
-          <el-button v-if="auth.canWrite" link type="primary" @click="openEdit(row)">编辑</el-button>
-          <el-button v-if="auth.canWrite" link :type="row.status === 'DISABLED' ? 'success' : 'warning'" @click="toggleStatus(row)">
+          <el-button v-if="row.canEdit" link type="primary" @click="openEdit(row)">编辑</el-button>
+          <el-button v-if="row.canEdit" link :type="row.status === 'DISABLED' ? 'success' : 'warning'" @click="toggleStatus(row)">
             {{ row.status === 'DISABLED' ? '启用' : '停用' }}
           </el-button>
-          <el-button v-if="auth.canWrite" link type="danger" @click="remove(row)">删除</el-button>
+          <el-button v-if="row.canEdit" link type="danger" @click="remove(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -51,7 +51,7 @@
     <el-dialog v-model="accessVisible" :title="`共享设置：${accessKb ? accessKb.name : ''}`" width="620px">
       <el-form label-width="90px">
         <el-form-item label="可见性">
-          <el-radio-group v-model="accessVisibility" :disabled="!auth.canWrite">
+          <el-radio-group v-model="accessVisibility" :disabled="!canManageAccess">
             <el-radio value="PUBLIC">公开（空间内成员可见）</el-radio>
             <el-radio value="RESTRICTED">私有（仅授权用户/组可见）</el-radio>
           </el-radio-group>
@@ -69,7 +69,7 @@
           <el-table-column prop="granteeName" label="名称" min-width="120" />
           <el-table-column label="权限" width="140">
             <template #default="{ row }">
-              <el-select v-model="row.permission" size="small" :disabled="!auth.canWrite" @change="changePermission(row)">
+              <el-select v-model="row.permission" size="small" :disabled="!canManageAccess" @change="changePermission(row)">
                 <el-option label="只读" value="VIEW" />
                 <el-option label="可编辑" value="EDIT" />
               </el-select>
@@ -77,7 +77,7 @@
           </el-table-column>
           <el-table-column label="操作" width="70" align="center">
             <template #default="{ row }">
-              <el-button v-if="auth.canWrite" link type="danger" size="small" @click="revoke(row)">移除</el-button>
+              <el-button v-if="canManageAccess" link type="danger" size="small" @click="revoke(row)">移除</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -144,6 +144,9 @@ const groupOptions = computed(() =>
 function canManage(row) {
   return auth.isAdmin || (auth.user && auth.user.userId && row.createdBy === auth.user.userId)
 }
+
+/** 共享对话框内控件的可编辑性：与「共享」按钮同一口径（管理权），非纯角色位 */
+const canManageAccess = computed(() => !!accessKb.value && canManage(accessKb.value))
 
 const STATUS = {
   DRAFT: ['info', '草稿'],

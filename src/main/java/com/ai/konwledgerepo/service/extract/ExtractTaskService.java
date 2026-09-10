@@ -6,15 +6,14 @@ import com.ai.konwledgerepo.dto.ExtractTaskCreateRequest;
 import com.ai.konwledgerepo.dto.ExtractTaskResponse;
 import com.ai.konwledgerepo.dto.ExtractTaskResultResponse;
 import com.ai.konwledgerepo.entity.ExtractTask;
-import com.ai.konwledgerepo.entity.KnowledgeBase;
 import com.ai.konwledgerepo.entity.ReviewStatus;
 import com.ai.konwledgerepo.entity.TaskStatus;
 import com.ai.konwledgerepo.repository.BusinessKnowledgeRepository;
 import com.ai.konwledgerepo.repository.ExtractTaskRepository;
-import com.ai.konwledgerepo.repository.KnowledgeBaseRepository;
 import com.ai.konwledgerepo.repository.QaPairRepository;
 import com.ai.konwledgerepo.service.knowledge.BusinessKnowledgeService;
 import com.ai.konwledgerepo.service.knowledge.QaPairService;
+import com.ai.konwledgerepo.service.knowledgebase.KnowledgeBaseService;
 import com.ai.konwledgerepo.service.workspace.WorkspaceAccess;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -36,7 +35,6 @@ public class ExtractTaskService {
 
     private final ExtractTaskRepository taskRepository;
     private final ExtractTaskExecutor executor;
-    private final KnowledgeBaseRepository kbRepository;
     private final BusinessKnowledgeRepository bkRepository;
     private final QaPairRepository qaRepository;
     private final BusinessKnowledgeService bkService;
@@ -45,10 +43,10 @@ public class ExtractTaskService {
     private final AfterCommitExecutor afterCommitExecutor;
     private final TaskProgressStore progressStore;
     private final WorkspaceAccess workspaceAccess;
+    private final KnowledgeBaseService kbService;
 
     public ExtractTaskService(ExtractTaskRepository taskRepository,
                               ExtractTaskExecutor executor,
-                              KnowledgeBaseRepository kbRepository,
                               BusinessKnowledgeRepository bkRepository,
                               QaPairRepository qaRepository,
                               BusinessKnowledgeService bkService,
@@ -56,10 +54,10 @@ public class ExtractTaskService {
                               ObjectMapper objectMapper,
                               AfterCommitExecutor afterCommitExecutor,
                               TaskProgressStore progressStore,
-                              WorkspaceAccess workspaceAccess) {
+                              WorkspaceAccess workspaceAccess,
+                              KnowledgeBaseService kbService) {
         this.taskRepository = taskRepository;
         this.executor = executor;
-        this.kbRepository = kbRepository;
         this.bkRepository = bkRepository;
         this.qaRepository = qaRepository;
         this.bkService = bkService;
@@ -68,6 +66,7 @@ public class ExtractTaskService {
         this.afterCommitExecutor = afterCommitExecutor;
         this.progressStore = progressStore;
         this.workspaceAccess = workspaceAccess;
+        this.kbService = kbService;
     }
 
     @Transactional
@@ -84,11 +83,9 @@ public class ExtractTaskService {
         return toResponse(task);
     }
 
-    /** 任务列表（限当前工作空间，按知识库归属过滤） */
-    public List<ExtractTaskResponse> list(Long workspaceId) {
-        List<Long> kbIds = kbRepository.findByWorkspaceId(workspaceId).stream()
-                .map(KnowledgeBase::getId)
-                .toList();
+    /** 任务列表（限当前工作空间，按「当前用户可见的知识库」过滤，与 kb ACL 口径一致） */
+    public List<ExtractTaskResponse> list(Long workspaceId, Long userId) {
+        List<Long> kbIds = kbService.visibleKbIds(workspaceId, userId).stream().toList();
         if (kbIds.isEmpty()) {
             return List.of();
         }

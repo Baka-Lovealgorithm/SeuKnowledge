@@ -18,7 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
  * 答案评价（点赞/点踩）落库域。
  * <p>
  * 权限完全复用 {@link ChatSessionService#getSession}：它同时校验
- * 「会话属主 == 当前用户」与「会话所属空间 == 当前工作空间」，因此**只有提问本人
+ * 「会话属主 == 当前用户」与「会话所属知识库可读（空间归属 + kb ACL）」，因此**只有提问本人
  * 能评价自己会话里的答案**——评价是用户反馈，不是管理动作，不给 ADMIN 开代评口子。
  * <p>
  * 与统计侧（{@code QaStatsService}）的分界：这里只写单行，跨用户读只在汇总接口发生。
