@@ -133,18 +133,25 @@ const parseType = (s) => ({
 }[s] || 'info')
 
 // ===== 向量健康度（解析状态之外的第二条线：SUCCESS 只代表分块已落 MySQL，向量未必进了 ES） =====
-/** 无分块信息或后端未返回计数时不显示标记（避免误报"0/0 异常"） */
+/**
+ * 无分块信息或后端未返回计数时不显示标记（避免误报"0/0 异常"）。
+ * 但"应进向量库的块数为 0"还可能是另一种情况：全部块待人工审核（SUSPECT 走 DEFER，不进 ES），
+ * 此时文档零向量、零召回，却会因 total===0 落到下面的 null 分支、与"没有分块"共用一个 '-'。
+ * 故 total===0 且 suspectCount>0 时返回 deferred 形态，由 text/type/tip 三处显式说出来。
+ */
 function vectorInfo(row) {
   const v = row.vector
   if (!v) return null
   const total = (v.indexed || 0) + (v.pending || 0) + (v.failed || 0)
-  if (total === 0) return null
-  return { ...v, total }
+  const suspect = row.suspectCount || 0
+  if (total === 0) return suspect > 0 ? { indexed: 0, pending: 0, failed: 0, total: 0, deferred: suspect } : null
+  return { ...v, total, deferred: suspect }
 }
 
 function vectorText(row) {
   const v = vectorInfo(row)
   if (!v) return '-'
+  if (v.total === 0) return `待审核 ${v.deferred}`
   if (v.failed > 0) return `向量 ${v.indexed}/${v.total}`
   if (v.pending > 0) return `向量中 ${v.indexed}/${v.total}`
   return `向量 ${v.indexed}/${v.total}`
@@ -153,18 +160,24 @@ function vectorText(row) {
 function vectorType(row) {
   const v = vectorInfo(row)
   if (!v) return 'info'
+  if (v.total === 0) return 'warning'
   if (v.failed > 0) return 'danger'
   if (v.pending > 0) return 'warning'
   return 'success'
 }
 
-/** 悬浮明细：只在有未完成项时给提示，全健康不啰嗦 */
+/** 悬浮明细：只在有未完成/待审项时给提示，全健康不啰嗦 */
 function vectorTip(row) {
   const v = vectorInfo(row)
   if (!v) return ''
+  if (v.total === 0) {
+    return `全部 ${v.deferred} 块待人工审核：按 DEFER 决策暂不进向量库，本文档当前检索不到；`
+      + '在「文档精修」页点「保留/编辑」后即单条补索引（无需重新解析）'
+  }
   const parts = []
   if (v.failed > 0) parts.push(`${v.failed} 块向量化/写库失败，可点「重建向量」`)
   if (v.pending > 0) parts.push(`${v.pending} 块待向量化（向量模型未配置时会一直停在这里）`)
+  if (v.deferred > 0) parts.push(`另有 ${v.deferred} 块待人工审核（不进 ES，需在「文档精修」处置）`)
   return parts.join('；')
 }
 
@@ -425,10 +438,18 @@ async function retry(row) {
 /**
  * 只重建向量、不重新解析：向量化失败（模型未配置 / embedding 异常 / ES 部分写入失败）后的原地救济，
  * 免去"只能靠 retry 全量重解析"的老路（对初洗文档还会连带洗掉人工 md）。
+ * 后端回传处理量：全部块待人工审核时本动作是空操作（DEFER 不进 ES），此时必须如实说，
+ * 否则用户会以为在处理，回头去点「重试」——那才是真花钱又删块的那条路。
  */
 async function reindex(row) {
-  await docApi.reindex(row.id)
-  ElMessage.success('已触发重建向量（不重新解析，不产生云端解析消耗）')
+  const r = await docApi.reindex(row.id)
+  if (r && !r.reset) {
+    ElMessage.warning(r.awaitingReview > 0
+      ? `「${row.fileName}」没有 FAILED 块可重建；${r.awaitingReview} 块待人工审核（暂不进 ES），请到「文档精修」页点「保留/编辑」`
+      : `「${row.fileName}」没有需要重建的向量块（无向量化失败的块）`)
+  } else {
+    ElMessage.success(`已触发重建向量（${r?.reset ?? 0} 块退回待向量化，不重新解析、不产生云端解析消耗）`)
+  }
   load()
 }
 

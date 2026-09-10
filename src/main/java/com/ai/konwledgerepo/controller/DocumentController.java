@@ -4,6 +4,7 @@ import com.ai.konwledgerepo.common.ApiResponse;
 import com.ai.konwledgerepo.dto.ChunkResponse;
 import com.ai.konwledgerepo.dto.DocumentRenameRequest;
 import com.ai.konwledgerepo.dto.DocumentResponse;
+import com.ai.konwledgerepo.dto.ReindexResponse;
 import com.ai.konwledgerepo.entity.Document;
 import com.ai.konwledgerepo.security.EditorOrAbove;
 import com.ai.konwledgerepo.service.document.DocumentService;
@@ -106,14 +107,14 @@ public class DocumentController {
     /**
      * 只重建向量、不重新解析：向量化失败（模型未配置 / embedding 异常 / ES 部分写入失败）后的原地救济。
      * 初洗/精修流程中的文档会被拒绝（确认前不触 ES 的红线）。
+     * 回传处理量：文档全部块待人工审核（DEFER 不进 ES）时本动作实为空操作，前端据此如实提示而不是报"已触发"。
      */
     @PostMapping("/documents/{id}/reindex")
     @EditorOrAbove
-    public ApiResponse<Void> reindex(@PathVariable Long id,
-                                     @RequestAttribute("userId") Long userId,
-                                     @RequestAttribute("workspaceId") Long workspaceId) {
+    public ApiResponse<ReindexResponse> reindex(@PathVariable Long id,
+                                                @RequestAttribute("userId") Long userId,
+                                                @RequestAttribute("workspaceId") Long workspaceId) {
         workspaceAccess.requireDocAccess(id, workspaceId, userId, true);
-        documentService.reindex(id);
-        return ApiResponse.ok();
+        return ApiResponse.ok(documentService.reindex(id));
     }
 }

@@ -5,6 +5,7 @@ import com.ai.konwledgerepo.common.BizException;
 import com.ai.konwledgerepo.config.props.SeuFileProperties;
 import com.ai.konwledgerepo.dto.ChunkResponse;
 import com.ai.konwledgerepo.dto.DocumentResponse;
+import com.ai.konwledgerepo.dto.ReindexResponse;
 import com.ai.konwledgerepo.dto.VectorStats;
 import com.ai.konwledgerepo.entity.ChunkStatus;
 import com.ai.konwledgerepo.entity.DocStatus;
@@ -148,28 +149,39 @@ public class DocumentService {
     }
 
     public List<DocumentResponse> list(Long kbId) {
-        // 一次 group-by 取回全库 chunk 向量状态分布，避免逐文档 count（文档数 × 状态数）放大查询
-        Map<Long, VectorStats> counts = vectorCounts(kbId);
+        // 一次 group-by 取回全库 chunk 状态分布（向量计数与待审核计数同源），逐文档 count 会放大查询数
+        Map<Long, DocChunkCounts> counts = chunkCountsByDoc(kbId);
         return documentRepository.findByKbIdOrderByIdDesc(kbId).stream()
-                .map(d -> DocumentResponse.withVectorStats(d,
-                        chunkRepository.countByDocIdAndCleanStatus(d.getId(), "SUSPECT"),
-                        counts.getOrDefault(d.getId(), VectorStats.EMPTY)))
+                .map(d -> {
+                    DocChunkCounts c = counts.getOrDefault(d.getId(), DocChunkCounts.EMPTY);
+                    return DocumentResponse.withVectorStats(d, (long) c.suspect(), c.toVectorStats());
+                })
                 .toList();
     }
 
     /**
-     * 按知识库聚合每个文档的 chunk 向量状态计数（剔除口径见 {@link VectorStats} 文档）。
+     * 按知识库聚合每个文档的 chunk 计数：向量三项按 {@link VectorStats} 口径剔除 FILTERED 与 SUSPECT，
+     * SUSPECT 另计入 {@code suspect}（两个口径互斥，不会重复计数）。
+     * <p>
+     * 待审核块数此前是逐文档 {@code countByDocIdAndCleanStatus}，与本方法"聚合为单条查询"的初衷自相矛盾
+     * （N 个文档 = N 次额外查询）；而 {@code statusCountsByKb} 的分组行本就带 cleanStatus，
+     * SUSPECT 行只是被丢弃了，这里顺手累加，查询数回到 1。
      */
-    private Map<Long, VectorStats> vectorCounts(Long kbId) {
+    private Map<Long, DocChunkCounts> chunkCountsByDoc(Long kbId) {
         Map<Long, int[]> raw = new HashMap<>();
         for (ChunkStatusCount row : chunkRepository.statusCountsByKb(kbId)) {
             String status = row.getStatus();
             String cleanStatus = row.getCleanStatus();
-            if (status == null || ChunkStatus.FILTERED.is(status) || ChunkReviewService.CLEAN_SUSPECT.equals(cleanStatus)) {
+            long n = row.getCnt() == null ? 0L : row.getCnt();
+            // 0=indexed 1=pending 2=failed 3=suspect
+            if (ChunkReviewService.CLEAN_SUSPECT.equals(cleanStatus)) {
+                raw.computeIfAbsent(row.getDocId(), k -> new int[4])[3] += (int) n;
                 continue;
             }
-            int[] acc = raw.computeIfAbsent(row.getDocId(), k -> new int[3]);
-            long n = row.getCnt() == null ? 0L : row.getCnt();
+            if (status == null || ChunkStatus.FILTERED.is(status)) {
+                continue;
+            }
+            int[] acc = raw.computeIfAbsent(row.getDocId(), k -> new int[4]);
             if (ChunkStatus.INDEXED.is(status)) {
                 acc[0] += (int) n;
             } else if (ChunkStatus.EMBEDDING.is(status)) {
@@ -178,9 +190,22 @@ public class DocumentService {
                 acc[2] += (int) n;
             }
         }
-        Map<Long, VectorStats> result = new HashMap<>(raw.size());
-        raw.forEach((docId, acc) -> result.put(docId, new VectorStats(acc[0], acc[1], acc[2])));
+        Map<Long, DocChunkCounts> result = new HashMap<>(raw.size());
+        raw.forEach((docId, acc) -> result.put(docId, new DocChunkCounts(acc[0], acc[1], acc[2], acc[3])));
         return result;
+    }
+
+    /**
+     * 单文档 chunk 计数。SUSPECT 走 DEFER（不进 ES、也不计入向量分母），故与 {@link VectorStats#total()}
+     * 分开的两个出口；列表的「待审核」列与向量列"全部待审"提示消费 {@code suspect}。
+     */
+    private record DocChunkCounts(int indexed, int pending, int failed, int suspect) {
+
+        static final DocChunkCounts EMPTY = new DocChunkCounts(0, 0, 0, 0);
+
+        VectorStats toVectorStats() {
+            return new VectorStats(indexed, pending, failed);
+        }
     }
 
     @Transactional
@@ -315,10 +340,12 @@ public class DocumentService {
      * md 历史版本；且 retry 会重新调用云端解析，成本与不确定性都高。本方法只把 FAILED 块退回
      * EMBEDDING 后重跑 ingest（幂等，已 INDEXED 的块天然被跳过）。
      *
-     * @return 本次从 FAILED 退回待向量化的块数（0 表示无失败块，仅重跑遗漏的 EMBEDDING 块）
+     * @return 重建结果：{@code reset} 为从 FAILED 退回待向量化的块数（0 表示无失败块，仅重跑遗漏的
+     *         EMBEDDING 块）；{@code awaitingReview} 为待人工审核（SUSPECT）块数——DEFER 下它们不进 ES，
+     *         {@code reset=0} 且有待审时该动作实为空操作，前端须据此如实提示而非报"已触发"
      */
     @Transactional
-    public int reindex(Long docId) {
+    public ReindexResponse reindex(Long docId) {
         Document doc = getEntity(docId);
         if (doc.isCurating()) {
             throw new BizException("文档处于初洗/精修流程，请先在精修页「确认向量化」");
@@ -328,10 +355,13 @@ public class DocumentService {
             throw new BizException("解析未成功（" + status + "），请用「重试」重新解析");
         }
         int reset = chunkRepository.resetFailedToEmbedding(docId);
+        // 只读口径：SUSPECT 不受上面那次 update 影响（它按 clean_status 计），故取值顺序无所谓
+        int awaitingReview = (int) chunkRepository.countByDocIdAndCleanStatus(docId, ChunkReviewService.CLEAN_SUSPECT);
         // 事务提交后再异步向量化：独立线程能读到已提交的 FAILED→EMBEDDING 变更（与 retry 同一套时序约束）
         afterCommitExecutor.runAfterCommit(() -> vectorIngestionService.ingestAsync(docId));
-        log.info("文档 {} 触发重建向量（FAILED→EMBEDDING {} 块）", docId, reset);
-        return reset;
+        log.info("文档 {} 触发重建向量（FAILED→EMBEDDING {} 块，另有 {} 块待人工审核不进 ES）",
+                docId, reset, awaitingReview);
+        return new ReindexResponse(reset, awaitingReview);
     }
 
     /**

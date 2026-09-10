@@ -3,12 +3,15 @@ package com.ai.konwledgerepo.service.document;
 import com.ai.konwledgerepo.common.AfterCommitExecutor;
 import com.ai.konwledgerepo.common.BizException;
 import com.ai.konwledgerepo.config.props.SeuFileProperties;
+import com.ai.konwledgerepo.dto.DocumentResponse;
+import com.ai.konwledgerepo.dto.ReindexResponse;
 import com.ai.konwledgerepo.entity.DocStatus;
 import com.ai.konwledgerepo.entity.Document;
 import com.ai.konwledgerepo.entity.KnowledgeBase;
 import com.ai.konwledgerepo.repository.BusinessKnowledgeRepository;
 import com.ai.konwledgerepo.repository.ChunkRepository;
 import com.ai.konwledgerepo.repository.ChunkReviewLogRepository;
+import com.ai.konwledgerepo.repository.ChunkStatusCount;
 import com.ai.konwledgerepo.repository.DocumentCurateLogRepository;
 import com.ai.konwledgerepo.repository.DocumentCurateRepository;
 import com.ai.konwledgerepo.repository.DocumentRepository;
@@ -33,6 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -254,11 +258,74 @@ class DocumentServiceTest {
         when(documentRepository.findById(DOC_ID)).thenReturn(Optional.of(errored));
         when(chunkRepository.resetFailedToEmbedding(DOC_ID)).thenReturn(3);
 
-        int reset = service.reindex(DOC_ID);
+        ReindexResponse result = service.reindex(DOC_ID);
 
-        assertEquals(3, reset);
+        assertEquals(3, result.reset());
+        assertEquals(0, result.awaitingReview());
         // 无活动事务 → AfterCommitExecutor 内联执行；这里只验证向量化被触发（实跑在独立线程池）
         verify(vectorIngestionService).ingestAsync(DOC_ID);
+    }
+
+    /**
+     * 全部块待人工审核（SUSPECT 走 DEFER，不进 ES）时，重建向量实为空操作：
+     * 必须把 reset=0 与待审块数回传，前端才有依据提示"去精修页处置"，
+     * 而不是像以前那样固定报"已触发"、把用户推向 retry（全量重解析：删块删向量 + 再花一次云端解析）。
+     */
+    @Test
+    void reindex_allChunksAwaitingReview_reportsNoOpWithReason() {
+        when(chunkRepository.resetFailedToEmbedding(DOC_ID)).thenReturn(0);
+        when(chunkRepository.countByDocIdAndCleanStatus(DOC_ID, "SUSPECT")).thenReturn(10L);
+
+        ReindexResponse result = service.reindex(DOC_ID);
+
+        assertEquals(0, result.reset(), "无 FAILED 块可重建");
+        assertEquals(10, result.awaitingReview(), "待人工审核块数要一起回传");
+    }
+
+    // ===== list：向量计数与待审核计数同源（单条 group-by，不再逐文档 count） =====
+
+    @Test
+    void list_countsBothVectorAndSuspectFromSingleGroupBy() {
+        when(documentRepository.findByKbIdOrderByIdDesc(KB_ID))
+                .thenReturn(List.of(doc("手册.pdf", "pdf", null)));
+        when(chunkRepository.statusCountsByKb(KB_ID)).thenReturn(List.of(
+                row(DOC_ID, "INDEXED", null, 6L),
+                row(DOC_ID, "EMBEDDING", null, 1L),
+                row(DOC_ID, "FAILED", null, 1L),
+                row(DOC_ID, "EMBEDDING", "SUSPECT", 3L),
+                row(DOC_ID, "FILTERED", "FILTERED", 2L)));
+
+        List<DocumentResponse> list = service.list(KB_ID);
+
+        assertEquals(1, list.size());
+        DocumentResponse d = list.get(0);
+        // SUSPECT 与 FILTERED 都不进向量分母（DEFER / 清洗丢弃都不算"应索引而未索引"）
+        assertEquals(6, d.vector().indexed());
+        assertEquals(1, d.vector().pending());
+        assertEquals(1, d.vector().failed());
+        assertEquals(8, d.vector().total());
+        // 待审核块数来自同一条 group-by
+        assertEquals(3L, d.suspectCount().longValue());
+        // 回归锁：不得再按文档逐个 count（N 个文档 = N 次额外查询，与本聚合查询的初衷矛盾）
+        verify(chunkRepository, never()).countByDocIdAndCleanStatus(anyLong(), anyString());
+    }
+
+    /**
+     * 全部块待人工审核：向量三项全 0（{@code total()=0}），但 suspectCount 必须非 0 ——
+     * 前端据此把向量列从中性 '-' 改成"待审核 N"，否则"零向量、零召回"在列表上完全看不出来。
+     */
+    @Test
+    void list_allChunksAwaitingReview_keepsVectorZeroButReportsSuspect() {
+        when(documentRepository.findByKbIdOrderByIdDesc(KB_ID))
+                .thenReturn(List.of(doc("链接清单.md", "md", null)));
+        when(chunkRepository.statusCountsByKb(KB_ID))
+                .thenReturn(List.of(row(DOC_ID, "EMBEDDING", "SUSPECT", 10L)));
+
+        DocumentResponse d = service.list(KB_ID).get(0);
+
+        assertEquals(0, d.vector().total(), "DEFER：待审块不计入向量分母");
+        assertEquals(10L, d.suspectCount().longValue(), "零召回的信号只能从这里出，不能一起被吞掉");
+        verify(chunkRepository, never()).countByDocIdAndCleanStatus(anyLong(), anyString());
     }
 
     // ===== 上传：文件名长度与孤儿文件 =====
@@ -328,5 +395,30 @@ class DocumentServiceTest {
         d.setFileType("pdf");
         d.setParseStatus(DocStatus.SUCCESS.value());
         return d;
+    }
+
+    /** statusCountsByKb 的 group-by 投影行（(docId, status, cleanStatus) 粒度） */
+    private static ChunkStatusCount row(Long docId, String status, String cleanStatus, Long cnt) {
+        return new ChunkStatusCount() {
+            @Override
+            public Long getDocId() {
+                return docId;
+            }
+
+            @Override
+            public String getStatus() {
+                return status;
+            }
+
+            @Override
+            public String getCleanStatus() {
+                return cleanStatus;
+            }
+
+            @Override
+            public Long getCnt() {
+                return cnt;
+            }
+        };
     }
 }

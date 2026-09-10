@@ -27,8 +27,8 @@ public record DocumentResponse(Long id, Long kbId, String fileName, String fileT
     /**
      * 列表用完整响应：待审核块数 + 向量健康度。
      *
-     * @param suspectCount 该文档 cleanStatus=SUSPECT 的块数
-     * @param vector       该文档 chunk 的向量状态计数（无 chunk 时传 {@link VectorStats#EMPTY}）
+     * @param suspectCount 该文档 cleanStatus=SUSPECT 的块数（DEFER 下这些块不进 ES，故不计入 vector 分母）
+     * @param vector       该文档 chunk 的向量状态计数（无 chunk、或全部 FILTERED/SUSPECT 时三项均为 0）
      */
     public static DocumentResponse withVectorStats(Document doc, Long suspectCount, VectorStats vector) {
         return new DocumentResponse(doc.getId(), doc.getKbId(), doc.getFileName(), doc.getFileType(),
