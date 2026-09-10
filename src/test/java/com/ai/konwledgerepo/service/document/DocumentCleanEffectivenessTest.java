@@ -79,7 +79,7 @@ class DocumentCleanEffectivenessTest {
         long drops = chunkClean.outcomes().stream()
                 .filter(o -> o.disposition() == DocumentCleanService.Disposition.AUTO_DROP).count();
         assertEquals(pieces.size(), chunkClean.kept().size() + drops,
-                "kept + AUTO-DROP 数应等于分块总数（SUSPECT 照常入库）");
+                "kept + AUTO-DROP 数应等于分块总数（SUSPECT 仍计入 kept=落 MySQL；DEFER 下它不进 ES）");
         assertTrue(chunkClean.kept().size() <= pieces.size(), "kept 不应超过分块总数");
     }
 
@@ -148,12 +148,12 @@ class DocumentCleanEffectivenessTest {
                         .append(o.piece().pageNum()).append("：").append(snippet.replace("\n", "⏎"));
             }
         }
-        sb.append("\n[汇总] 分块 ").append(pieces.size()).append(" → 入库 ")
+        sb.append("\n[汇总] 分块 ").append(pieces.size()).append(" → 落 MySQL ")
                 .append(chunkClean.kept().size()).append("（含 SUSPECT ").append(chunkClean.outcomes().stream()
                         .filter(o -> o.disposition() == DocumentCleanService.Disposition.SUSPECT).count())
-                .append(" 个打标）/ 丢弃 ").append(chunkClean.outcomes().stream()
+                .append(" 个打标，DEFER 下不进 ES、待精修保留后补索引）/ 丢弃 ").append(chunkClean.outcomes().stream()
                         .filter(o -> o.disposition() == DocumentCleanService.Disposition.AUTO_DROP).count())
-                .append(" 个");
+                .append(" 个（FILTERED，保留记录但不进 ES）");
         sb.append("\n==================================================\n");
         System.out.println(sb);
     }

@@ -43,9 +43,13 @@ public record SeuDocumentProperties(
     /**
      * seuknowledge.document.clean.* 配置（P1 规则清洗）。
      * <p>
-     * 处置名单语义：规则命中后查名单——ID 在 {@code autoDropRules} → AUTO-DROP（不进 ES）；
-     * 在 {@code suspectRules} → SUSPECT（照常入库进 ES，仅带清洗标记）；都不在 → 仅统计不动作
-     * （fail-safe：删除权必须显式授予，规则代码本身没有删除权）。
+     * 处置名单语义：规则命中后查名单——ID 在 {@code autoDropRules} → AUTO-DROP（落库 FILTERED，不进 ES）；
+     * 在 {@code suspectRules} → SUSPECT（带清洗标记落库，但按 DEFER 决策<b>暂不进 ES、不可被检索</b>）；
+     * 都不在 → 仅统计不动作（fail-safe：删除权必须显式授予，规则代码本身没有删除权）。
+     * <p>
+     * ⚠️ 配 {@code suspectRules} 不是"无副作用打标"：被标的块会一直检索不到，直到有人在「文档精修」页
+     * 点「保留/编辑」（此时才单条补索引）。因此某规则放 suspect 还是都不放（仅统计），
+     * 决定的是"要不要交人工决断"，而不是"要不要进检索"——后者由前者连带产生。
      */
     public record Clean(
             @DefaultValue("true") boolean enabled,

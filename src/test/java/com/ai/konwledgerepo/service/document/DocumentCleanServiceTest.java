@@ -266,7 +266,7 @@ class DocumentCleanServiceTest {
 
         assertEquals("A3", result.outcomes().get(0).ruleId());
         assertEquals(DocumentCleanService.Disposition.SUSPECT, result.outcomes().get(0).disposition());
-        assertEquals(1, result.kept().size(), "A3 在 suspect 名单：打标照常入库");
+        assertEquals(1, result.kept().size(), "A3 在 suspect 名单：打标后仍进 kept（落 MySQL；DEFER 下暂不进 ES）");
     }
 
     @Test
@@ -351,7 +351,8 @@ class DocumentCleanServiceTest {
         assertEquals(1, result.outcomes().size());
         assertEquals("C2", result.outcomes().get(0).ruleId());
         assertEquals(DocumentCleanService.Disposition.SUSPECT, result.outcomes().get(0).disposition());
-        assertEquals(2, result.kept().size(), "C2 在 suspect 名单：打标照常入库（保留首个为 SUSPECT 的区分依赖 kept 顺序）");
+        assertEquals(2, result.kept().size(), "C2 在 suspect 名单：打标后仍进 kept（落 MySQL；DEFER 下暂不进 ES）"
+                + "（保留首个为 SUSPECT 的区分依赖 kept 顺序）");
     }
 
     @Test

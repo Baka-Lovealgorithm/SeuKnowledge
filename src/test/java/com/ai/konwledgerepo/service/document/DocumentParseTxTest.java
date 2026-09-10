@@ -127,7 +127,7 @@ class DocumentParseTxTest {
         Chunk cKeep = chunks.get(0);
         assertEquals(ChunkStatus.EMBEDDING.value(), cKeep.getStatus());
         assertEquals(null, cKeep.getCleanStatus());
-        // SUSPECT：照常 EMBEDDING + 清洗标记
+        // SUSPECT：落 MySQL 且 status=EMBEDDING + 清洗标记（DEFER 发生在 ingest 侧，不在落库侧）
         Chunk cSuspect = chunks.get(1);
         assertEquals(ChunkStatus.EMBEDDING.value(), cSuspect.getStatus());
         assertEquals("SUSPECT", cSuspect.getCleanStatus());

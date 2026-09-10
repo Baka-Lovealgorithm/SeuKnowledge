@@ -119,7 +119,8 @@ public class DocumentParseTx {
     /**
      * 解析成功收尾（含 P1 清洗结果 + 可选初洗/精修状态）：
      * <ul>
-     *   <li>kept 中的 chunk → status=EMBEDDING（其中 SUSPECT 判定项附加 clean_status=SUSPECT + clean_reason）；</li>
+     *   <li>kept 中的 chunk → status=EMBEDDING（其中 SUSPECT 判定项附加 clean_status=SUSPECT + clean_reason；
+     *       注意 SUSPECT 虽是 EMBEDDING，仍会被 {@code VectorIngestionService.ingest} 的 DEFER 过滤跳过，暂不进 ES）；</li>
      *   <li>outcomes 中 AUTO-DROP 的 chunk → status=FILTERED + clean_status=FILTERED + clean_reason（记录保留但永不向量化）；</li>
      *   <li>curateStatus 非空时文档置该状态（初洗门：PREVIEWING，不向量化）。</li>
      * </ul>

@@ -26,24 +26,35 @@ import java.util.regex.Pattern;
  *   <li><b>chunk 级 {@link #cleanChunks}</b>：分块后落库前，按
  *       E 保护规则 → A 碎片 → B 图题 → C 重复 的顺序判定；处置由配置名单决定：
  *       {@code autoDropRules} → AUTO-DROP（落库 FILTERED，不进 ES）；
- *       {@code suspectRules} → SUSPECT（照常入库进 ES，仅带清洗标记）；都不在 → 仅统计不动作。</li>
+ *       {@code suspectRules} → SUSPECT（落 MySQL、{@code status=EMBEDDING} 并带清洗标记，
+ *       但按 DEFER 决策<b>暂不进 ES</b>，待精修「保留/编辑」后由
+ *       {@code VectorIngestionService.reindexChunk} 单条索引）；都不在 → 仅统计不动作。</li>
  * </ul>
  * 红线（溯源保护三原则）：只删不改不合并、不重排页码、页面级整页删除仅限首尾噪声页。
  * 软删：AUTO-DROP 的 chunk 记录保留在 MySQL（历史证据"查看全文"仍可展开），仅不进 ES。
+ * <p>
+ * 术语约定（避免"入库"歧义）：本类说的 kept / 落库一律指<b>写 MySQL {@code kb_chunk}</b>；
+ * 是否可被检索另看是否进 ES——AUTO-DROP 与 SUSPECT 都不进 ES（前者永久丢弃，后者审核通过后补索引）。
  */
 @Service
 public class DocumentCleanService {
 
     private static final Logger log = LoggerFactory.getLogger(DocumentCleanService.class);
 
-    /** 清洗处置 */
+    /**
+     * 清洗处置。注意「落 MySQL」与「进 ES」是两件事，别混为一谈：
+     * AUTO_DROP=丢弃（落 MySQL 记 FILTERED，永不进 ES）；
+     * SUSPECT=打标待人工（落 MySQL、{@code status=EMBEDDING}，但按 DEFER 决策暂不进 ES，
+     * 精修「保留/编辑」后由 {@code VectorIngestionService.reindexChunk} 单条补索引）；
+     * KEEP=规则未处置、仅统计（正常落库并正常进 ES）。
+     */
     public enum Disposition { AUTO_DROP, SUSPECT, KEEP }
 
     /** chunk 级清洗决策条目（piece 与判定结果一一对应） */
     public record CleanOutcome(ChunkPiece piece, String ruleId, Disposition disposition, String reason) {
     }
 
-    /** chunk 级清洗结果：kept 为入库列表（含 SUSPECT 标记项），outcomes 为全部判定（含 AUTO_DROP） */
+    /** chunk 级清洗结果：kept 为落 MySQL 列表（含 SUSPECT 标记项，但 SUSPECT 不进 ES），outcomes 为全部判定（含 AUTO_DROP） */
     public record ChunkCleanResult(List<ChunkPiece> kept, List<CleanOutcome> outcomes) {
     }
 
@@ -258,9 +269,9 @@ public class DocumentCleanService {
             CleanOutcome outcome = new CleanOutcome(piece, ruleId, d, reasonOf(ruleId, piece));
             outcomes.add(outcome);
             if (d == Disposition.SUSPECT || d == Disposition.KEEP) {
-                kept.add(piece); // SUSPECT 照常入库（仅带标记），KEEP 仅统计
+                kept.add(piece); // kept=落 MySQL 名单：SUSPECT 带标记进去（但 DEFER 不进 ES），KEEP 仅统计、正常进 ES
             }
-            // AUTO_DROP 不进 kept
+            // AUTO_DROP 不进 kept（由 DocumentParseTx 以 FILTERED 落库留痕，同样不进 ES）
         }
         return new ChunkCleanResult(kept, outcomes);
     }

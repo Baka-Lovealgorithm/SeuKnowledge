@@ -43,7 +43,14 @@ public class Chunk extends BaseEntity {
     @Column(nullable = false, length = 20)
     private String status = ChunkStatus.EMBEDDING.value();
 
-    /** 清洗状态（P1 规则清洗）：null=未清洗 / KEEP=保留 / SUSPECT=可疑待人工（照常入库）/ FILTERED=丢弃 */
+    /**
+     * 清洗状态（P1 规则清洗）：null=未清洗 / KEEP=保留 / SUSPECT=可疑待人工 / FILTERED=丢弃。
+     * <p>
+     * SUSPECT 走 DEFER 决策：本表记录照常写入（{@code status=EMBEDDING}），但
+     * {@code VectorIngestionService.ingest} 会跳过它——<b>不进 ES、不可被检索</b>（{@code esId} 保持为空），
+     * 待文档精修「保留/编辑」后由 {@code reindexChunk} 单条补索引。
+     * 与 FILTERED 的区别：FILTERED 是永久丢弃、无需人工处置；SUSPECT 只是等待人工决断，处置后仍可入检索。
+     */
     @Column(name = "clean_status", length = 20)
     private String cleanStatus;
 
