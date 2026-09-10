@@ -4,7 +4,7 @@ import com.ai.konwledgerepo.common.ApiResponse;
 import com.ai.konwledgerepo.dto.PromptPreviewRequest;
 import com.ai.konwledgerepo.dto.PromptTemplateResponse;
 import com.ai.konwledgerepo.dto.PromptTemplateUpdateRequest;
-import com.ai.konwledgerepo.security.AdminOrAbove;
+import com.ai.konwledgerepo.security.PlatformAdminOnly;
 import com.ai.konwledgerepo.service.prompt.PromptTemplateService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -20,12 +20,12 @@ import java.util.List;
 
 /**
  * 提示词模板管理接口（平台级配置）：节点提示词 / 抽取 / 记忆等模板的统一管理。
- * 仅当前空间的 OWNER / ADMIN 可访问（与模型配置一致）。
+ * 仅 sys_user.role=ADMIN 的平台管理员可访问；工作空间 OWNER / ADMIN 不具备该权限。
  * <p>更新/重置后立即失效 Redis 缓存，问答链路无需重启即生效。
  */
 @RestController
 @RequestMapping("/api/prompts")
-@AdminOrAbove
+@PlatformAdminOnly
 public class PromptTemplateController {
 
     private final PromptTemplateService promptTemplateService;

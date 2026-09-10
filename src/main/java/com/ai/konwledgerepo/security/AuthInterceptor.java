@@ -6,7 +6,9 @@ import com.ai.konwledgerepo.common.LogContext;
 import com.ai.konwledgerepo.common.RedisCacheService;
 import com.ai.konwledgerepo.common.RedisKeys;
 import com.ai.konwledgerepo.config.props.SeuCacheProperties;
+import com.ai.konwledgerepo.entity.SysUser;
 import com.ai.konwledgerepo.entity.WorkspaceMember;
+import com.ai.konwledgerepo.repository.SysUserRepository;
 import com.ai.konwledgerepo.repository.WorkspaceMemberRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -32,7 +34,8 @@ import java.util.Optional;
  *    /api/auth/me 特例回退第一个成员保证前端自愈），缺省回退第一个成员关系；
  * 4. 无任何成员关系的用户：仅放行 /api/auth/me 与 POST /api/workspace（创建工作空间），
  *    其余接口 403；
- * 5. 校验 HandlerMethod 上的 {@link RequireRole} 注解（方法级优先于类级），角色不符 403。
+ * 5. 标记 {@link PlatformAdminOnly} 的平台接口只校验 sys_user.role=ADMIN，不受工作空间角色影响；
+ * 6. 其余接口校验 HandlerMethod 上的 {@link RequireRole} 注解（方法级优先于类级），角色不符 403。
  * 注入 request 属性：userId / workspaceId / role。
  */
 @Component
@@ -40,17 +43,20 @@ public class AuthInterceptor implements HandlerInterceptor {
 
     private final TokenService tokenService;
     private final WorkspaceMemberRepository memberRepository;
+    private final SysUserRepository userRepository;
     private final ObjectMapper objectMapper;
     private final RedisCacheService redisCacheService;
     private final Duration memberTtl;
 
     public AuthInterceptor(TokenService tokenService,
                            WorkspaceMemberRepository memberRepository,
+                           SysUserRepository userRepository,
                            ObjectMapper objectMapper,
                            RedisCacheService redisCacheService,
                            SeuCacheProperties cacheProps) {
         this.tokenService = tokenService;
         this.memberRepository = memberRepository;
+        this.userRepository = userRepository;
         this.objectMapper = objectMapper;
         this.redisCacheService = redisCacheService;
         this.memberTtl = Duration.ofSeconds(cacheProps.memberTtlSeconds());
@@ -80,6 +86,19 @@ public class AuthInterceptor implements HandlerInterceptor {
             response.setContentType("application/json;charset=UTF-8");
             response.getWriter().write(objectMapper.writeValueAsString(ApiResponse.error(ErrorCodes.UNAUTHORIZED, "未登录或会话失效")));
             return false;
+        }
+        // 平台配置不能由任意工作空间管理员代管：平台角色与 workspace_member.role 完全隔离。
+        if (requiresPlatformAdmin(handlerMethod)) {
+            if (!isPlatformAdmin(userId)) {
+                LogContext.clear();
+                return reject(response, 403, "无权限执行该操作（需要平台管理员权限）");
+            }
+            // 平台接口不依赖当前工作空间，也不应受伪造/过期 X-Workspace-Id 影响。
+            request.setAttribute("userId", userId);
+            request.setAttribute("workspaceId", null);
+            request.setAttribute("role", null);
+            LogContext.setUserContext(userId, null);
+            return true;
         }
         // 用户全部工作空间成员关系（Redis 列表缓存优先，miss 回源 DB 回填；空列表不缓存）
         List<WorkspaceMember> members = cachedMembers(userId);
@@ -119,6 +138,19 @@ public class AuthInterceptor implements HandlerInterceptor {
             return reject(response, 403, "无权限执行该操作（需要角色: " + String.join("/", required.value()) + "）");
         }
         return true;
+    }
+
+    private boolean requiresPlatformAdmin(HandlerMethod handlerMethod) {
+        return AnnotatedElementUtils.findMergedAnnotation(handlerMethod.getMethod(), PlatformAdminOnly.class) != null
+                || AnnotatedElementUtils.findMergedAnnotation(handlerMethod.getBeanType(), PlatformAdminOnly.class) != null;
+    }
+
+    private boolean isPlatformAdmin(Long userId) {
+        return userRepository.findById(userId)
+                .filter(user -> Boolean.TRUE.equals(user.getEnabled()))
+                .map(SysUser::getRole)
+                .filter(Roles.ADMIN::equals)
+                .isPresent();
     }
 
     /** 请求结束清理日志上下文（防线程复用污染；注意 preHandle 返回 false 的路径已在拒绝分支内联清理） */

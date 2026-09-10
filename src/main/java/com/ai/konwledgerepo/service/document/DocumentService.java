@@ -13,6 +13,7 @@ import com.ai.konwledgerepo.entity.DocumentCurateLog;
 import com.ai.konwledgerepo.entity.KnowledgeBase;
 import com.ai.konwledgerepo.repository.BusinessKnowledgeRepository;
 import com.ai.konwledgerepo.repository.ChunkRepository;
+import com.ai.konwledgerepo.repository.ChunkReviewLogRepository;
 import com.ai.konwledgerepo.repository.ChunkStatusCount;
 import com.ai.konwledgerepo.repository.DocumentCurateLogRepository;
 import com.ai.konwledgerepo.repository.DocumentCurateRepository;
@@ -58,6 +59,7 @@ public class DocumentService {
     private final ChunkRepository chunkRepository;
     private final DocumentCurateRepository curateRepository;
     private final DocumentCurateLogRepository curateLogRepository;
+    private final ChunkReviewLogRepository chunkReviewLogRepository;
     private final BusinessKnowledgeRepository businessKnowledgeRepository;
     private final QaPairRepository qaPairRepository;
     private final KnowledgeBaseService kbService;
@@ -71,6 +73,7 @@ public class DocumentService {
                            ChunkRepository chunkRepository,
                            DocumentCurateRepository curateRepository,
                            DocumentCurateLogRepository curateLogRepository,
+                           ChunkReviewLogRepository chunkReviewLogRepository,
                            BusinessKnowledgeRepository businessKnowledgeRepository,
                            QaPairRepository qaPairRepository,
                            KnowledgeBaseService kbService,
@@ -82,6 +85,7 @@ public class DocumentService {
         this.chunkRepository = chunkRepository;
         this.curateRepository = curateRepository;
         this.curateLogRepository = curateLogRepository;
+        this.chunkReviewLogRepository = chunkReviewLogRepository;
         this.businessKnowledgeRepository = businessKnowledgeRepository;
         this.qaPairRepository = qaPairRepository;
         this.kbService = kbService;
@@ -186,22 +190,38 @@ public class DocumentService {
         evictKbCaches(doc.getKbId());
     }
 
-    /** 清理文档全链路数据：MySQL chunk + ES 向量 + 初洗 md/审计 + 磁盘文件 + 记录（供删除与同名覆盖共用） */
+    /**
+     * 清理文档自身数据，但保留已产出的业务知识/问答对及全部历史版本。
+     * <p>
+     * 结构化知识只解除 sourceDocId，sourceDocName 留作不可变的来源快照；这样不依赖新 DDL，
+     * 也不会因删除/覆盖来源文档而破坏已经审核、测试并投入检索的知识。
+     */
     private void deleteDoc(Document doc) {
-        // 删 MySQL chunk
+        Long docId = doc.getId();
+        // 先解除结构化知识的实时外部引用；保留知识内容、状态、版本及历史来源名称。
+        int detachedBusiness = businessKnowledgeRepository.detachSourceDocumentByDocId(docId);
+        int detachedQa = qaPairRepository.detachSourceDocumentByDocId(docId);
+        vectorIngestionService.detachSourceDocumentInIndex(docId);
+
+        // 审核日志含 chunkId/docId，必须先于 chunk/document 清理，避免无外键旧库留下孤儿。
+        chunkReviewLogRepository.deleteByDocId(docId);
         chunkRepository.deleteByDocId(doc.getId());
-        // 删 ES chunk
-        vectorIngestionService.deleteByDocId(doc.getId());
+        // 只删 CHUNK（兼容没有 sourceType 的旧索引分块），不删 BUSINESS / QA。
+        vectorIngestionService.deleteByDocId(docId);
         // 删初洗 md（全部版本）与初洗/精修审计
-        curateRepository.deleteByDocId(doc.getId());
-        curateLogRepository.deleteByDocId(doc.getId());
+        curateRepository.deleteByDocId(docId);
+        curateLogRepository.deleteByDocId(docId);
         // 删文件
-        try {
-            Files.deleteIfExists(Path.of(doc.getFilePath()));
-        } catch (IOException e) {
-            log.warn("删除文档文件失败: {}", doc.getFilePath(), e);
+        if (doc.getFilePath() != null && !doc.getFilePath().isBlank()) {
+            try {
+                Files.deleteIfExists(Path.of(doc.getFilePath()));
+            } catch (IOException e) {
+                log.warn("删除文档文件失败: {}", doc.getFilePath(), e);
+            }
         }
         documentRepository.delete(doc);
+        log.info("删除文档 {} 完成；保留并解除来源关联：业务知识 {} 条，问答对 {} 条",
+                docId, detachedBusiness, detachedQa);
     }
 
     /** 文档变更后失效知识库计数与列表缓存 */

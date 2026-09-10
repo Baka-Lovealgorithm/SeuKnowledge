@@ -8,6 +8,7 @@ import com.ai.konwledgerepo.entity.Document;
 import com.ai.konwledgerepo.entity.KnowledgeBase;
 import com.ai.konwledgerepo.repository.BusinessKnowledgeRepository;
 import com.ai.konwledgerepo.repository.ChunkRepository;
+import com.ai.konwledgerepo.repository.ChunkReviewLogRepository;
 import com.ai.konwledgerepo.repository.DocumentCurateLogRepository;
 import com.ai.konwledgerepo.repository.DocumentCurateRepository;
 import com.ai.konwledgerepo.repository.DocumentRepository;
@@ -51,6 +52,7 @@ class DocumentServiceTest {
     private ChunkRepository chunkRepository;
     private DocumentCurateRepository curateRepository;
     private DocumentCurateLogRepository curateLogRepository;
+    private ChunkReviewLogRepository chunkReviewLogRepository;
     private BusinessKnowledgeRepository businessKnowledgeRepository;
     private QaPairRepository qaPairRepository;
     private KnowledgeBaseService kbService;
@@ -66,6 +68,7 @@ class DocumentServiceTest {
         chunkRepository = mock(ChunkRepository.class);
         curateRepository = mock(DocumentCurateRepository.class);
         curateLogRepository = mock(DocumentCurateLogRepository.class);
+        chunkReviewLogRepository = mock(ChunkReviewLogRepository.class);
         businessKnowledgeRepository = mock(BusinessKnowledgeRepository.class);
         qaPairRepository = mock(QaPairRepository.class);
         kbService = mock(KnowledgeBaseService.class);
@@ -73,6 +76,7 @@ class DocumentServiceTest {
         parseExecutor = mock(DocumentParseExecutor.class);
         SeuFileProperties fileProps = new SeuFileProperties(tempDir.toString(), 20 * 1024 * 1024L);
         service = new DocumentService(documentRepository, chunkRepository, curateRepository, curateLogRepository,
+                chunkReviewLogRepository,
                 businessKnowledgeRepository, qaPairRepository,
                 kbService, vectorIngestionService, parseExecutor, new AfterCommitExecutor(), fileProps);
 
@@ -114,8 +118,47 @@ class DocumentServiceTest {
 
         verify(chunkRepository).deleteByDocId(DOC_ID);
         verify(vectorIngestionService).deleteByDocId(DOC_ID);
+        verify(businessKnowledgeRepository, never()).detachSourceDocumentByDocId(anyLong());
+        verify(qaPairRepository, never()).detachSourceDocumentByDocId(anyLong());
+        verify(vectorIngestionService, never()).detachSourceDocumentInIndex(anyLong());
         // AfterCommitExecutor 在无事务时内联执行 → parseAsync 被调用（retry 强制重新解析，不复用缓存）
         verify(parseExecutor).parseAsync(DOC_ID, false);
+    }
+
+    // ===== delete：清孤儿且保留结构化知识 =====
+
+    @Test
+    void delete_detachesKnowledgeAndCleansDocumentOwnedData() throws Exception {
+        Path sourceFile = Files.createFile(tempDir.resolve("手册.pdf"));
+        Document existing = doc("手册.pdf", "pdf", null);
+        existing.setFilePath(sourceFile.toString());
+        when(documentRepository.findById(DOC_ID)).thenReturn(Optional.of(existing));
+        when(businessKnowledgeRepository.detachSourceDocumentByDocId(DOC_ID)).thenReturn(3);
+        when(qaPairRepository.detachSourceDocumentByDocId(DOC_ID)).thenReturn(2);
+
+        service.delete(DOC_ID);
+
+        verify(businessKnowledgeRepository).detachSourceDocumentByDocId(DOC_ID);
+        verify(qaPairRepository).detachSourceDocumentByDocId(DOC_ID);
+        verify(vectorIngestionService).detachSourceDocumentInIndex(DOC_ID);
+        verify(chunkReviewLogRepository).deleteByDocId(DOC_ID);
+        verify(chunkRepository).deleteByDocId(DOC_ID);
+        verify(vectorIngestionService).deleteByDocId(DOC_ID);
+        verify(curateRepository).deleteByDocId(DOC_ID);
+        verify(curateLogRepository).deleteByDocId(DOC_ID);
+        verify(documentRepository).delete(existing);
+        assertTrue(Files.notExists(sourceFile));
+    }
+
+    @Test
+    void delete_legacyDocumentWithoutFilePath_stillCompletes() {
+        Document existing = doc("旧记录.pdf", "pdf", null);
+        existing.setFilePath(null);
+        when(documentRepository.findById(DOC_ID)).thenReturn(Optional.of(existing));
+
+        service.delete(DOC_ID);
+
+        verify(documentRepository).delete(existing);
     }
 
     // ===== rename：校验分支 =====
