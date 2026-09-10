@@ -125,10 +125,11 @@ public class QaExecutionService {
                 sendSse(emitter, "refs", refs);
             }
 
-            int messageCount = messageStore.persistAnswer(session, userId, question, answer, refs, workspaceId);
-            summaryService.maybeUpdate(sessionId, workspaceId, messageCount);
+            ChatMessageStore.PersistedAnswer persisted = messageStore.persistAnswer(session, userId, question,
+                    answer, refs, workspaceId, snapshotQuality(result));
+            summaryService.maybeUpdate(sessionId, workspaceId, persisted.messageCount());
 
-            return new QaAskResult(answer, refs, intent);
+            return new QaAskResult(answer, refs, intent, persisted.assistantMessageId());
         } finally {
             if (flow != null) {
                 SseStreamContext.clear();
@@ -145,7 +146,59 @@ public class QaExecutionService {
         }
     }
 
-    /** 问答执行结果（仅承载答案/引用/意图，不含传输） */
-    public record QaAskResult(String answer, String refs, String intent) {
+    /**
+     * 从图执行终态提取答案自检质量快照，随答案落库。
+     * <p>
+     * 这些值原本只活在 {@code OverAllState} 与日志里（tracing 无 DB 表），不落库就永久丢失，
+     * 事后无法回答「被踩的那条答案当时自检分多少、缺什么、重试了几轮」。
+     * 取值全部按可空处理：闲聊直答（CHAT_ONLY）不跑自检、自检异常时 fail-open 不写键，
+     * 此时对应列为 null——统计侧只聚合非空行。
+     */
+    private static ChatMessageStore.AnswerQuality snapshotQuality(OverAllState result) {
+        Double verify = null;
+        try {
+            Object v = result.value(QaContextKey.VERIFY_SCORE).orElse(null);
+            if (v instanceof Number n) {
+                verify = n.doubleValue();
+            }
+        } catch (Exception ignored) {
+            // 自检分数形态异常时留空，不影响答案落库
+        }
+        Double faith = null;
+        try {
+            Object f = result.value(QaContextKey.FAITHFULNESS_SCORE).orElse(null);
+            if (f instanceof Number n) {
+                faith = n.doubleValue();
+            }
+        } catch (Exception ignored) {
+            // 同上
+        }
+        Integer retries = null;
+        try {
+            Object r = result.value(QaContextKey.RETRY_COUNT).orElse(null);
+            if (r instanceof Number n) {
+                retries = n.intValue();
+            }
+        } catch (Exception ignored) {
+            // 同上
+        }
+        String missing = null;
+        try {
+            Object m = result.value(QaContextKey.MISSING_INFO).orElse(null);
+            if (m != null && !m.toString().isBlank()) {
+                missing = m.toString();
+            }
+        } catch (Exception ignored) {
+            // 同上
+        }
+        return new ChatMessageStore.AnswerQuality(verify, faith, retries, missing);
+    }
+
+    /**
+     * 问答执行结果（承载答案/引用/意图 + 落库后的消息 id，不含传输）。
+     *
+     * @param messageId 答案落库后的消息 id，供前端点踩定位；仅落 USER 的路径为 null
+     */
+    public record QaAskResult(String answer, String refs, String intent, Long messageId) {
     }
 }

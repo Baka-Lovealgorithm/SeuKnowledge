@@ -26,7 +26,7 @@ public class QaAnswerService {
         try {
             QaExecutionService.QaAskResult result = executionService.execute(
                     sessionId, userId, question, workspaceId, null);
-            return new AskResponse(result.answer(), result.refs(), result.intent());
+            return new AskResponse(result.answer(), result.refs(), result.intent(), result.messageId());
         } catch (BizException e) {
             throw e;
         } catch (Exception e) {

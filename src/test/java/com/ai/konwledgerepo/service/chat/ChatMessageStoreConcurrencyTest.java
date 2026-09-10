@@ -87,6 +87,14 @@ class ChatMessageStoreConcurrencyTest {
             assertEquals(expected, messages.get(i).getRole(),
                     "消息顺序应严格 USER→ASSISTANT 交替（位置 " + i + "）");
         }
+
+        // 落库必须回传本轮答案的 message id：前端点踩靠它定位行，回传错了会把评价写到用户消息上
+        ChatMessageStore.PersistedAnswer persisted = messageStore.persistAnswer(
+                session, TEST_USER_ID, "回传问题", "回传答案", "[]", TEST_WS_ID);
+        assertNotNull(persisted.assistantMessageId(), "persistAnswer 必须回传 ASSISTANT 消息 id");
+        ChatMessage answerRow = messageRepository.findById(persisted.assistantMessageId()).orElseThrow();
+        assertEquals("ASSISTANT", answerRow.getRole());
+        assertEquals("回传答案", answerRow.getContent());
     }
 
     /** 4 线程并发落库同一会话：更激进验证无丢失更新 */

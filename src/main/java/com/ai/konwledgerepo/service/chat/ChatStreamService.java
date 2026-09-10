@@ -10,6 +10,7 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -45,23 +46,27 @@ public class ChatStreamService {
         SseFlow flow = new SseFlow(emitter);
         activeFlows.put(sessionId, flow);
         try {
-            executionService.execute(sessionId, userId, question, workspaceId, flow);
-            sendSseEvent(emitter, "done", null);
+            QaExecutionService.QaAskResult result = executionService.execute(sessionId, userId, question, workspaceId, flow);
+            // done 携带答案消息 id：前端点踩要拿它定位 kb_chat_message 行（旧前端只判 type，忽略 data，兼容）
+            sendSseEvent(emitter, "done", messageRef(result.messageId()));
             emitter.complete();
         } catch (GenerationCancelledException e) {
+            Long answerMessageId = null;
             try {
                 ChatSession session = sessionService.getSession(sessionId, userId, workspaceId);
                 String partial = resolvePartial(e, flow);
                 // 未产生任何内容（首 token 前取消）：仅落用户消息，不落空 assistant 消息（防历史"空气泡"）
-                int messageCount = (partial == null || partial.isBlank())
+                ChatMessageStore.PersistedAnswer persisted = (partial == null || partial.isBlank())
                         ? messageStore.persistInterruptedQuestion(session, userId, question, workspaceId)
                         : messageStore.persistInterruptedAnswer(session, userId, question, partial, workspaceId);
-                summaryService.maybeUpdate(sessionId, workspaceId, messageCount);
+                answerMessageId = persisted.assistantMessageId();
+                summaryService.maybeUpdate(sessionId, workspaceId, persisted.messageCount());
             } catch (Exception ex) {
                 // 落库失败不影响停止语义
             }
             try {
-                sendSseEvent(emitter, "stopped", null);
+                // 被停止的部分答案同样已落库，允许点踩（它往往正是用户放弃的原因）
+                sendSseEvent(emitter, "stopped", messageRef(answerMessageId));
                 emitter.complete();
             } catch (Exception ignored) {
                 // 连接已断开
@@ -87,6 +92,15 @@ public class ChatStreamService {
         if (flow != null) {
             flow.cancelled.set(true);
         }
+    }
+
+    /**
+     * done/stopped 事件的 data：答案消息 id。
+     * id 为 null（仅落 USER 的路径）时返回 null，保持"无 data 即无可评价对象"的旧语义，
+     * 前端据此不显示点踩按钮。
+     */
+    private static Object messageRef(Long messageId) {
+        return messageId == null ? null : Map.of("messageId", messageId);
     }
 
     private void sendSseEvent(SseEmitter emitter, String type, Object data) {

@@ -56,6 +56,9 @@ class ChatStreamServiceTest {
         when(sessionService.getSession(1L, 1L, 7L)).thenReturn(session);
         when(executionService.execute(eq(1L), eq(1L), eq("问题"), eq(7L), any()))
                 .thenThrow(new GenerationCancelledException(""));
+        // 本路径没有答案行 → assistantMessageId 为 null，stopped 事件不带 id
+        when(messageStore.persistInterruptedQuestion(session, 1L, "问题", 7L))
+                .thenReturn(new ChatMessageStore.PersistedAnswer(1, null));
 
         streamService.askStreamAsync(1L, 1L, "问题", new SseEmitter(), 7L);
 
@@ -75,6 +78,9 @@ class ChatStreamServiceTest {
         when(sessionService.getSession(1L, 1L, 7L)).thenReturn(session);
         when(executionService.execute(eq(1L), eq(1L), eq("问题"), eq(7L), any()))
                 .thenThrow(new GenerationCancelledException("部分答案"));
+        // 部分答案已落库：stopped 事件要带上它的 id，用户才能对"被停止的答案"点踩
+        when(messageStore.persistInterruptedAnswer(session, 1L, "问题", "部分答案", 7L))
+                .thenReturn(new ChatMessageStore.PersistedAnswer(2, 99L));
 
         streamService.askStreamAsync(1L, 1L, "问题", new SseEmitter(), 7L);
 
