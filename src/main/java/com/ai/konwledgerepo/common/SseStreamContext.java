@@ -2,7 +2,6 @@ package com.ai.konwledgerepo.common;
 
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
-import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -90,9 +89,20 @@ public final class SseStreamContext {
         return flow != null && flow.cancelled.get();
     }
 
-    /** 请求取消（由取消端点或客户端断开触发） */
+    /** 请求取消（由取消端点或客户端断开触发）：作用于<b>当前线程</b>的 flow */
     public static void requestCancel() {
-        SseFlow flow = FLOW.get();
+        cancel(FLOW.get());
+    }
+
+    /**
+     * 对指定 flow 请求取消（跨线程安全）：直接置该实例的取消位，不依赖 ThreadLocal。
+     * <p>
+     * 断线场景的唯一正确入口——推送失败发生在回调线程（Reactor doOnNext）时，
+     * {@link #requestCancel()} 读到的 FLOW 为 null，取消会丢失。取消端点仍走
+     * {@link #requestCancel()}（它由请求线程处理，ThreadLocal 可见）。
+     * null 安全（无流式上下文时静默忽略）。
+     */
+    public static void cancel(SseFlow flow) {
         if (flow != null) {
             flow.cancelled.set(true);
         }
@@ -115,9 +125,15 @@ public final class SseStreamContext {
     /**
      * 推送问答阶段状态（节点级），用于前端步骤条展示。
      * 客户端断开等失败时静默忽略，不打断状态图执行。
+     * <p>
+     * 失败时必须对<b>当前线程的 flow</b> 置取消位（经 {@link #cancel(SseFlow)} 而非
+     * {@link #requestCancel()}）：{@code sendStage} 由图节点线程调用，其 ThreadLocal
+     * FLOW 与 emitter 的真实宿主线程未必是同一个执行上下文，直接置位才会被
+     * {@code throwIfCancelled} 在下个节点入口读到。
      */
     public static void sendStage(String stageId, String content) {
-        SseEmitter emitter = get();
+        SseFlow flow = FLOW.get();
+        SseEmitter emitter = flow == null ? null : flow.emitter;
         if (emitter == null) {
             return;
         }
@@ -127,8 +143,9 @@ public final class SseStreamContext {
             payload.put("stage", stageId);
             payload.put("content", content);
             emitter.send(SseEmitter.event().name("message").data(payload));
-        } catch (IOException ignored) {
-            requestCancel();
+        } catch (Exception ignored) {
+            // 结构性失败（IOException）与状态性失败（客户端已断开）一视同仁：都标记取消
+            cancel(flow);
         }
     }
 
@@ -145,10 +162,15 @@ public final class SseStreamContext {
 
     /**
      * 显式指定流与发射器的推送（跨线程安全）：流式模型回调（如 Reactor doOnNext）运行在
-     * 供应商/网络线程，ThreadLocal 中的 FLOW 不可见，调用方必须把捕获的 flow 与 emitter 一并传入。
+     * 供应商/网络线程，而 {@code emitter.send} 也由该回调线程执行，ThreadLocal 中的 FLOW 不可见，
+     * 调用方必须把捕获的 flow 与 emitter 一并传入。
      * <p>
      * delta 先无条件累积进 flow（停止后按已生成内容落库），再 best-effort 推送；
      * 推送失败（客户端断开等）静默忽略并标记取消，不打断流程。
+     * <p>
+     * <b>失败时传显式 flow 引用给 {@link #cancel(SseFlow)}，不能用 {@link #requestCancel()}</b>：
+     * 后者读当前线程 ThreadLocal，而本方法恰好在 ThreadLocal 不可见的回调线程上运行，
+     * 会导致客户端断开后取消信号被静默丢弃（生成继续空转到超时）。
      */
     public static void send(SseFlow flow, SseEmitter emitter, String type, Object data) {
         if ("delta".equals(type) && data != null && flow != null) {
@@ -160,7 +182,7 @@ public final class SseStreamContext {
         try {
             emitter.send(event(type, data));
         } catch (Exception ignored) {
-            requestCancel();
+            cancel(flow);
         }
     }
 

@@ -29,6 +29,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import com.ai.konwledgerepo.common.GenerationCancelledException;
@@ -43,6 +44,16 @@ import com.ai.konwledgerepo.common.GenerationCancelledException;
  * 同时以独立 logger（{@code com.ai.konwledgerepo.llm}，logback-spring.xml 中独立到
  * logs/llm.log，DEBUG 级）记录每次调用的 prompt / 原始输出 / 耗时 / token，
  * 供 AI 开发调试复现「模型为什么这么答」；注意 prompt 与输出含知识库内容，属敏感数据。
+ * <p>
+ * <b>内部结构</b>：文本类调用（{@code call} / {@code stream} / {@code vision}）共用
+ * {@link #traced} 骨架（span 生命周期 + 异常分类 + I/O 记录），方法体只保留各自差异
+ * （构造 Prompt、解析响应、取 usage）。向量调用（{@code embed} / {@code embedAll}）
+ * 因 span 类型、I/O 语义与分片逻辑不同而独立实现，详见 {@link #traced} 的说明。
+ * <p>
+ * <b>静态状态说明</b>：本类为静态工具（非 Spring bean），仅持有两项静态状态——
+ * {@link #llmTimeout}（启动时经 {@link #configure} 注入后不再变更）与
+ * {@link #LLM_EXECUTOR}（进程级虚拟线程执行器）。调用方以参数传入
+ * {@link QaTracing} / {@code ChatModel}，故无需实例化。
  */
 public final class LlmTrace {
 
@@ -135,9 +146,8 @@ public final class LlmTrace {
         if (cancelled != null && cancelled.getAsBoolean()) {
             throw new GenerationCancelledException("");
         }
-        Span span = tracing.beginGeneration(chat);
-        long start = System.currentTimeMillis();
-        try (Scope scope = span.makeCurrent()) {
+        String prompt = render(messages);
+        return traced(tracing, chat, "text", prompt, span -> {
             Prompt p = options == null ? new Prompt(messages) : new Prompt(messages, options);
             ChatResponse response = awaitWithTimeout("text", () -> {
                 if (cancelled != null && cancelled.getAsBoolean()) {
@@ -148,24 +158,8 @@ public final class LlmTrace {
             Usage usage = usageOf(response);
             QaTracing.setUsage(span, usage);
             TokenAccumulator.accumulate(TokenAccumulator.TYPE_TEXT, usage);
-            String text = response.getResult() == null || response.getResult().getOutput() == null
-                    ? "" : response.getResult().getOutput().getText();
-            writeIoAttrs(span, render(messages), text);
-            logDirect("text", QaTracing.modelName(chat), render(messages), text, System.currentTimeMillis() - start, usage);
-            return text;
-        } catch (Exception e) {
-            if (e instanceof LlmTimeoutException) {
-                span.setAttribute("llm.timeout", true);
-            }
-            if (e instanceof GenerationCancelledException) {
-                span.setAttribute("llm.cancelled", true);
-            }
-            span.recordException(e);
-            logDirectError("text", QaTracing.modelName(chat), render(messages), e, System.currentTimeMillis() - start);
-            throw e;
-        } finally {
-            span.end();
-        }
+            return new LlmOutcome(textOf(response), usage);
+        });
     }
 
     /** 流式调用（消息列表）：逐 token 回调 onDelta */
@@ -176,9 +170,8 @@ public final class LlmTrace {
     /** 流式调用（消息列表，可取消）：逐 token 回调 onDelta；cancelled 非空时每 token 检查。 */
     public static String stream(QaTracing tracing, ChatModel chat, List<Message> messages, Consumer<String> onDelta,
                                 BooleanSupplier cancelled) {
-        Span span = tracing.beginGeneration(chat);
-        long start = System.currentTimeMillis();
-        try (Scope scope = span.makeCurrent()) {
+        String prompt = render(messages);
+        return traced(tracing, chat, "stream", prompt, span -> {
             Usage[] lastUsage = new Usage[1];
             StringBuilder sb = new StringBuilder();
             String text = awaitWithTimeout("stream", () -> {
@@ -187,8 +180,7 @@ public final class LlmTrace {
                     if (usage != null) {
                         lastUsage[0] = usage;
                     }
-                    String t = response.getResult() == null || response.getResult().getOutput() == null
-                            ? null : response.getResult().getOutput().getText();
+                    String t = textOf(response);
                     if (t != null && !t.isEmpty()) {
                         sb.append(t);
                         if (cancelled != null && cancelled.getAsBoolean()) {
@@ -203,49 +195,20 @@ public final class LlmTrace {
             }, llmTimeout);
             QaTracing.setUsage(span, lastUsage[0]);
             TokenAccumulator.accumulate(TokenAccumulator.TYPE_TEXT, lastUsage[0]);
-            writeIoAttrs(span, render(messages), text);
-            logDirect("stream", QaTracing.modelName(chat), render(messages), text, System.currentTimeMillis() - start, lastUsage[0]);
-            return text;
-        } catch (Exception e) {
-            if (e instanceof LlmTimeoutException) {
-                span.setAttribute("llm.timeout", true);
-            }
-            if (e instanceof GenerationCancelledException) {
-                span.setAttribute("llm.cancelled", true);
-            }
-            span.recordException(e);
-            logDirectError("stream", QaTracing.modelName(chat), render(messages), e, System.currentTimeMillis() - start);
-            throw e;
-        } finally {
-            span.end();
-        }
+            return new LlmOutcome(text, lastUsage[0]);
+        });
     }
 
     /** 识图（多模态）调用：图片 + 提示词 → 文本描述，统计为 vision 类 token（media 二进制不记录） */
     public static String vision(QaTracing tracing, ChatModel chat, String prompt, Media media) {
-        Span span = tracing.beginGeneration(chat);
-        long start = System.currentTimeMillis();
-        try (Scope scope = span.makeCurrent()) {
+        return traced(tracing, chat, "vision", prompt, span -> {
             UserMessage message = UserMessage.builder().text(prompt).media(media).build();
             ChatResponse response = awaitWithTimeout("vision", () -> chat.call(new Prompt(message)), llmTimeout);
             Usage usage = usageOf(response);
             QaTracing.setUsage(span, usage);
             TokenAccumulator.accumulate(TokenAccumulator.TYPE_VISION, usage);
-            String text = response.getResult() == null || response.getResult().getOutput() == null
-                    ? "" : response.getResult().getOutput().getText();
-            writeIoAttrs(span, prompt, text);
-            logDirect("vision", QaTracing.modelName(chat), prompt, text, System.currentTimeMillis() - start, usage);
-            return text;
-        } catch (Exception e) {
-            if (e instanceof LlmTimeoutException) {
-                span.setAttribute("llm.timeout", true);
-            }
-            span.recordException(e);
-            logDirectError("vision", QaTracing.modelName(chat), prompt, e, System.currentTimeMillis() - start);
-            throw e;
-        } finally {
-            span.end();
-        }
+            return new LlmOutcome(textOf(response), usage);
+        });
     }
 
     /** 向量（Embedding）调用：返回 query 向量，统计为 embedding 类 token（输入截断 200 字符） */
@@ -360,6 +323,73 @@ public final class LlmTrace {
         LLM_LOG.debug("LLM {} call FAILED: model={} cost={}ms err={}",
                 category, model, costMs, e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
         LLM_LOG.debug("  prompt >>> {}", prompt);
+    }
+
+    /**
+     * 单次 LLM 调用的统一骨架：span 生命周期 + 异常分类 + I/O 记录。
+     * <p>
+     * 净收益是把此前在 {@code call} / {@code stream} / {@code vision} 各写一遍的
+     * 「建 span → makeCurrent → 执行 → 写 prompt/completion → 记日志 → 分类异常 → end span」
+     * 收敛到一处。三点必须保持的行为契约（已有 {@code LlmTraceBehaviorTest} 覆盖）：
+     * <ul>
+     *   <li>异常分类：{@link LlmTimeoutException} 落 {@code llm.timeout}、
+     *       {@link GenerationCancelledException} 落 {@code llm.cancelled}（Langfuse 据此区分失败原因）；</li>
+     *   <li>原始异常不被包装——调用方按具体类型 catch（如节点捕获取消以落库部分答案）；</li>
+     *   <li>{@code span.end()} 在正常与异常路径都必须执行，否则 trace 泄漏。</li>
+     * </ul>
+     * 成功时由 {@code invoke} 返回 {@link LlmOutcome}（文本 + usage），span 写入与日志在此统一完成，
+     * 调用方因此不必各自记得「写属性 + 打日志」这两步。
+     * <p>
+     * 注意：<b>向量调用（{@link #embed} / {@link #embedAll}）刻意不并入本骨架</b>——它们用
+     * {@code beginEmbedding} 建 span、只写输入不写输出（向量无文本），且 {@code embedAll} 还要分片，
+     * 强行合并反而要把差异塞进回调，降低可读性（违反重构目标 6）。
+     *
+     * @param category 日志与 span 语义上的调用类别（text / stream / vision）
+     * @param prompt   已渲染的 prompt 文本，用于 span 属性与 I/O 日志
+     * @param invoke   实际调用逻辑；返回文本与 usage，允许抛异常
+     */
+    private static String traced(QaTracing tracing, ChatModel chat, String category, String prompt,
+                                 Function<Span, LlmOutcome> invoke) {
+        Span span = tracing.beginGeneration(chat);
+        long start = System.currentTimeMillis();
+        try (Scope scope = span.makeCurrent()) {
+            LlmOutcome outcome = invoke.apply(span);
+            String text = outcome.text() == null ? "" : outcome.text();
+            writeIoAttrs(span, prompt, text);
+            logDirect(category, QaTracing.modelName(chat), prompt, text,
+                    System.currentTimeMillis() - start, outcome.usage());
+            return text;
+        } catch (Exception e) {
+            classifyFailure(span, e);
+            logDirectError(category, QaTracing.modelName(chat), prompt, e, System.currentTimeMillis() - start);
+            throw e;
+        } finally {
+            span.end();
+        }
+    }
+
+    /**
+     * 把失败原因标注到 span（Langfuse 据此区分「超时」「用户取消」「供应商报错」）。
+     * 独立成方法是为了让 {@link #traced} 主流程保持线性可读。
+     */
+    private static void classifyFailure(Span span, Exception e) {
+        if (e instanceof LlmTimeoutException) {
+            span.setAttribute("llm.timeout", true);
+        }
+        if (e instanceof GenerationCancelledException) {
+            span.setAttribute("llm.cancelled", true);
+        }
+        span.recordException(e);
+    }
+
+    /** 一次成功调用的产出：模型文本 + token 用量（供 {@link #traced} 统一记录） */
+    private record LlmOutcome(String text, Usage usage) {
+    }
+
+    /** 取响应文本（响应/结果/输出任一为空都归一为空串，避免调用方各自判空） */
+    private static String textOf(ChatResponse response) {
+        return response == null || response.getResult() == null || response.getResult().getOutput() == null
+                ? "" : response.getResult().getOutput().getText();
     }
 
     private static String render(List<Message> messages) {
