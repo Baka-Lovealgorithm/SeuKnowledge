@@ -59,7 +59,8 @@ import static org.mockito.Mockito.when;
  * 会同步执行，正好用于测试。LlmTrace.call 内部静态调用 chat.call —— 只需 mock ChatModel 即可驱动抽取。
  * <p>
  * 覆盖：全量成功（BOTH 双文档）/ 部分失败 / 全部失败 / 重抽指定文档 + DRAFT 草稿软删 /
- * 无 chunk 文档 / LLM 输出非法 JSON / 任务不存在静默返回 / PROGRESS_DB_BATCH 批量落库。
+ * 无 chunk 文档 / LLM 输出非法 JSON / 任务不存在静默返回 / PROGRESS_DB_BATCH 批量落库 /
+ * 文档状态校验拒绝 / 文档锁忙 / 循环外异常必落 FAILED 终态。
  */
 class ExtractTaskExecutorTest {
 
@@ -395,6 +396,36 @@ class ExtractTaskExecutorTest {
         assertTrue(task.getErrorLog().contains("正在被其他抽取任务处理"));
         assertEquals("PARTIAL_FAILED", task.getStatus());
         assertEquals("新增业务知识 1 条，问答对 0 条", task.getResultSummary());
+    }
+
+    // ===== P0：逐文档 try 之外的异常必须落终态 =====
+
+    /**
+     * 回归防护：文档循环之外的异常（此处为 workspaceIdResolver 抛错）此前只 setErrorLog 不落库，
+     * 而 task 是 startRun 独立事务提交后的游离态 → DB 永久停在 RUNNING，retry() 对 RUNNING 直接拒绝，
+     * 任务既无法重试也永远显示「执行中」。现要求：状态落 FAILED、写 finishedAt、errorLog 含「任务中止」。
+     */
+    @Test
+    void run_abortsBeforeDocLoop_persistsFailedTerminalState() {
+        ExtractTask task = task(13L, "[1]", "BUSINESS");
+        when(taskRepository.findById(13L)).thenReturn(Optional.of(task));
+        when(taskRepository.findByIdForUpdate(13L)).thenReturn(Optional.of(task));
+        when(workspaceIdResolver.resolve(KB_ID)).thenThrow(new RuntimeException("工作空间解析失败"));
+
+        executor.run(13L);
+
+        // 终态已落库：不再卡 RUNNING
+        assertEquals("FAILED", task.getStatus());
+        assertNotNull(task.getFinishedAt());
+        assertNotNull(task.getDurationMs());
+        assertNotNull(task.getErrorLog());
+        assertTrue(task.getErrorLog().contains("任务中止"));
+        assertTrue(task.getErrorLog().contains("工作空间解析失败"));
+        // 中止路径同样 save + 写进度 Hash，且 status 字段为 FAILED
+        verify(taskRepository, atLeast(2)).save(any());
+        verify(redisCacheService, atLeastOnce()).hset(eq(RedisKeys.task(13L)),
+                argThat((Map<String, String> fields) -> "FAILED".equals(fields.get(TaskProgressStore.H_STATUS))),
+                any());
     }
 
     // ===== 测试工具 =====

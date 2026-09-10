@@ -253,6 +253,30 @@ public class ExtractTaskExecutor {
             task.setErrorLog(errors.toString());
             root.recordException(e);
             log.error("抽取任务 {} 中止", task.getId(), e);
+            // 中止也必须落终态：task 来自 ExtractTaskTx.startRun（独立事务，返回即提交），
+            // 此处为游离态，不再 save 则 DB 永远停在 RUNNING——retry() 对 RUNNING 直接拒绝，
+            // 任务永久无法重试且界面永远显示「执行中」（token 统计与 finishedAt 一并丢失）。
+            // 与成功路径同样统计 token 并写 finishedAt，保证两个出口的落库字段一致。
+            try {
+                long[] totals = TokenAccumulator.totals();
+                task.setDurationMs(System.currentTimeMillis() - start);
+                task.setTokenInput(totals[0]);
+                task.setTokenOutput(totals[1]);
+                task.setTokenTotal(totals[2]);
+                // 异常可能发生在成功路径置终态之后（如最后一行的 save 抛错）：此时内存态已是
+                // SUCCESS/PARTIAL_FAILED，transition 只允许 RUNNING→终态，再调会抛 IllegalStateException。
+                // 仅在仍为 RUNNING 时才转换，避免落终态本身把原始异常顶掉。
+                if (TaskStatus.RUNNING.is(task.getStatus())) {
+                    task.transition(TaskStatus.FAILED);
+                }
+                task.setFinishedAt(LocalDateTime.now());
+                taskRepository.save(task);
+                progressStore.write(task);
+                log.info("抽取任务 {} 已落中止终态：{}", task.getId(), task.getStatus());
+            } catch (Exception persistError) {
+                // 落终态本身失败（DB 不可用等）不能反过来吞掉原始异常：仅告警，保留原始堆栈
+                log.error("抽取任务 {} 中止态落库失败：{}", task.getId(), persistError.getMessage());
+            }
         } finally {
             TokenAccumulator.flushToSpan(root);
             root.end();
