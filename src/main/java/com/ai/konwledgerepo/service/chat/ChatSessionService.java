@@ -231,6 +231,12 @@ public class ChatSessionService {
         return s;
     }
 
+    /**
+     * 缓存载体 → 实体。字段必须与 {@link ChatMessageResponse#from} 一一对应：
+     * 本方法漏映射的字段，会在「命中 Redis 缓存」时静默变 null、未命中时又有值
+     * （即同一会话刷新两次结果不同——历史上 interrupted 就丢过，前端「已停止」标记随机消失）。
+     * sessionId 不在响应体内，缓存路径下取不到，故本方法产出的实体不可用于业务判定。
+     */
     private ChatMessage toMessage(ChatMessageResponse r) {
         ChatMessage m = new ChatMessage();
         m.setId(r.id());
@@ -238,6 +244,13 @@ public class ChatSessionService {
         m.setContent(r.content());
         m.setRefs(r.refs());
         m.setCreatedAt(r.createdAt());
+        m.setInterrupted(r.interrupted());
+        m.setIntent(r.intent());
+        m.setFeedback(r.feedback());
+        m.setFeedbackReason(r.feedbackReason());
+        m.setFeedbackNote(r.feedbackNote());
+        m.setVerifyScore(r.verifyScore());
+        m.setFaithfulnessScore(r.faithfulnessScore());
         return m;
     }
 }

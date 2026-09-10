@@ -1,6 +1,7 @@
 package com.ai.konwledgerepo.service.chat;
 
 import com.ai.konwledgerepo.dto.AskResponse;
+import com.ai.konwledgerepo.dto.FeedbackRequest;
 import com.ai.konwledgerepo.entity.ChatMessage;
 import com.ai.konwledgerepo.entity.ChatSession;
 import org.springframework.stereotype.Service;
@@ -16,6 +17,7 @@ import java.util.List;
  *   <li>问答结果落库（事务边界） → {@link ChatMessageStore}</li>
  *   <li>同步问答（状态图，实时上下文） → {@link QaAnswerService}</li>
  *   <li>流式问答（SSE + @Async） → {@link ChatStreamService}</li>
+ *   <li>答案评价（点赞/点踩） → {@link MessageFeedbackService}</li>
  * </ul>
  */
 @Service
@@ -24,13 +26,16 @@ public class ChatService {
     private final ChatSessionService sessionService;
     private final QaAnswerService answerService;
     private final ChatStreamService streamService;
+    private final MessageFeedbackService feedbackService;
 
     public ChatService(ChatSessionService sessionService,
                        QaAnswerService answerService,
-                       ChatStreamService streamService) {
+                       ChatStreamService streamService,
+                       MessageFeedbackService feedbackService) {
         this.sessionService = sessionService;
         this.answerService = answerService;
         this.streamService = streamService;
+        this.feedbackService = feedbackService;
     }
 
     /** 创建会话：校验知识库属于当前工作空间 */
@@ -72,5 +77,10 @@ public class ChatService {
     public void cancelAsk(Long sessionId, Long userId, Long workspaceId) {
         sessionService.getSession(sessionId, userId, workspaceId); // 校验归属
         streamService.cancel(sessionId);
+    }
+
+    /** 评价答案（点赞/点踩/撤销）：仅提问本人可评，校验在 MessageFeedbackService 内复用会话归属 */
+    public void rateMessage(Long messageId, FeedbackRequest request, Long userId, Long workspaceId) {
+        feedbackService.rate(messageId, request, userId, workspaceId);
     }
 }

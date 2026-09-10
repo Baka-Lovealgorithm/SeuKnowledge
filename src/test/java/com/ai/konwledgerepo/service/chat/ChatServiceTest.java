@@ -123,7 +123,8 @@ class ChatServiceTest {
         QaAnswerService answerService = new QaAnswerService(executionService);
         ChatStreamService streamService = new ChatStreamService(
                 executionService, sessionService, messageStore, summaryService);
-        service = new ChatService(sessionService, answerService, streamService);
+        // 反馈域不在本测试路径上（点踩有独立的 MessageFeedbackServiceTest），门面对其只做转发
+        service = new ChatService(sessionService, answerService, streamService, mock(MessageFeedbackService.class));
         when(sessionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(messageRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
     }
@@ -310,8 +311,10 @@ class ChatServiceTest {
         LocalDateTime ts = LocalDateTime.of(2025, 1, 1, 10, 0);
         when(redisCacheService.getList(eq(RedisKeys.messages(SESSION_ID)), eq(ChatMessageResponse.class)))
                 .thenReturn(Optional.of(List.of(
-                        new ChatMessageResponse(1L, "USER", "你好", null, ts, false),
-                        new ChatMessageResponse(2L, "ASSISTANT", "答案", "[{\"chunkId\":1}]", ts, false))));
+                        new ChatMessageResponse(1L, "USER", "你好", null, ts, false,
+                                null, null, null, null, null, null),
+                        new ChatMessageResponse(2L, "ASSISTANT", "答案", "[{\"chunkId\":1}]", ts, true,
+                                "BUSINESS", "DOWN", "OUTDATED", "太旧了", 0.6, 0.5))));
 
         List<ChatMessage> msgs = service.messages(SESSION_ID, USER_ID, WS_ID);
 
@@ -320,6 +323,14 @@ class ChatServiceTest {
         assertEquals("USER", msgs.get(0).getRole());
         assertEquals("[{\"chunkId\":1}]", msgs.get(1).getRefs());
         assertEquals(ts, msgs.get(1).getCreatedAt());
+        // 缓存路径必须与 DB 路径返回同一组字段：这里漏映射的列会在"命中缓存"时静默变 null
+        assertEquals(Boolean.TRUE, msgs.get(1).getInterrupted(), "interrupted 不得在缓存路径丢失（历史缺陷）");
+        assertEquals("BUSINESS", msgs.get(1).getIntent());
+        assertEquals("DOWN", msgs.get(1).getFeedback());
+        assertEquals("OUTDATED", msgs.get(1).getFeedbackReason());
+        assertEquals("太旧了", msgs.get(1).getFeedbackNote());
+        assertEquals(0.6, msgs.get(1).getVerifyScore());
+        assertEquals(0.5, msgs.get(1).getFaithfulnessScore());
         verify(messageRepository, never()).findBySessionIdOrderByIdAsc(any());
         verify(redisCacheService, never()).setList(anyString(), any(), any(Duration.class));
     }

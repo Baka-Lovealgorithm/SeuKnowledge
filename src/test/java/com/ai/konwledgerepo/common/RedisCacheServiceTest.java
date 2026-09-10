@@ -51,7 +51,7 @@ class RedisCacheServiceTest {
     @Test
     void setAndGet_roundTripsRecordWithLocalDateTime() {
         ChatMessageResponse msg = new ChatMessageResponse(1L, "USER", "你好", "[]",
-                LocalDateTime.of(2025, 1, 1, 10, 30), false);
+                LocalDateTime.of(2025, 1, 1, 10, 30), false, null, null, null, null, null, null);
 
         service.set("k", msg, Duration.ofSeconds(60));
 
@@ -68,7 +68,8 @@ class RedisCacheServiceTest {
     @Test
     void setAndGet_roundTripsGenericList() {
         List<ChatMessageResponse> list = List.of(
-                new ChatMessageResponse(1L, "USER", "q1", null, LocalDateTime.now(), false));
+                new ChatMessageResponse(1L, "USER", "q1", null, LocalDateTime.now(), false,
+                        null, null, null, null, null, null));
 
         service.set("k", list, Duration.ofSeconds(60));
         ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
@@ -81,6 +82,27 @@ class RedisCacheServiceTest {
         assertTrue(got.isPresent());
         assertEquals(1, got.get().size());
         assertEquals("q1", got.get().get(0).content());
+    }
+
+    /**
+     * 缓存兼容（点踩上线）：Redis 里可能还躺着上一版本写的载荷（少 feedback/快照等字段）。
+     * 新代码必须能读出来——缺失属性传 null，而不是解析失败把整页历史打回 DB。
+     * 这也顺带证明回滚方向安全：旧代码读新缓存时多出的属性被忽略（Boot 默认不开 FAIL_ON_UNKNOWN）。
+     */
+    @Test
+    void getList_oldCachePayloadWithoutNewFieldsStillDeserializes() {
+        String legacyPayload = "[{\"id\":2,\"role\":\"ASSISTANT\",\"content\":\"老答案\",\"refs\":\"[]\","
+                + "\"createdAt\":\"2025-01-01T10:30:00\",\"interrupted\":false}]";
+        when(valueOps.get("msgs:2")).thenReturn(legacyPayload);
+
+        Optional<List<ChatMessageResponse>> got = service.getList("msgs:2", ChatMessageResponse.class);
+
+        assertTrue(got.isPresent(), "旧版本缓存载荷缺新字段时仍应可读，不该 fail-open 打回 DB");
+        ChatMessageResponse m = got.get().get(0);
+        assertEquals("老答案", m.content());
+        assertEquals(Boolean.FALSE, m.interrupted());
+        assertNull(m.feedback(), "缺失的 feedback 应为 null（未评价）");
+        assertNull(m.verifyScore(), "缺失的自检快照应为 null，不能被读成 0");
     }
 
     @Test

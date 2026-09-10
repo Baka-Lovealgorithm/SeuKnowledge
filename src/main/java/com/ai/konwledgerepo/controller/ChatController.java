@@ -10,6 +10,7 @@ import com.ai.konwledgerepo.dto.AskResponse;
 import com.ai.konwledgerepo.dto.ChatMessageResponse;
 import com.ai.konwledgerepo.dto.ChatSessionCreateRequest;
 import com.ai.konwledgerepo.dto.ChatSessionResponse;
+import com.ai.konwledgerepo.dto.FeedbackRequest;
 import com.ai.konwledgerepo.dto.RenameRequest;
 import com.ai.konwledgerepo.entity.ChatSession;
 import com.ai.konwledgerepo.service.chat.AskGate;
@@ -125,6 +126,20 @@ public class ChatController {
                                        @RequestAttribute("userId") Long userId,
                                        @RequestAttribute("workspaceId") Long workspaceId) {
         chatService.cancelAsk(id, userId, workspaceId);
+        return ApiResponse.ok();
+    }
+
+    /**
+     * 评价一条答案：rating=UP/DOWN 采集，NONE 撤销。
+     * 权限复用会话归属（只有提问本人可评自己会话里的答案），跨用户/跨空间会拿到 403。
+     * 消息 id 来自 ask 响应的 messageId 或 SSE done 事件的 data.messageId。
+     */
+    @PostMapping("/message/{id}/feedback")
+    public ApiResponse<Void> rateMessage(@PathVariable Long id,
+                                         @RequestBody @Valid FeedbackRequest request,
+                                         @RequestAttribute("userId") Long userId,
+                                         @RequestAttribute("workspaceId") Long workspaceId) {
+        chatService.rateMessage(id, request, userId, workspaceId);
         return ApiResponse.ok();
     }
 
