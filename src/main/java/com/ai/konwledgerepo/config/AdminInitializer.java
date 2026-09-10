@@ -11,6 +11,7 @@ import com.ai.konwledgerepo.repository.ModelConfigRepository;
 import com.ai.konwledgerepo.repository.SysUserRepository;
 import com.ai.konwledgerepo.repository.WorkspaceMemberRepository;
 import com.ai.konwledgerepo.repository.WorkspaceRepository;
+import com.ai.konwledgerepo.security.Roles;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.CommandLineRunner;
@@ -65,7 +66,7 @@ public class AdminInitializer implements CommandLineRunner {
             SysUser user = new SysUser();
             user.setUsername(adminUsername);
             user.setPassword(passwordEncoder.encode(securityProps.adminPassword()));
-            user.setRole("ADMIN");
+            user.setRole(Roles.ADMIN);
             user.setEnabled(true);
             userRepository.save(user);
             log.info("已初始化内置管理员账号 {}（请尽快修改密码）", adminUsername);

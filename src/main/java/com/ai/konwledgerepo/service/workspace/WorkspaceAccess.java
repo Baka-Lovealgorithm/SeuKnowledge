@@ -43,8 +43,12 @@ import java.util.stream.Collectors;
  *       （GET/HEAD/OPTIONS 为读，其余为写）；无请求上下文（异步线程、单元测试）
  *       时仅归属校验，保证系统内部任务不受影响；</li>
  *   <li>{@link #requireKbAccess}/{@link #requireDocAccess}：显式 ACL——调用方传入
- *       userId 与读写语义，用于问答热路径等 method 语义与真实读写不一致的场景。</li>
+ *       userId 与读写语义，用于问答热路径等 method 语义与真实读写不一致的场景。
+ *       二者不经过自动 ACL（不做 method 推断），仅按传入的 write 语义判定一次。</li>
  * </ul>
+ * <p>
+ * 另提供 {@link #canEdit} 作为「只读判定」：不抛异常，供列表接口按用户回吐可编辑标记，
+ * 与写路径的 ACL 判定共用 {@link #effectivePermission} 同一口径，避免前后端两套规则。
  */
 @Component
 public class WorkspaceAccess {
@@ -70,44 +74,85 @@ public class WorkspaceAccess {
         this.groupRepository = groupRepository;
     }
 
-    /** 校验知识库存在且属于当前工作空间，返回该知识库 */
+    /** 校验知识库存在且属于当前工作空间，返回该知识库（含自动 ACL） */
     public KnowledgeBase requireKb(Long kbId, Long workspaceId) {
-        KnowledgeBase kb = kbRepository.findById(kbId)
-                .orElseThrow(() -> new BizException("知识库不存在"));
-        if (kb.getWorkspaceId() != null && !kb.getWorkspaceId().equals(workspaceId)) {
-            throw new BizException(ErrorCodes.FORBIDDEN, "无权访问该知识库");
-        }
+        KnowledgeBase kb = loadKbInWorkspace(kbId, workspaceId);
         applyAutoAcl(kb, workspaceId);
         return kb;
     }
 
     /**
      * 完整鉴权（归属 + ACL）：显式指定调用者与读写语义。
+     * <p>
+     * 实现上直接查库并只做一次 ACL 判定，不委托 {@link #requireKb}——后者会额外跑一次
+     * 基于 HTTP method 的自动 ACL，对显式路径既冗余又可能在 method 语义与传参不一致时误伤
+     * （如 POST + write=false 的只读接口被 method 推断当成写而拒绝）。
      *
      * @param write 写语义：true 要求 EDIT 授权；false 要求 VIEW 或 EDIT 授权
      */
     public KnowledgeBase requireKbAccess(Long kbId, Long workspaceId, Long userId, boolean write) {
-        KnowledgeBase kb = requireKb(kbId, workspaceId);
+        KnowledgeBase kb = loadKbInWorkspace(kbId, workspaceId);
         if (userId != null) {
             checkAcl(kb, workspaceId, userId, write);
         }
         return kb;
     }
 
-    /** 校验文档存在且其知识库属于当前工作空间 */
+    /** 校验文档存在且其知识库属于当前工作空间（含自动 ACL） */
     public Document requireDoc(Long docId, Long workspaceId) {
-        Document doc = documentRepository.findById(docId)
-                .orElseThrow(() -> new BizException("文档不存在"));
+        Document doc = loadDoc(docId);
         requireKb(doc.getKbId(), workspaceId);
         return doc;
     }
 
-    /** 完整鉴权（归属 + ACL）的文档版本 */
+    /** 完整鉴权（归属 + ACL）的文档版本（单次 ACL 判定） */
     public Document requireDocAccess(Long docId, Long workspaceId, Long userId, boolean write) {
-        Document doc = documentRepository.findById(docId)
-                .orElseThrow(() -> new BizException("文档不存在"));
+        Document doc = loadDoc(docId);
         requireKbAccess(doc.getKbId(), workspaceId, userId, write);
         return doc;
+    }
+
+    /**
+     * 只读的可编辑判定（不抛异常）：与写路径同一口径。
+     * 供列表接口回吐 canEdit 使用，使前端按行渲染按钮与服务端写校验保持一致。
+     *
+     * @return true 表示该用户对该知识库具备写权限（管理员/创建者/EDIT 授权）
+     */
+    public boolean canEdit(KnowledgeBase kb, Long workspaceId, Long userId) {
+        if (kb == null || userId == null) {
+            return false;
+        }
+        return "EDIT".equals(effectivePermission(kb, workspaceId, userId));
+    }
+
+    /**
+     * 可编辑判定（字段版）：供只有 id / 可见性 / 创建者的场景复用，避免为判定构造实体。
+     * 与 {@link #canEdit(KnowledgeBase, Long, Long)} 共用同一 {@link #effectivePermission} 口径。
+     */
+    public boolean canEdit(Long kbId, Long workspaceId, Long userId, Long createdBy, String visibility) {
+        if (kbId == null || userId == null) {
+            return false;
+        }
+        KnowledgeBase probe = new KnowledgeBase();
+        probe.setId(kbId);
+        probe.setVisibility(visibility);
+        probe.setCreatedBy(createdBy);
+        return "EDIT".equals(effectivePermission(probe, workspaceId, userId));
+    }
+
+    /** 知识库加载 + 工作空间归属校验（不含 ACL） */
+    private KnowledgeBase loadKbInWorkspace(Long kbId, Long workspaceId) {
+        KnowledgeBase kb = kbRepository.findById(kbId)
+                .orElseThrow(() -> new BizException("知识库不存在"));
+        if (kb.getWorkspaceId() != null && !kb.getWorkspaceId().equals(workspaceId)) {
+            throw new BizException(ErrorCodes.FORBIDDEN, "无权访问该知识库");
+        }
+        return kb;
+    }
+
+    private Document loadDoc(Long docId) {
+        return documentRepository.findById(docId)
+                .orElseThrow(() -> new BizException("文档不存在"));
     }
 
     /**
@@ -144,16 +189,34 @@ public class WorkspaceAccess {
      * 合并规则 = 取最高权限：任一来源给到 EDIT 即可编辑，只有全部来源都是 VIEW 才算只读。
      */
     private void checkAcl(KnowledgeBase kb, Long workspaceId, Long userId, boolean write) {
+        String effective = effectivePermission(kb, workspaceId, userId);
+        if (effective == null) {
+            throw new BizException(ErrorCodes.FORBIDDEN, "无权访问该知识库");
+        }
+        if (write && !"EDIT".equals(effective)) {
+            throw new BizException(ErrorCodes.FORBIDDEN, "无权编辑该知识库（仅授权只读）");
+        }
+    }
+
+    /**
+     * 计算用户对知识库的有效权限（"EDIT" / "VIEW" / null=无权）。
+     * 与 {@link #checkAcl} 同源，供 {@link #canEdit} 等只读判定复用，保证口径唯一。
+     */
+    private String effectivePermission(KnowledgeBase kb, Long workspaceId, Long userId) {
         String role = memberRepository.findByWorkspaceIdAndUserId(workspaceId, userId)
                 .map(WorkspaceMember::getRole).orElse(null);
         if (Roles.OWNER.equals(role) || Roles.ADMIN.equals(role)) {
-            return; // 管理员兜底
+            return "EDIT"; // 管理员兜底
+        }
+        if (role == null) {
+            return null; // 非本空间成员：无任何权限
         }
         if (kb.getCreatedBy() != null && kb.getCreatedBy().equals(userId)) {
-            return; // 创建者委派
+            return "EDIT"; // 创建者委派
         }
         if (!KbVisibility.isRestricted(kb.getVisibility())) {
-            return; // PUBLIC：空间成员按角色访问
+            // PUBLIC：空间成员按角色访问；EDITOR 及以上可写，MEMBER 只读
+            return Roles.EDITOR.equals(role) ? "EDIT" : "VIEW";
         }
         // RESTRICTED：双粒度——user 直授 ∪ 所在组授权，取最高权限
         String effective = userGrant(kb.getId(), userId);
@@ -163,12 +226,7 @@ public class WorkspaceAccess {
                 effective = higher(effective, groupGrants.get(groupId));
             }
         }
-        if (effective == null) {
-            throw new BizException(ErrorCodes.FORBIDDEN, "无权访问该知识库");
-        }
-        if (write && !"EDIT".equals(effective)) {
-            throw new BizException(ErrorCodes.FORBIDDEN, "无权编辑该知识库（仅授权只读）");
-        }
+        return effective;
     }
 
     /** user 级直授权限（无命中返回 null） */

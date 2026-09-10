@@ -24,9 +24,11 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -287,6 +289,61 @@ class WorkspaceAccessTest {
 
         // 显式读语义：VIEW 授权通过
         assertSame(doc, access.requireDocAccess(7L, WS, USER, false));
+    }
+
+    @Test
+    void requireKbAccess_explicitReadOnPostRequest_notMisjudgedAsWrite() {
+        // 回归：显式路径不得叠加 HTTP method 推断。POST + write=false 若被当成写，
+        // 只有 VIEW 授权的用户会被 method 推断先行拒绝（ChunkReviewController 的 POST 只读接口即此形态）。
+        when(kbRepo.findById(1L)).thenReturn(Optional.of(restrictedKb(1L, WS, 99L)));
+        when(memberRepo.findByWorkspaceIdAndUserId(WS, USER)).thenReturn(Optional.of(member("MEMBER")));
+        KbAccess acl = new KbAccess();
+        acl.setKbId(1L);
+        acl.setGranteeType("USER");
+        acl.setGranteeId(USER);
+        acl.setPermission("VIEW");
+        when(accessRepo.findByKbIdAndGranteeTypeAndGranteeId(1L, "USER", USER)).thenReturn(Optional.of(acl));
+
+        request("POST", USER); // 请求线程存在，但显式 read 语义应主导
+        assertSame(1L, access.requireKbAccess(1L, WS, USER, false).getId());
+
+        // 同请求下显式 write 仍应被拒（VIEW 不足）
+        BizException ex = assertThrows(BizException.class,
+                () -> access.requireKbAccess(1L, WS, USER, true));
+        assertEquals(403, ex.getCode());
+    }
+
+    @Test
+    void canEdit_matchesWriteAcl_forAdminCreatorAndEditor() {
+        KnowledgeBase kb = restrictedKb(1L, WS, 99L);
+        when(kbRepo.findById(1L)).thenReturn(Optional.of(kb));
+
+        // 空间 ADMIN：可编辑
+        when(memberRepo.findByWorkspaceIdAndUserId(WS, USER)).thenReturn(Optional.of(member("ADMIN")));
+        assertTrue(access.canEdit(kb, WS, USER));
+
+        // 创建者：可编辑
+        assertTrue(access.canEdit(restrictedKb(1L, WS, USER), WS, USER));
+
+        // 普通成员但无授权：不可编辑
+        when(memberRepo.findByWorkspaceIdAndUserId(WS, USER)).thenReturn(Optional.of(member("MEMBER")));
+        when(accessRepo.findByKbIdAndGranteeTypeAndGranteeId(1L, "USER", USER)).thenReturn(Optional.empty());
+        when(accessRepo.findByKbIdAndGranteeType(1L, "GROUP")).thenReturn(List.of());
+        assertFalse(access.canEdit(kb, WS, USER));
+
+        // 字段版口径一致（供列表接口按行回吐）
+        assertFalse(access.canEdit(1L, WS, USER, 99L, "RESTRICTED"));
+    }
+
+    @Test
+    void canEdit_publicKb_editorYesMemberNo() {
+        KnowledgeBase kb = kb(1L, WS);
+
+        when(memberRepo.findByWorkspaceIdAndUserId(WS, USER)).thenReturn(Optional.of(member("EDITOR")));
+        assertTrue(access.canEdit(kb, WS, USER), "PUBLIC 库 EDITOR 可写");
+
+        when(memberRepo.findByWorkspaceIdAndUserId(WS, USER)).thenReturn(Optional.of(member("MEMBER")));
+        assertFalse(access.canEdit(kb, WS, USER), "PUBLIC 库 MEMBER 只读（写接口另有 EDITOR+ 拦截）");
     }
 
     // ===== 组级别授权（双粒度） =====
