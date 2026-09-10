@@ -19,7 +19,7 @@ public class Document extends BaseEntity {
     @Column(name = "file_name", nullable = false, length = 255)
     private String fileName;
 
-    /** txt / md / pdf */
+    /** txt / md / html / pdf / docx / pptx / xlsx / xls（见 DocumentParserService 的分发 switch） */
     @Column(name = "file_type", nullable = false, length = 10)
     private String fileType;
 
@@ -29,7 +29,12 @@ public class Document extends BaseEntity {
     @Column(name = "file_size")
     private Long fileSize;
 
-    /** 解析状态：PENDING / PARSING / SUCCESS / FAILED */
+    /**
+     * 解析状态（取值见 {@link DocStatus}，共 5 态）：
+     * PENDING 待解析 / PARSING 解析中 / SUCCESS 解析成功（含向量化进行中）/
+     * FAILED 解析失败（含 LlamaParse、识图、清空无有效块等）/ ERROR 向量化失败（解析成功但 embedding 未完成，可「重建向量」原地修复）。
+     * 注意别按 4 态写判断——漏掉 ERROR 会让「向量失败后重建」的复位逻辑失效。
+     */
     @Column(name = "parse_status", nullable = false, length = 20)
     private String parseStatus = DocStatus.PENDING.value();
 

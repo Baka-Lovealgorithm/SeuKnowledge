@@ -43,10 +43,17 @@ public class DocumentCleanService {
 
     /**
      * 清洗处置。注意「落 MySQL」与「进 ES」是两件事，别混为一谈：
-     * AUTO_DROP=丢弃（落 MySQL 记 FILTERED，永不进 ES）；
-     * SUSPECT=打标待人工（落 MySQL、{@code status=EMBEDDING}，但按 DEFER 决策暂不进 ES，
-     * 精修「保留/编辑」后由 {@code VectorIngestionService.reindexChunk} 单条补索引）；
-     * KEEP=规则未处置、仅统计（正常落库并正常进 ES）。
+     * <ul>
+     *   <li>AUTO_DROP=丢弃。落 MySQL 记 {@code status=FILTERED} 留痕，<b>永不进 ES</b>；
+     *       也因此<b>不进 {@link ChunkCleanResult#kept()}</b>。</li>
+     *   <li>SUSPECT=打标待人工。进 kept 落 MySQL、{@code status=EMBEDDING} 并带 clean_status=SUSPECT，
+     *       但按 DEFER 决策<b>暂不进 ES</b>；精修「保留/编辑」后由
+     *       {@code VectorIngestionService.reindexChunk} 单条补索引。</li>
+     *   <li>KEEP=命中了规则、但规则不在 autoDrop/suspect 任何名单里。意思是"认得出来、不处置"，
+     *       默认放行：进 kept、落 MySQL、正常进 ES，仅计入统计。
+     *       <b>它不等于"未命中规则"</b>——未命中（{@code evaluate} 返回 null）的 chunk 压根不进 outcomes，
+     *       两者都进 kept，但来源不同。</li>
+     * </ul>
      */
     public enum Disposition { AUTO_DROP, SUSPECT, KEEP }
 
@@ -54,7 +61,13 @@ public class DocumentCleanService {
     public record CleanOutcome(ChunkPiece piece, String ruleId, Disposition disposition, String reason) {
     }
 
-    /** chunk 级清洗结果：kept 为落 MySQL 列表（含 SUSPECT 标记项，但 SUSPECT 不进 ES），outcomes 为全部判定（含 AUTO_DROP） */
+    /**
+     * chunk 级清洗结果。
+     * {@code kept}=落 MySQL 名单，含<b>SUSPECT 标记项与 KEEP 项</b>（二者都会写 kb_chunk），
+     * 但 SUSPECT 仍不进 ES（DEFER）；AUTO_DROP 与「未命中规则」不在 outcomes 里的是两回事，
+     * 前者不进 kept、后者进 kept。
+     * {@code outcomes}=全部命中规则的判定（含 AUTO_DROP）。
+     */
     public record ChunkCleanResult(List<ChunkPiece> kept, List<CleanOutcome> outcomes) {
     }
 

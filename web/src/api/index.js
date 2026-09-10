@@ -45,7 +45,7 @@ export const docApi = {
   reindex: (id) => http.post(`/documents/${id}/reindex`)
 }
 
-/** 文档初洗/精修（原"文档策展"）：初洗（读队列/md/chunk + 写 md/接受）与精修（edit/drop/keep/unkeep/merge/confirm） */
+/** 文档初洗/精修：初洗（读队列/md/chunk + 写 md/接受）与精修（edit/drop/keep/unkeep/merge/confirm） */
 export const curateApi = {
   info: (id) => http.get(`/documents/${id}/curate`),
   queue: (kbId) => http.get(`/kb/${kbId}/curate/queue`),
@@ -61,7 +61,7 @@ export const curateApi = {
   mergeChunk: (id, data) => http.post(`/documents/${id}/curate/chunks/merge`, data)
 }
 
-/** 文档精修（原"清洗复核"）：待审核（SUSPECT）块 保留/编辑/删除/回退待审核/批量 */
+/** 文档精修（普通文档 SUSPECT 复核入口）：待审核（SUSPECT）块 保留/编辑/删除/回退待审核/批量 */
 export const reviewApi = {
   suspectQueue: (kbId) => http.get(`/kb/${kbId}/chunks/suspect`),
   keep: (id) => http.post(`/chunks/${id}/review/keep`),

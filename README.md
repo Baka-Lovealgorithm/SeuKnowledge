@@ -1,6 +1,6 @@
 # SeuKnowledge 知识库与智能问答平台
 
-通用型知识库与智能问答平台：知识资产统一管理 + 基于知识库证据的、可追溯的多节点智能问答。文档 / 业务知识 / 问答对统一入库，问答走 9 节点状态图（意图路由 → 问题改写 → 多源召回 → 交叉编码器精排 → 答案生成 → 自检 → 重试兜底，另有闲聊兜底与合并收口两个出口节点），全程 SSE 流式输出并附证据引用。
+通用型知识库与智能问答平台：知识资产统一管理 + 基于知识库证据的、可追溯的多节点智能问答。文档 / 业务知识 / 问答对统一入库，问答走 10 节点状态图（意图路由 → 问题改写 → 多源召回 → 交叉编码器精排 → 答案生成 → 自检 → 重试兜底，另有闲聊兜底、合并收口两个出口节点与终结节点 TERMINAL），全程 SSE 流式输出并附证据引用。
 
 ## 功能亮点
 
@@ -184,12 +184,12 @@ npm run dev
 |---|---|---|
 | `SERVER_PORT` | 18080 | 后端端口 |
 | `KB_TOKEN_TTL` | 604800 | 登录 token 有效期（秒） |
-| `KB_CACHE_MEMBER_TTL` / `KB_CACHE_MODEL_TTL` / `KB_CACHE_AGENT_TTL` / `KB_CACHE_KB_TTL` / `KB_CACHE_KB_COUNT_TTL` / `KB_CACHE_SESSION_TTL` / `KB_CACHE_HISTORY_TTL` / `KB_CACHE_TASK_TTL` | 300 / 600 / 600 / 300 / 300 / 60 / 600 / 86400 | 各类缓存 TTL（秒） |
-| `KB_RATE_LIMIT_ENABLED` / `KB_RATE_LIMIT_ASK_PER_MINUTE` | false / 30 | 问答限流开关与每用户每分钟上限 |
+| `KB_CACHE_MEMBER_TTL` / `KB_CACHE_MODEL_TTL` / `KB_CACHE_AGENT_TTL` / `KB_CACHE_KB_TTL` / `KB_CACHE_KB_COUNT_TTL` / `KB_CACHE_KB_LIST_TTL` / `KB_CACHE_SESSION_TTL` / `KB_CACHE_HISTORY_TTL` / `KB_CACHE_TASK_TTL` | 300 / 600 / 600 / 300 / 300 / 60 / 60 / 600 / 86400 | 各类缓存 TTL（秒） |
+| `KB_RATE_LIMIT_ENABLED` / `KB_RATE_LIMIT_ASK_PER_MINUTE` | true / 30 | 问答限流开关与每用户每分钟上限（默认开启） |
 | `KB_FILE_STORAGE_PATH` | ./data/files | 文档存储目录 |
 | `KB_FILE_MAX_SIZE` | 20971520 (20MB) | 单文件大小上限（字节，与 multipart 上限对齐；上传超大文件需调大） |
 | `KB_QA_MESSAGE_WINDOW` / `KB_QA_MAX_RETRY` | 20 / 2 | 对话记忆窗口条数 / 自检重试上限 |
-| `KB_RERANK_CHUNK_TOP` / `KB_RERANK_OTHER_TOP` | 4 / 4 | 精排配额（文档 chunk / 业务知识+问答对合并；**重排模型本身在模型配置页配置**） |
+| `KB_RERANK_CHUNK_TOP` / `KB_RERANK_OTHER_TOP` | 6 / 4 | 精排配额（文档 chunk / 业务知识+问答对合并；**重排模型本身在模型配置页配置**） |
 | `KB_RERANK_MAX_DOCS` / `KB_RERANK_MAX_CHARS` / `KB_RERANK_TIMEOUT_MS` | 20 / 1500 / 10000 | 精排单请求上限 / 单条截断 / 超时（超时自动降级 ES 分） |
 | `KB_CHUNK_SIZE` / `KB_CHUNK_OVERLAP` | 800 / 120 | 文档分块大小（字符）与重叠（标题感知分块） |
 | `KB_VISION_PARSING` | true | PDF 识图总开关（需配置 VISION 类型模型） |
@@ -218,7 +218,7 @@ npm run dev
 ## 测试
 
 ```bash
-# 纯单元测试（878 个，无需外部依赖，mock 隔离）
+# 纯单元测试（无需外部依赖，mock 隔离）
 # 注意：裸跑 mvnw test 会把下面 4 个集成用例一起跑，未激活 dev profile 时会因空密码失败
 .\mvnw.cmd test "-Dtest=!KonwledgeRepoApplicationTests,!ChatMessageStoreConcurrencyTest" -DfailIfNoTests=false
 
@@ -226,4 +226,4 @@ npm run dev
 $env:SPRING_PROFILES_ACTIVE='dev'; .\mvnw.cmd test
 ```
 
-当前 **74 个测试类、882 个用例**（分块器与标题祖先链、LlamaParse 表格解析、代码围栏分块、Excel 本地解析、文档解析、文档重命名/重建向量/文件名校验、向量化状态回写与线程池装配、模型解析/配置、模型类型×用途组合矩阵、标题槽位解析链（含历史 `TITLE` 类型兼容）、知识库、会话与滚动摘要、抽取任务、多工作空间成员管理、空间组管理与权限取高、重排客户端/节点、标题生成、答案自检两阶段聚合（并行/串行两路一致）、答案评价（越权拒绝 / 撤销 / 只写反馈列 / 消息缓存失效）、点踩汇总口径（踩率分母、无快照时均值留空、无知识库短路、明细批量取问题不逐行）、旧版本缓存载荷兼容等）。其中 2 个 `@SpringBootTest` 集成测试类（4 个用例）需 MySQL/Redis 环境，纯单元测试 878 个全绿。
+当前 **73 个测试类、892 个用例**（分块器与标题祖先链、LlamaParse 表格解析、代码围栏分块、Excel 本地解析、文档解析、文档重命名/重建向量/文件名校验、向量化状态回写与线程池装配、模型解析/配置、模型类型×用途组合矩阵、标题槽位解析链（含历史 `TITLE` 类型兼容）、知识库、会话与滚动摘要、抽取任务、多工作空间成员管理、空间组管理与权限取高、重排客户端/节点、标题生成、答案自检两阶段聚合（并行/串行两路一致）、答案评价（越权拒绝 / 撤销 / 只写反馈列 / 消息缓存失效）、点踩汇总口径（踩率分母、无快照时均值留空、无知识库短路、明细批量取问题不逐行）、旧版本缓存载荷兼容等）。其中 2 个 `@SpringBootTest` 集成测试类（4 个用例）需 MySQL/Redis 环境，纯单元测试 888 个全绿。
