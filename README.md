@@ -214,11 +214,12 @@ npm run dev
 ## 测试
 
 ```bash
-# 纯单元测试（757 个，无需外部依赖，mock 隔离）
-mvn test
+# 纯单元测试（844 个，无需外部依赖，mock 隔离）
+# 注意：裸跑 mvnw test 会把下面 4 个集成用例一起跑，未激活 dev profile 时会因空密码失败
+.\mvnw.cmd test "-Dtest=!KonwledgeRepoApplicationTests,!ChatMessageStoreConcurrencyTest" -DfailIfNoTests=false
 
 # 全量测试（含 2 个 @SpringBootTest 集成测试类 / 4 个用例，需 MySQL/Redis；ES 缺失时 fail-open 降级）
 $env:SPRING_PROFILES_ACTIVE='dev'; .\mvnw.cmd test
 ```
 
-当前 **70 个测试类、841 个用例**（分块器与标题祖先链、LlamaParse 表格解析、代码围栏分块、Excel 本地解析、文档解析、文档重命名/重建向量/文件名校验、向量化状态回写与线程池装配、模型解析/配置、模型类型×用途组合矩阵、标题槽位解析链（含历史 `TITLE` 类型兼容）、知识库、会话与滚动摘要、抽取任务、多工作空间成员管理、空间组管理与权限取高、重排客户端/节点、标题生成、答案自检两阶段聚合（并行/串行两路一致）等）。其中 2 个 `@SpringBootTest` 集成测试类（4 个用例）需 MySQL/Redis 环境，纯单元测试 837 个全绿。
+当前 **71 个测试类、848 个用例**（分块器与标题祖先链、LlamaParse 表格解析、代码围栏分块、Excel 本地解析、文档解析、文档重命名/重建向量/文件名校验、向量化状态回写与线程池装配、模型解析/配置、模型类型×用途组合矩阵、标题槽位解析链（含历史 `TITLE` 类型兼容）、知识库、会话与滚动摘要、抽取任务、多工作空间成员管理、空间组管理与权限取高、重排客户端/节点、标题生成、答案自检两阶段聚合（并行/串行两路一致）等）。其中 2 个 `@SpringBootTest` 集成测试类（4 个用例）需 MySQL/Redis 环境，纯单元测试 844 个全绿。
