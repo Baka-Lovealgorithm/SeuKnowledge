@@ -23,7 +23,6 @@ import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.stereotype.Component;
-import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
 import java.util.Map;
@@ -121,17 +120,14 @@ public class AnswerComposeNode extends QaNodeSupport {
     }
 
     private String generateAnswer(OverAllState state, ChatModel chat, List<Message> messages) {
-        SseEmitter emitter = SseStreamContext.get();
-        SseStreamContext.SseFlow flow = SseStreamContext.getFlow();
+        StreamContext streaming = streamContext();
+        // 重试轮不流式：前一轮已把部分答案推给前端，重试会重复推送
         int retry = QaContext.intValue(state, QaContextKey.RETRY_COUNT, 0);
-        java.util.concurrent.atomic.AtomicBoolean cancelled = SseStreamContext.cancelFlag();
-        java.util.function.BooleanSupplier cancelSupplier = cancelled == null ? null : cancelled::get;
-        if (emitter == null || retry > 0) {
-            return LlmTrace.call(qaTracing, chat, messages, null, cancelSupplier);
+        if (!streaming.streamable() || retry > 0) {
+            return LlmTrace.call(qaTracing, chat, messages, null, streaming.cancelSupplier());
         }
-        String answer = LlmTrace.stream(qaTracing, chat, messages,
-                text -> SseStreamContext.send(flow, emitter, "delta", text), cancelSupplier);
-        SseStreamContext.markDeltaSent();
+        String answer = LlmTrace.stream(qaTracing, chat, messages, streaming::sendDelta, streaming.cancelSupplier());
+        streaming.markStreamed();
         return answer;
     }
 }

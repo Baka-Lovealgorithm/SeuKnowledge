@@ -19,7 +19,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 
 /**
@@ -164,23 +163,11 @@ public class PdfParseService {
     /** 并行识图：识图调用进线程池（无追踪），主线程按页码顺序收集；渲染失败页返回空 */
     private Map<Integer, Optional<VisionOcrService.VisionOutcome>> runVisionParallel(
             List<PendingVision> pending, Long workspaceId) {
-        Map<Integer, Optional<VisionOcrService.VisionOutcome>> results = new HashMap<>();
-        if (pending.isEmpty()) {
-            return results;
-        }
-        List<CompletableFuture<Optional<VisionOcrService.VisionOutcome>>> futures = new ArrayList<>();
-        for (PendingVision pv : pending) {
-            futures.add(CompletableFuture.supplyAsync(() -> {
-                if (pv.png() == null) {
-                    return Optional.<VisionOcrService.VisionOutcome>empty();
-                }
-                return visionOcrService.describeParallel(pv.png(), pv.page(), workspaceId);
-            }, visionExecutor));
-        }
-        for (int i = 0; i < pending.size(); i++) {
-            results.put(pending.get(i).page(), futures.get(i).join());
-        }
-        return results;
+        List<VisionOcrService.VisionTask> tasks = pending.stream()
+                .map(pv -> new VisionOcrService.VisionTask(pv.page(), pv.png()))
+                .toList();
+        return VisionOcrService.VisionTask.runParallel(tasks, visionExecutor,
+                (png, page) -> visionOcrService.describeParallel(png, page, workspaceId));
     }
 
     /**

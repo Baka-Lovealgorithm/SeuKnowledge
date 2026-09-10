@@ -16,7 +16,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 
 /**
@@ -205,20 +204,11 @@ public class PptxParserService {
     /** 并行路径：识图 LLM 调用进线程池（无追踪），主线程按页码收集结果 */
     private Map<Integer, Optional<VisionOcrService.VisionOutcome>> runVisionParallel(
             List<LlamaParseService.PageMarkdown> pending, Long workspaceId) {
-        Map<Integer, Optional<VisionOcrService.VisionOutcome>> results = new HashMap<>();
-        if (pending.isEmpty()) {
-            return results;
-        }
-        List<CompletableFuture<Optional<VisionOcrService.VisionOutcome>>> futures = new ArrayList<>();
-        for (LlamaParseService.PageMarkdown page : pending) {
-            futures.add(CompletableFuture.supplyAsync(() ->
-                    visionOcrService.describeParallelMarkdown(page.screenshot(), page.pageNumber(), workspaceId),
-                    visionExecutor));
-        }
-        for (int i = 0; i < pending.size(); i++) {
-            results.put(pending.get(i).pageNumber(), futures.get(i).join());
-        }
-        return results;
+        List<VisionOcrService.VisionTask> tasks = pending.stream()
+                .map(page -> new VisionOcrService.VisionTask(page.pageNumber(), page.screenshot()))
+                .toList();
+        return VisionOcrService.VisionTask.runParallel(tasks, visionExecutor,
+                (png, page) -> visionOcrService.describeParallelMarkdown(png, page, workspaceId));
     }
 
     /**

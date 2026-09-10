@@ -14,7 +14,6 @@ import com.alibaba.cloud.ai.graph.OverAllState;
 import io.opentelemetry.api.trace.Span;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.stereotype.Component;
-import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
 import java.util.Map;
@@ -63,14 +62,10 @@ public class ChatOnlyNode extends QaNodeSupport {
         String prompt = promptCatalog.render("chat-only", Map.of(
                 "question", question, "recentJson", recentJson, "summaryText", summaryText));
         String answer;
-        SseEmitter emitter = SseStreamContext.get();
-        SseStreamContext.SseFlow flow = SseStreamContext.getFlow();
-        java.util.concurrent.atomic.AtomicBoolean cancelled = SseStreamContext.cancelFlag();
-        java.util.function.BooleanSupplier cancelSupplier = cancelled == null ? null : cancelled::get;
-        if (emitter != null) {
-            answer = LlmTrace.stream(qaTracing, chat, prompt,
-                    text -> SseStreamContext.send(flow, emitter, "delta", text), cancelSupplier);
-            SseStreamContext.markDeltaSent();
+        StreamContext streaming = streamContext();
+        if (streaming.streamable()) {
+            answer = LlmTrace.stream(qaTracing, chat, prompt, streaming::sendDelta, streaming.cancelSupplier());
+            streaming.markStreamed();
         } else {
             answer = LlmTrace.call(qaTracing, chat, prompt);
         }

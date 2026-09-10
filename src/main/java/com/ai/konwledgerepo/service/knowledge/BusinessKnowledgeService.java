@@ -1,6 +1,7 @@
 package com.ai.konwledgerepo.service.knowledge;
 
 import com.ai.konwledgerepo.common.BizException;
+import com.ai.konwledgerepo.common.JsonLists;
 import com.ai.konwledgerepo.common.Texts;
 import com.ai.konwledgerepo.dto.BusinessKnowledgeRequest;
 import com.ai.konwledgerepo.dto.BusinessKnowledgeResponse;
@@ -13,7 +14,6 @@ import com.ai.konwledgerepo.repository.DocumentRepository;
 import com.ai.konwledgerepo.service.knowledgebase.KnowledgeBaseService;
 import com.ai.konwledgerepo.service.vector.SourceIndexer;
 import com.ai.konwledgerepo.service.workspace.WorkspaceAccess;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -316,25 +316,10 @@ public class BusinessKnowledgeService {
     }
 
     private List<String> parseAliases(String json) {
-        if (Texts.isBlank(json)) {
-            return new ArrayList<>();
-        }
-        try {
-            return objectMapper.readValue(json, new TypeReference<List<String>>() {
-            });
-        } catch (Exception e) {
-            return new ArrayList<>();
-        }
+        return JsonLists.readStrings(json, objectMapper);
     }
 
     private String toJson(Collection<String> list) {
-        if (list == null || list.isEmpty()) {
-            return null;
-        }
-        try {
-            return objectMapper.writeValueAsString(list);
-        } catch (Exception e) {
-            return null;
-        }
+        return JsonLists.writeOrNull(list, objectMapper);
     }
 }

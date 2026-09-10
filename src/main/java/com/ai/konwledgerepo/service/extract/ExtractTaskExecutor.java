@@ -1,5 +1,6 @@
 package com.ai.konwledgerepo.service.extract;
 
+import com.ai.konwledgerepo.common.JsonLists;
 import com.ai.konwledgerepo.common.RedisKeys;
 import com.ai.konwledgerepo.common.TaskLock;
 import com.ai.konwledgerepo.common.Texts;
@@ -23,7 +24,6 @@ import com.ai.konwledgerepo.repository.QaPairRepository;
 import com.ai.konwledgerepo.service.knowledgebase.WorkspaceIdResolver;
 import com.ai.konwledgerepo.tracing.QaTracing;
 import com.ai.konwledgerepo.tracing.TokenAccumulator;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.context.Scope;
@@ -306,23 +306,11 @@ public class ExtractTaskExecutor {
     }
 
     private List<Long> parseDocIds(String json) {
-        if (Texts.isBlank(json)) {
-            return List.of();
-        }
-        try {
-            return objectMapper.readValue(json, new TypeReference<List<Long>>() {
-            });
-        } catch (Exception e) {
-            return List.of();
-        }
+        return JsonLists.readLongsOrEmpty(json, objectMapper);
     }
 
     private String toJson(List<Long> ids) {
-        try {
-            return objectMapper.writeValueAsString(ids == null ? List.of() : ids);
-        } catch (Exception e) {
-            return "[]";
-        }
+        return JsonLists.writeOrEmptyArray(ids, objectMapper);
     }
 
     private record Counts(int business, int qa) {

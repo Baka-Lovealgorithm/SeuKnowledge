@@ -14,7 +14,13 @@ import org.springframework.ai.content.Media;
 import org.springframework.stereotype.Service;
 import org.springframework.util.MimeTypeUtils;
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 
 /**
  * 识图（多模态）服务：将页面图片/截图交识图模型做 OCR / 内容描述。
@@ -106,6 +112,52 @@ public class VisionOcrService {
         } catch (Exception e) {
             log.warn("识图模型解析图片失败（第 {} 页）: {}", pageNum, e.getMessage());
             return Optional.empty();
+        }
+    }
+
+    /**
+     * 一页待识图任务：页码 + 该页渲染出的 PNG（可能为 null，表示渲染失败页）。
+     * <p>
+     * 同时承载并行识图的<b>统一骨架</b> {@link #runParallel}：各解析器（PDF / PPTX）都要
+     * 「逐页提交线程池 → 主线程按输入顺序 join → 收成 pageNumber → 结果」，这段顺序约定
+     * 散在多处容易抄漏。识图函数本体仍由调用方给出（PDF 用 describeParallel、
+     * PPTX 用 describeParallelMarkdown），因此这里不关心 prompt 差异。
+     */
+    public record VisionTask(int pageNumber, byte[] pngBytes) {
+
+        /**
+         * 并行识图统一骨架。
+         * <p>
+         * <b>刻意做成静态方法</b>：它只是一段调度逻辑，不该挂在 {@link VisionOcrService} 实例上——
+         * 那会让 mock 掉 VisionOcrService 的测试意外失去这段能力（识图 stub 全部失效），
+         * 也会把「编排」与「调用模型」两件事混在一起。
+         * <p>
+         * worker 内不带追踪（ThreadLocal 累加器跨线程失效），token 用量由调用方在主线程合并。
+         *
+         * @param tasks    待识图页（顺序即结果收集顺序）
+         * @param executor 识图专用线程池（并行度由池大小控制）
+         * @param perPage  单页识图函数（worker 线程执行，须为无追踪版本）
+         */
+        public static Map<Integer, Optional<VisionOutcome>> runParallel(
+                List<VisionTask> tasks, Executor executor,
+                java.util.function.BiFunction<byte[], Integer, Optional<VisionOutcome>> perPage) {
+            Map<Integer, Optional<VisionOutcome>> results = new HashMap<>();
+            if (tasks == null || tasks.isEmpty()) {
+                return results;
+            }
+            List<CompletableFuture<Optional<VisionOutcome>>> futures = new ArrayList<>(tasks.size());
+            for (VisionTask task : tasks) {
+                futures.add(CompletableFuture.supplyAsync(() -> {
+                    if (task.pngBytes() == null) {
+                        return Optional.<VisionOutcome>empty();
+                    }
+                    return perPage.apply(task.pngBytes(), task.pageNumber());
+                }, executor));
+            }
+            for (int i = 0; i < tasks.size(); i++) {
+                results.put(tasks.get(i).pageNumber(), futures.get(i).join());
+            }
+            return results;
         }
     }
 

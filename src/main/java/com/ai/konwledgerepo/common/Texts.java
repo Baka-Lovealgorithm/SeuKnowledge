@@ -16,6 +16,33 @@ public final class Texts {
         return s.length() <= max ? s : s.substring(0, max);
     }
 
+    /**
+     * 截断到最大长度，<b>null 保持 null</b>（区别于 {@link #truncate(String, int)} 的 null→""）。
+     * 用于「有值才留痕」的场景：审计日志的前后内容字段，null 表示无值，不该被写成空串。
+     */
+    public static String truncateOrNull(String s, int max) {
+        if (s == null) {
+            return null;
+        }
+        return s.length() <= max ? s : s.substring(0, max);
+    }
+
+    /**
+     * 哈希短化：保留前 n 位用于日志可读（不用于业务判定）；null 返回空串。
+     * 收敛 DocumentParserService 与 ParseCacheService 的同名实现。
+     */
+    public static String shortHash(String hash) {
+        return shortHash(hash, 12);
+    }
+
+    /** 哈希短化：保留前 max 位；null 返回空串 */
+    public static String shortHash(String hash, int max) {
+        if (hash == null) {
+            return "";
+        }
+        return hash.length() <= max ? hash : hash.substring(0, max);
+    }
+
     public static boolean isBlank(String s) {
         return s == null || s.isBlank();
     }

@@ -1,6 +1,7 @@
 package com.ai.konwledgerepo.service.knowledge;
 
 import com.ai.konwledgerepo.common.BizException;
+import com.ai.konwledgerepo.common.JsonLists;
 import com.ai.konwledgerepo.common.PromptCatalog;
 import com.ai.konwledgerepo.common.Texts;
 import com.ai.konwledgerepo.dto.QaPairRequest;
@@ -16,7 +17,6 @@ import com.ai.konwledgerepo.service.vector.SourceIndexer;
 import com.ai.konwledgerepo.service.workspace.WorkspaceAccess;
 import com.ai.konwledgerepo.tracing.LlmTrace;
 import com.ai.konwledgerepo.tracing.QaTracing;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -338,26 +338,11 @@ public class QaPairService {
     }
 
     private List<String> parseList(String json) {
-        if (json == null || json.isBlank()) {
-            return new ArrayList<>();
-        }
-        try {
-            return objectMapper.readValue(json, new TypeReference<List<String>>() {
-            });
-        } catch (Exception e) {
-            return new ArrayList<>();
-        }
+        return JsonLists.readStrings(json, objectMapper);
     }
 
     private String toJson(List<String> list) {
-        if (list == null || list.isEmpty()) {
-            return null;
-        }
-        try {
-            return objectMapper.writeValueAsString(list);
-        } catch (Exception e) {
-            return null;
-        }
+        return JsonLists.writeOrNull(list, objectMapper);
     }
 
     private record NormalizeResult(String normalized, List<String> synonyms) {

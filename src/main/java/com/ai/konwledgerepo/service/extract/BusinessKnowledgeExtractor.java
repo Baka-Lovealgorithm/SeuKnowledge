@@ -1,5 +1,6 @@
 package com.ai.konwledgerepo.service.extract;
 
+import com.ai.konwledgerepo.common.JsonLists;
 import com.ai.konwledgerepo.common.PromptCatalog;
 import com.ai.konwledgerepo.common.Texts;
 import com.ai.konwledgerepo.dto.BusinessKnowledgeRequest;
@@ -7,7 +8,6 @@ import com.ai.konwledgerepo.service.knowledge.BusinessKnowledgeService;
 import com.ai.konwledgerepo.tracing.QaTracing;
 import org.springframework.stereotype.Component;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -32,7 +32,7 @@ public class BusinessKnowledgeExtractor extends ChunkExtractor<BusinessKnowledge
     protected BusinessKnowledgeRequest mapItem(Map<String, Object> item, Long docId) {
         String term = Texts.str(item.get("term"));
         if (Texts.isBlank(term)) return null;
-        return new BusinessKnowledgeRequest(term, listOf(item.get("aliases")),
+        return new BusinessKnowledgeRequest(term, JsonLists.asStringList(item.get("aliases")),
                 Texts.strOrNull(item.get("definition")), Texts.strOrNull(item.get("scope")),
                 Texts.strOrNull(item.get("example")), Texts.strOrNull(item.get("prohibitedRules")), docId);
     }
@@ -40,10 +40,5 @@ public class BusinessKnowledgeExtractor extends ChunkExtractor<BusinessKnowledge
     @Override
     protected void saveDraft(Long kbId, BusinessKnowledgeRequest item) {
         businessKnowledgeService.createDraft(kbId, item);
-    }
-
-    private List<String> listOf(Object value) {
-        if (value instanceof List<?> list) return list.stream().map(String::valueOf).toList();
-        return new ArrayList<>();
     }
 }

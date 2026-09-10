@@ -1,6 +1,7 @@
 package com.ai.konwledgerepo.service.document;
 
 import com.ai.konwledgerepo.common.BizException;
+import com.ai.konwledgerepo.common.Texts;
 import com.ai.konwledgerepo.config.props.SeuDocumentProperties;
 import com.ai.konwledgerepo.entity.Document;
 import com.ai.konwledgerepo.service.knowledgebase.WorkspaceIdResolver;
@@ -304,9 +305,6 @@ public class DocumentParserService {
     }
 
     private static String shortHash(String hash) {
-        if (hash == null) {
-            return "";
-        }
-        return hash.length() <= 12 ? hash : hash.substring(0, 12);
+        return Texts.shortHash(hash);
     }
 }
