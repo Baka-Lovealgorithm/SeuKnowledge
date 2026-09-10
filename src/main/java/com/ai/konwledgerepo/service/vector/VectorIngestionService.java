@@ -2,6 +2,7 @@ package com.ai.konwledgerepo.service.vector;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch._types.Conflicts;
+import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch.core.BulkRequest;
 import co.elastic.clients.elasticsearch.core.BulkResponse;
 import co.elastic.clients.elasticsearch.core.IndexResponse;
@@ -13,6 +14,7 @@ import com.ai.konwledgerepo.entity.ChunkStatus;
 import com.ai.konwledgerepo.entity.DocStatus;
 import com.ai.konwledgerepo.entity.Document;
 import com.ai.konwledgerepo.entity.ModelUsage;
+import com.ai.konwledgerepo.entity.SourceType;
 import com.ai.konwledgerepo.model.ModelFactory;
 import com.ai.konwledgerepo.repository.ChunkRepository;
 import com.ai.konwledgerepo.repository.DocumentRepository;
@@ -259,14 +261,61 @@ public class VectorIngestionService {
         }
     }
 
-    /** 按文档删除 ES chunk（文档删除时调用） */
+    /**
+     * 按文档删除 ES 分块（删除/重试文档时调用）。
+     * <p>
+     * BUSINESS / QA 与 chunk 共用索引且也携带 docId，因此不能只按 docId 删除。
+     * 这里仅匹配 CHUNK；同时匹配没有 sourceType 的旧版索引数据，以兼容既有知识库。
+     */
     public void deleteByDocId(Long docId) {
         try {
             esClient.deleteByQuery(d -> d.index(indexName)
-                    .query(q -> q.term(t -> t.field("docId").value(docId))));
+                    .query(documentChunkQuery(docId)));
         } catch (IOException e) {
             log.error("删除 ES chunk 失败 docId={}", docId, e);
         }
+    }
+
+    /**
+     * 文档删除后解除 ES 中业务知识/问答对的来源 id，但保留 docName 和向量内容。
+     * docId=0 与 {@link ChunkDocFields#document} 对空来源的既有映射一致，无需重建索引或重新 embedding。
+     * ES 暂时不可用时仅告警：MySQL 已解除关联，结构化知识本身仍保留；后续编辑/审核会按新状态覆盖索引。
+     */
+    public void detachSourceDocumentInIndex(Long docId) {
+        try {
+            esClient.updateByQuery(u -> u
+                    .index(indexName)
+                    .conflicts(Conflicts.Proceed)
+                    .refresh(true)
+                    .query(structuredSourceQuery(docId))
+                    .script(s -> s.source("ctx._source." + ChunkDocFields.DOC_ID + " = 0")));
+            log.info("已解除 ES 结构化知识的来源文档关联：docId={}", docId);
+        } catch (Exception e) {
+            log.warn("解除 ES 结构化知识来源关联失败 docId={}（MySQL 已处理，知识与向量均保留）: {}",
+                    docId, e.getMessage());
+        }
+    }
+
+    static Query documentChunkQuery(Long docId) {
+        return Query.of(q -> q.bool(b -> b
+                .filter(f -> f.term(t -> t.field(ChunkDocFields.DOC_ID).value(docId)))
+                .filter(f -> f.bool(types -> types
+                        .should(s -> s.term(t -> t.field(ChunkDocFields.SOURCE_TYPE)
+                                .value(SourceType.CHUNK.value())))
+                        .should(s -> s.bool(legacy -> legacy
+                                .mustNot(n -> n.exists(e -> e.field(ChunkDocFields.SOURCE_TYPE)))))
+                        .minimumShouldMatch("1")))));
+    }
+
+    static Query structuredSourceQuery(Long docId) {
+        return Query.of(q -> q.bool(b -> b
+                .filter(f -> f.term(t -> t.field(ChunkDocFields.DOC_ID).value(docId)))
+                .filter(f -> f.bool(types -> types
+                        .should(s -> s.term(t -> t.field(ChunkDocFields.SOURCE_TYPE)
+                                .value(SourceType.BUSINESS.value())))
+                        .should(s -> s.term(t -> t.field(ChunkDocFields.SOURCE_TYPE)
+                                .value(SourceType.QA.value())))
+                        .minimumShouldMatch("1")))));
     }
 
     /** 按知识库删除全部来源的 ES 文档（CHUNK / BUSINESS / QA，清空知识库内容时调用） */

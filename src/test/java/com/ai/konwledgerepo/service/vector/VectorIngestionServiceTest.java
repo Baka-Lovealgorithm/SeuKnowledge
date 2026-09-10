@@ -1,9 +1,11 @@
 package com.ai.konwledgerepo.service.vector;
 
+import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import com.ai.konwledgerepo.config.props.SeuEsProperties;
 import com.ai.konwledgerepo.entity.Chunk;
 import com.ai.konwledgerepo.entity.ChunkStatus;
 import com.ai.konwledgerepo.entity.Document;
+import com.ai.konwledgerepo.entity.SourceType;
 import com.ai.konwledgerepo.model.ModelFactory;
 import com.ai.konwledgerepo.repository.ChunkRepository;
 import com.ai.konwledgerepo.repository.DocumentRepository;
@@ -56,6 +58,40 @@ class VectorIngestionServiceTest {
                 workspaceIdResolver, modelFactory, new SeuEsProperties("kb_chunk", 1024));
         when(workspaceIdResolver.resolve(any(Long.class))).thenReturn(10L);
         when(modelFactory.getEmbeddingModelByUsage(anyString(), anyLong())).thenReturn(embeddingModel);
+    }
+
+    // ===== 文档删除：ES 查询边界 =====
+
+    @Test
+    void documentChunkQuery_matchesOnlyChunkAndLegacyChunk() {
+        Query query = VectorIngestionService.documentChunkQuery(7L);
+
+        assertTrue(query.isBool());
+        List<Query> filters = query.bool().filter();
+        assertEquals(2, filters.size());
+        assertEquals(ChunkDocFields.DOC_ID, filters.get(0).term().field());
+        assertEquals(7L, filters.get(0).term().value().longValue());
+
+        Query sourceTypes = filters.get(1);
+        assertEquals("1", sourceTypes.bool().minimumShouldMatch());
+        assertEquals(2, sourceTypes.bool().should().size());
+        assertEquals(SourceType.CHUNK.value(),
+                sourceTypes.bool().should().get(0).term().value().stringValue());
+        Query legacyWithoutSourceType = sourceTypes.bool().should().get(1);
+        assertEquals(ChunkDocFields.SOURCE_TYPE,
+                legacyWithoutSourceType.bool().mustNot().get(0).exists().field());
+    }
+
+    @Test
+    void structuredSourceQuery_matchesBusinessAndQaButNotChunk() {
+        Query query = VectorIngestionService.structuredSourceQuery(7L);
+
+        List<Query> filters = query.bool().filter();
+        assertEquals(7L, filters.get(0).term().value().longValue());
+        List<String> sourceTypes = filters.get(1).bool().should().stream()
+                .map(q -> q.term().value().stringValue())
+                .toList();
+        assertEquals(List.of(SourceType.BUSINESS.value(), SourceType.QA.value()), sourceTypes);
     }
 
     // ===== embedText：标题拼接核心逻辑 =====

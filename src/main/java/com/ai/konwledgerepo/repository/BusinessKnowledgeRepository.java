@@ -42,4 +42,12 @@ public interface BusinessKnowledgeRepository extends JpaRepository<BusinessKnowl
     @Modifying
     @Query("update BusinessKnowledge b set b.sourceDocName = :docName where b.sourceDocId = :docId")
     int updateSourceDocNameByDocId(@Param("docId") Long docId, @Param("docName") String docName);
+
+    /**
+     * 来源文档删除时仅解除关联，不删除任何知识或历史版本。
+     * sourceDocName 作为来源快照保留，兼容现有可空列，无需新增外键或执行 DDL。
+     */
+    @Modifying
+    @Query("update BusinessKnowledge b set b.sourceDocId = null where b.sourceDocId = :docId")
+    int detachSourceDocumentByDocId(@Param("docId") Long docId);
 }

@@ -36,4 +36,12 @@ public interface QaPairRepository extends JpaRepository<QaPair, Long> {
     @Modifying
     @Query("update QaPair q set q.sourceDocName = :docName where q.sourceDocId = :docId")
     int updateSourceDocNameByDocId(@Param("docId") Long docId, @Param("docName") String docName);
+
+    /**
+     * 来源文档删除时仅解除关联，不删除任何问答对或历史版本。
+     * sourceDocName 作为来源快照保留，兼容现有可空列，无需新增外键或执行 DDL。
+     */
+    @Modifying
+    @Query("update QaPair q set q.sourceDocId = null where q.sourceDocId = :docId")
+    int detachSourceDocumentByDocId(@Param("docId") Long docId);
 }
