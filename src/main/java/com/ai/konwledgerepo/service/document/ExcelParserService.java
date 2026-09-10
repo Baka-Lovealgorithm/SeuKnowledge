@@ -114,7 +114,11 @@ public class ExcelParserService {
                 }
             }
         }
-        // 2) 合并区域展开：纵向广播左上角值；横向/双向除左上角置空并冻结（禁止被继承污染）
+        // 2) 表头行识别：必须在合并区域展开之前算，否则纵向广播会把表头值填满下方数据行，
+        //    使 findHeaderRow 的「非空列数 > 1」在多个行同时成立，表头位置被误判（进而让步骤 3 跳错继承行）。
+        //    基于原始单元格文本识别才是稳定判据。
+        int headerRow = findHeaderRow(cells, rows, cols);
+        // 3) 合并区域展开：纵向广播左上角值；横向/双向除左上角置空并冻结（禁止被继承污染）
         for (CellRangeAddress m : merged) {
             String value = cells[m.getFirstRow()][m.getFirstColumn()];
             if (m.getFirstColumn() == m.getLastColumn() && m.getFirstRow() < m.getLastRow()) {
@@ -133,8 +137,7 @@ public class ExcelParserService {
                 }
             }
         }
-        // 3) 普通空单元格向下继承（跳过冻结格；表头行不作为继承源，避免表头文本污染数据区）
-        int headerRow = findHeaderRow(cells, rows, cols);
+        // 4) 普通空单元格向下继承（跳过冻结格；表头行不作为继承源，避免表头文本污染数据区）
         for (int r = 1; r < rows; r++) {
             if (r - 1 == headerRow) {
                 continue; // 第一数据行不继承表头行
@@ -145,7 +148,7 @@ public class ExcelParserService {
                 }
             }
         }
-        // 4) 划分 caption（首个横跨标题行）/ 表头（其后首个非空行）/ 数据（其余非空行）
+        // 5) 划分 caption（首个横跨标题行）/ 表头（其后首个非空行）/ 数据（其余非空行）
         String caption = null;
         List<String> header = null;
         List<List<String>> dataRows = new ArrayList<>();
@@ -168,7 +171,7 @@ public class ExcelParserService {
         if (header == null || dataRows.isEmpty()) {
             return List.of(); // 无有效表头或无数行 → 不产出表格块
         }
-        // 5) 构造表格并复用 A+B 分块（title = 文件名 - sheet名；pageNum = sheet 序号）
+        // 6) 构造表格并复用 A+B 分块（title = 文件名 - sheet名；pageNum = sheet 序号）
         TableExtractor.Table table = new TableExtractor.Table(caption, header, dataRows);
         String title = (nameBase + " - " + sheet.getSheetName());
         if (title.length() > Headings.MAX_LEVEL_TEXT) {

@@ -2,6 +2,7 @@ package com.ai.konwledgerepo.service.document;
 
 import com.ai.konwledgerepo.common.AfterCommitExecutor;
 import com.ai.konwledgerepo.common.BizException;
+import com.ai.konwledgerepo.common.Texts;
 import com.ai.konwledgerepo.dto.ChunkReviewResponse;
 import com.ai.konwledgerepo.entity.Chunk;
 import com.ai.konwledgerepo.entity.ChunkReviewLog;
@@ -29,15 +30,19 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * 文档初洗与精修（原"文档人工策展"）：对解析后的逐页 markdown 提供在线编辑、重分块，
+ * 文档初洗与精修：对解析后的逐页 markdown 提供在线编辑、重分块，
  * 以及"分块后、向量化前"的决断门（初洗 PREVIEWING → 精修 ACCEPTED → 确认后统一向量化）。
+ * <p>
+ * 术语（全项目统一，勿再引入旧名）：<b>初洗</b>=文档级 PREVIEWING（chunk 只读、可编辑整篇 md 重分块）；
+ * <b>精修</b>=文档级 ACCEPTED（md 冻结、按文件逐块处置）。旧称「文档人工策展 / 文档策展」已废弃，
+ * chunk 级动作的入口是 {@link ChunkReviewService}。
  * <p>
  * 流程（仅 curateRequired=true 且 LlamaParse 产物 html/pdf/docx）：
  * <pre>
  * 解析完成 → saveInitialMd（落 md v1）→ finalizeSuccessGated（落 chunk + PREVIEWING）
  * PREVIEWING（初洗）：chunk 全只读；saveMd（编辑 md → 重分块，可反复）或 accept
  * ACCEPTED（精修）：后悔通道关闭（禁编辑 md/重分块）；editChunk/dropChunk/keepChunk/unkeepChunk 逐块精修
- * confirm：校验全部未删除分块已审核（KEEP）后统一向量化（ingest），curateStatus 清空，文档回到照旧
+ * confirm：校验无待审核（SUSPECT）分块后统一向量化（ingest），curateStatus 清空，文档回到照旧
  * </pre>
  * 红线：初洗（PREVIEWING）下 chunk 只读；精修（ACCEPTED）下 md 冻结；确认前不触发任何 ES 写入
  * （向量化统一在 confirm；未处置待审核（SUSPECT）由 ingest 的 DEFER 过滤自然不进 ES）。
@@ -46,6 +51,9 @@ import java.util.stream.Collectors;
 public class DocumentCurateService {
 
     private static final Logger log = LoggerFactory.getLogger(DocumentCurateService.class);
+
+    /** 审计日志留痕内容的最大长度（超长截断，避免单条日志行过大） */
+    private static final int AUDIT_CONTENT_MAX = 10000;
 
     /** LlamaParse 导出页标记：<!-- PAGE N -->（导出与解析回读的规范格式） */
     private static final Pattern PAGE_MARK = Pattern.compile("<!--\\s*PAGE\\s*(\\d+)\\s*-->");
@@ -266,7 +274,11 @@ public class DocumentCurateService {
     /**
      * 确认完成（精修收口）：ACCEPTED → 校验无待审核（SUSPECT）分块 → 清空
      * curateStatus（回到照旧）并触发统一向量化。
-     * 已审核 = 非待审核且非已删除（正常分块默认已审核，待审核分块保留后为已审核）。
+     * <p>
+     * 拦的只有<b>待审核的 SUSPECT</b>：正常块（clean_status=null）与 KEEP 本就无需人工介入，
+     * FILTERED 是已丢弃、不参与向量化，三者都放行。这与 {@code unkeep} 允许回退的对象
+     * （{@link ChunkReviewService#isReviewed}）是同一集合，勿再写成「仅 KEEP 才算已审核」。
+     * <p>
      * 向量化在事务提交后异步执行（AfterCommitExecutor）。
      */
     @Transactional
@@ -538,10 +550,7 @@ public class DocumentCurateService {
     }
 
     private static String truncate(String s) {
-        if (s == null) {
-            return null;
-        }
-        return s.length() > 10000 ? s.substring(0, 10000) : s;
+        return Texts.truncateOrNull(s, AUDIT_CONTENT_MAX);
     }
 
     /** 供其他组件判断文档是否处于初洗/精修流程（PREVIEWING 或 ACCEPTED） */

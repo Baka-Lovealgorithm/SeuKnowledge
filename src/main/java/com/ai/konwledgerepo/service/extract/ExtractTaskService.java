@@ -2,6 +2,7 @@ package com.ai.konwledgerepo.service.extract;
 
 import com.ai.konwledgerepo.common.AfterCommitExecutor;
 import com.ai.konwledgerepo.common.BizException;
+import com.ai.konwledgerepo.common.JsonLists;
 import com.ai.konwledgerepo.dto.ExtractTaskCreateRequest;
 import com.ai.konwledgerepo.dto.ExtractTaskResponse;
 import com.ai.konwledgerepo.dto.ExtractTaskResultResponse;
@@ -15,7 +16,6 @@ import com.ai.konwledgerepo.service.knowledge.BusinessKnowledgeService;
 import com.ai.konwledgerepo.service.knowledge.QaPairService;
 import com.ai.konwledgerepo.service.knowledgebase.KnowledgeBaseService;
 import com.ai.konwledgerepo.service.workspace.WorkspaceAccess;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -185,8 +185,18 @@ public class ExtractTaskService {
                 parseTime(progress.get(TaskProgressStore.H_FINISHED), task.getFinishedAt()));
     }
 
+    /**
+     * 取 Redis Hash 的字符串字段值，缺失或空串时回退 DB 值。
+     * <p>
+     * 空串按「无值」处理：{@link TaskProgressStore#write} 为清除上一轮残留会把 null 写成空串，
+     * 若这里把空串当作有效值返回，前端会看到空字符串而不是回退到 DB（DB 为权威）。
+     */
     private static String str(Object value, String fallback) {
-        return value == null ? fallback : String.valueOf(value);
+        if (value == null) {
+            return fallback;
+        }
+        String s = String.valueOf(value);
+        return s.isEmpty() ? fallback : s;
     }
 
     private static int intOf(Object value, Integer fallback) {
@@ -223,15 +233,7 @@ public class ExtractTaskService {
     }
 
     private List<Long> parseDocIds(String json) {
-        if (json == null || json.isBlank()) {
-            return List.of();
-        }
-        try {
-            return objectMapper.readValue(json, new TypeReference<List<Long>>() {
-            });
-        } catch (Exception e) {
-            return List.of();
-        }
+        return JsonLists.readLongsOrEmpty(json, objectMapper);
     }
 
     private String toJson(List<Long> docIds) {

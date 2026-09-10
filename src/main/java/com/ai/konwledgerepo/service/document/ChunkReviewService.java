@@ -1,6 +1,7 @@
 package com.ai.konwledgerepo.service.document;
 
 import com.ai.konwledgerepo.common.BizException;
+import com.ai.konwledgerepo.common.Texts;
 import com.ai.konwledgerepo.dto.ChunkReviewResponse;
 import com.ai.konwledgerepo.entity.Chunk;
 import com.ai.konwledgerepo.entity.ChunkReviewLog;
@@ -22,8 +23,14 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * 文档精修（原"清洗人工审核"）：对 P1 规则清洗打标的待审核（SUSPECT）chunk 提供
+ * 文档精修：对 P1 规则清洗打标的待审核（SUSPECT）chunk 提供
  * 保留/编辑/删除/回退待审核/批量操作。
+ * <p>
+ * 术语（全项目统一，勿再引入旧名）：
+ * <b>初洗</b>=解析后人工确认分段（文档级，PREVIEWING，可编辑整篇 md 重分块）；
+ * <b>精修</b>=初洗接受后按文件复核 chunk（文档级，ACCEPTED，可编辑/删除/合并/保留）；
+ * 本类处理的是<b>精修</b>动作，也是普通文档（未经初洗门）SUSPECT 分块复核的统一入口。
+ * 旧称「清洗人工审核 / 清洗复核 / 人工策展」均已废弃。
  * <p>
  * DEFER 决策：SUSPECT chunk 审核前不进 ES（VectorIngestionService.ingest 已跳过）；
  * 审核通过（keep/edit）后由本服务触发单 chunk 向量化（{@link VectorIngestionService#reindexChunk}）。
@@ -40,6 +47,24 @@ public class ChunkReviewService {
     public static final String CLEAN_SUSPECT = "SUSPECT";
     public static final String CLEAN_KEEP = "KEEP";
     public static final String CLEAN_FILTERED = "FILTERED";
+
+    /** 审计日志留痕内容的最大长度（超长截断，避免单条日志行过大） */
+    private static final int AUDIT_CONTENT_MAX = 10000;
+
+    /**
+     * 该 chunk 是否处于「已审核」状态、可被 {@link #unkeep} 回退为待审核。
+     * <p>
+     * 判据：clean_status 既非 SUSPECT（刚被打标、仍待人工决断）也非 FILTERED（已丢弃、无回退意义），
+     * 即 KEEP 或 null。**null 视为已审核是刻意的**：规则清洗只给命中的 chunk 打标，
+     * 未命中的正常块 clean_status 为 null，本就不需要人工介入。
+     * <p>
+     * 注意与 {@code DocumentCurateService.confirm} 的区别：confirm 只拦 SUSPECT，
+     * 因为 FILTERED 在（已丢弃）语义上不影响向量化落地，而回退动作对 FILTERED 无意义。
+     * 两处<b>都不得</b>表述为"仅 KEEP 才算已审核"——那会让读到注释的人给正常块加上多余的 KEEP 强校验。
+     */
+    public static boolean isReviewed(String cleanStatus) {
+        return !CLEAN_SUSPECT.equals(cleanStatus) && !CLEAN_FILTERED.equals(cleanStatus);
+    }
 
     private final ChunkRepository chunkRepository;
     private final ChunkReviewLogRepository reviewLogRepository;
@@ -140,21 +165,24 @@ public class ChunkReviewService {
 
     /**
      * 已审核回退待审核：clean_status（KEEP 或正常 null）→SUSPECT，并移出 ES（恢复 DEFER：
-     * SUSPECT 不进向量库，需重新保留才会再次向量化）。仅已审核分块可回退；初洗/精修流程中的文档拒绝在此处理。
+     * SUSPECT 不进向量库，需重新保留才会再次向量化）。
+     * 仅已审核分块可回退（判据见 {@link #isReviewed}，KEEP 与 null 都算已审核）；
+     * 初洗/精修流程中的文档拒绝在此处理。
      */
     @Transactional
     public ChunkReviewResponse unkeep(Long chunkId, Long userId) {
         Chunk chunk = requireChunk(chunkId);
         requireNotCurating(chunk.getDocId());
-        if (CLEAN_SUSPECT.equals(chunk.getCleanStatus()) || CLEAN_FILTERED.equals(chunk.getCleanStatus())) {
-            throw new BizException("仅已审核（KEEP）分块可回退待审核（当前 " + chunk.getCleanStatus() + "）");
+        if (!isReviewed(chunk.getCleanStatus())) {
+            throw new BizException("仅已审核（KEEP 或正常分块）可回退待审核（当前 " + chunk.getCleanStatus() + "）");
         }
+        String before = chunk.getCleanStatus(); // 留痕真实前值：可能是 KEEP，也可能是 null
         chunk.setCleanStatus(CLEAN_SUSPECT);
         chunkRepository.save(chunk);
         if (chunk.getEsId() != null) {
             vectorIngestionService.deleteByChunkId(chunkId);
         }
-        recordLog(chunk, "unkeep", CLEAN_KEEP, CLEAN_SUSPECT, userId);
+        recordLog(chunk, "unkeep", before, CLEAN_SUSPECT, userId);
         return ChunkReviewResponse.of(chunk, docName(chunk.getDocId()));
     }
 
@@ -213,8 +241,8 @@ public class ChunkReviewService {
             logEntry.setChunkId(chunk.getId());
             logEntry.setDocId(chunk.getDocId());
             logEntry.setAction(action);
-            logEntry.setBeforeContent(truncate(before));
-            logEntry.setAfterContent(truncate(after));
+            logEntry.setBeforeContent(Texts.truncateOrNull(before, AUDIT_CONTENT_MAX));
+            logEntry.setAfterContent(Texts.truncateOrNull(after, AUDIT_CONTENT_MAX));
             logEntry.setUserId(userId);
             reviewLogRepository.save(logEntry);
         } catch (Exception e) {
@@ -223,9 +251,6 @@ public class ChunkReviewService {
     }
 
     private static String truncate(String s) {
-        if (s == null) {
-            return null;
-        }
-        return s.length() > 10000 ? s.substring(0, 10000) : s;
+        return Texts.truncateOrNull(s, AUDIT_CONTENT_MAX);
     }
 }
