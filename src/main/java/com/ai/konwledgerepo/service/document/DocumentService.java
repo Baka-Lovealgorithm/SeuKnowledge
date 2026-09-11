@@ -37,7 +37,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 
 /**
  * 文档业务：上传落盘、异步解析分块、列表/删除/重试/重命名/重建向量。
@@ -411,13 +410,13 @@ public class DocumentService {
 
     private Document persistFile(Long kbId, MultipartFile file, Long userId) {
         String ext = extension(file.getOriginalFilename());
-        String storedName = UUID.randomUUID().toString().replace("-", "") + "." + ext;
-        // 先算出 key：存储写入中途失败时也能据此清理半截产物（putOriginal 返回结果前它仍为 null）
-        String objectKey = DocumentBlobService.originalKey(kbId, storedName);
+        // 对象名与 key 由 DocumentBlobService 统一生成（uuid + 安全化的原始名 + 按类型/空间/知识库分层）。
+        // 这里只在「对象已写成功、DB 却落库失败」时才需要清理，故 putOriginal 返回前 stored 为 null。
+        DocumentBlobService.StoredOriginal stored = null;
         try {
-            DocumentBlobService.StoredOriginal stored;
             try (InputStream in = file.getInputStream()) {
-                stored = blobService.putOriginal(kbId, storedName, file.getContentType(), in, file.getSize());
+                stored = blobService.putOriginal(kbId, file.getOriginalFilename(), ext,
+                        file.getContentType(), in, file.getSize());
             }
             Document doc = new Document();
             doc.setKbId(kbId);
@@ -435,16 +434,26 @@ public class DocumentService {
             // 从而删掉刚写入的对象——否则会永久孤儿留在存储里（不在 git 里，删了找不回来）。
             return documentRepository.saveAndFlush(doc);
         } catch (IOException e) {
-            blobService.deleteQuietly(objectKey);
+            cleanupOrphanObject(stored);
             throw new BizException("文件保存失败: " + e.getMessage());
         } catch (DataAccessException e) {
-            blobService.deleteQuietly(objectKey);
+            cleanupOrphanObject(stored);
             log.warn("文档记录落库失败，已清理落盘文件 kbId={} file={}", kbId, file.getOriginalFilename(), e);
             throw e;
         } catch (BizException e) {
             // 存储后端写入失败：不降级、不吞异常，尽力清理后原样抛出
-            blobService.deleteQuietly(objectKey);
+            cleanupOrphanObject(stored);
             throw e;
+        }
+    }
+
+    /**
+     * 对象已写入、业务却未落库时，尽力删掉刚写的对象。
+     * {@code stored} 为 null 表示 {@code putOriginal} 根本没写成功（其内部已自清半截分片），无需再删。
+     */
+    private void cleanupOrphanObject(DocumentBlobService.StoredOriginal stored) {
+        if (stored != null) {
+            blobService.deleteQuietly(stored.objectKey());
         }
     }
 

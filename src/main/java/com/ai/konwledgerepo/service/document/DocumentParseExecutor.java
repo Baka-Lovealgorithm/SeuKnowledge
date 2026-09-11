@@ -102,7 +102,7 @@ public class DocumentParseExecutor {
     private void parseGated(Document doc) {
         List<LlamaParseService.PageMarkdown> pages = parserService.parseToPages(doc);
         // retry 重解析：本轮新 pages 整体顶替旧初洗 md（落 v1）；解析失败/空结果不进此处，旧 md 保留
-        curateService.saveInitialMd(doc.getId(), pages, doc.getCreatedBy());
+        curateService.saveInitialMd(doc.getId(), doc.getKbId(), pages, doc.getCreatedBy());
         List<ChunkPiece> pieces = parserService.chunkFromPages(pages);
         // ---- P1 chunk 级清洗：E 保护 → A 碎片 → B 图题 → C 重复（处置由配置名单决定） ----
         DocumentCleanService.ChunkCleanResult clean = documentCleanService.cleanChunks(pieces);

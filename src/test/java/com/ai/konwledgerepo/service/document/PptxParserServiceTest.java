@@ -93,7 +93,7 @@ class PptxParserServiceTest {
         when(llamaMock.isConfigured()).thenReturn(false);
         Path file = pptxFile();
 
-        BizException ex = assertThrows(BizException.class, () -> service.parse(file, null, "test.pptx", 1L));
+        BizException ex = assertThrows(BizException.class, () -> service.parse(file, null, null, "test.pptx", 1L));
         assertTrue(ex.getMessage().contains("启用 LlamaParse"));
     }
 
@@ -109,7 +109,7 @@ class PptxParserServiceTest {
                 page(3, "# 性能——延时/吞吐量\n\n平均延时 54.15us。")));
         Path file = pptxFile();
 
-        List<ChunkPiece> pieces = service.parse(file, null, "test.pptx", 1L);
+        List<ChunkPiece> pieces = service.parse(file, null, null, "test.pptx", 1L);
 
         assertEquals(3, pieces.size(), "每页应产生一个 chunk");
         assertEquals(1, pieces.get(0).pageNum());
@@ -134,7 +134,7 @@ class PptxParserServiceTest {
                 .thenReturn(Optional.of("## 工具与服务——监控工具\n\n报文统计信息，统计各个实体的数据收发数量。"));
         Path file = pptxFile();
 
-        List<ChunkPiece> pieces = service.parse(file, null, "test.pptx", 1L);
+        List<ChunkPiece> pieces = service.parse(file, null, null, "test.pptx", 1L);
 
         assertEquals(2, pieces.size());
         ChunkPiece page2 = pieces.stream().filter(c -> c.pageNum() == 2).findFirst().orElseThrow();
@@ -154,7 +154,7 @@ class PptxParserServiceTest {
                 .thenReturn(Optional.of("# 标题\n\n完整正文内容，超过五十个字符以便验证图片内容页补全机制正常工作。"));
         Path file = pptxFile();
 
-        List<ChunkPiece> pieces = service.parse(file, null, "test.pptx", 1L);
+        List<ChunkPiece> pieces = service.parse(file, null, null, "test.pptx", 1L);
 
         assertEquals(1, pieces.size());
         assertTrue(pieces.get(0).content().contains("完整正文内容"));
@@ -179,7 +179,7 @@ class PptxParserServiceTest {
                     .thenReturn(Optional.of(new VisionOcrService.VisionOutcome("# 工具页三\n\n第三页正文。", null)));
             Path file = pptxFile();
 
-            List<ChunkPiece> pieces = service.parse(file, null, "test.pptx", 1L);
+            List<ChunkPiece> pieces = service.parse(file, null, null, "test.pptx", 1L);
 
             assertEquals(3, pieces.size());
             // 第 1 页 md 足够长（>50）不触发识图；第 2/3 页触发并行识图
@@ -206,7 +206,7 @@ class PptxParserServiceTest {
                 page(2, "# 工具页\n\n仅标题的短内容")));
         Path file = pptxFile();
 
-        List<ChunkPiece> pieces = service.parse(file, null, "test.pptx", 1L);
+        List<ChunkPiece> pieces = service.parse(file, null, null, "test.pptx", 1L);
 
         assertEquals(2, pieces.size());
         verify(visionMock, never()).describeImageMarkdown(any(), anyInt(), anyLong());
@@ -230,7 +230,7 @@ class PptxParserServiceTest {
         Path file = pptxFile();
 
         // md 为空且无识图 → 该页跳过（无 chunk）
-        List<ChunkPiece> pieces = service.parse(file, null, "test.pptx", 1L);
+        List<ChunkPiece> pieces = service.parse(file, null, null, "test.pptx", 1L);
 
         assertTrue(pieces.isEmpty(), "无识图时空白页应被跳过");
         verify(visionMock, never()).describeImageMarkdown(any(), anyInt(), anyLong());
@@ -252,7 +252,7 @@ class PptxParserServiceTest {
                 pageWithShot(1, "# 工具页", "screenshot-bytes")));
         Path file = pptxFile();
 
-        List<ChunkPiece> pieces = service.parse(file, null, "test.pptx", 1L);
+        List<ChunkPiece> pieces = service.parse(file, null, null, "test.pptx", 1L);
 
         assertEquals(1, pieces.size());
         assertEquals("工具页", pieces.get(0).title());
@@ -269,7 +269,7 @@ class PptxParserServiceTest {
                 page(0, "# 整篇内容\n\nLlamaParse 未返回逐页结果时的整篇 markdown。")));
         Path file = pptxFile();
 
-        List<ChunkPiece> pieces = service.parse(file, null, "test.pptx", 1L);
+        List<ChunkPiece> pieces = service.parse(file, null, null, "test.pptx", 1L);
 
         assertEquals(1, pieces.size());
         assertEquals(0, pieces.get(0).pageNum());
@@ -372,7 +372,7 @@ class PptxParserServiceTest {
                 page(2, "# 第二页\n\n内容二。")));
         Path file = pptxFile();
 
-        List<ChunkPiece> pieces = service.parse(file, null, "test.pptx", 1L);
+        List<ChunkPiece> pieces = service.parse(file, null, null, "test.pptx", 1L);
 
         assertEquals(List.of(1, 2, 3), pieces.stream().map(ChunkPiece::pageNum).toList(), "chunk 应按页码升序");
         assertNotNull(pieces.get(0).content());

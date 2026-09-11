@@ -145,7 +145,7 @@ class DocumentParseExecutorTest {
 
         executor.parseAsync(DOC_ID, false);
 
-        verify(curateService).saveInitialMd(DOC_ID, pages, null);
+        verify(curateService).saveInitialMd(DOC_ID, 10L, pages, null);
         verify(parseTx).finalizeSuccessGated(DOC_ID, pieces, List.of());
         verify(vectorIngestionService, never()).ingest(any());
         verify(parserService, never()).parse(any());
@@ -170,7 +170,7 @@ class DocumentParseExecutorTest {
 
         executor.parseAsync(DOC_ID, false);
 
-        verify(curateService).saveInitialMd(DOC_ID, pages, null);
+        verify(curateService).saveInitialMd(DOC_ID, 10L, pages, null);
         verify(parseTx).finalizeSuccessGated(DOC_ID, pieces, List.of());
         verify(vectorIngestionService, never()).ingest(any());
         verify(parserService, never()).parse(any());
@@ -208,7 +208,7 @@ class DocumentParseExecutorTest {
         executor.parseAsync(DOC_ID, false);
 
         verify(parseTx).finalizeFailure(eq(DOC_ID), any());
-        verify(curateService, never()).saveInitialMd(any(), any(), any());
+        verify(curateService, never()).saveInitialMd(any(), any(), any(), any());
         verify(taskLock).release(RedisKeys.docParse(DOC_ID));
     }
 

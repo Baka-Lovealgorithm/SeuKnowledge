@@ -15,8 +15,9 @@ import java.nio.charset.StandardCharsets;
  * 实现里严禁 catch 之后退化为落本地磁盘——否则同一批文档会一半在对象存储、一半在本地，
  * 且调用方无从察觉。后端选择只由配置决定（{@code seuknowledge.storage.type}）。
  * <p>
- * {@code objectKey} 是与后端无关的逻辑键，两端统一口径：
- * 原始文件 {@code {kbId}/{uuid}.{ext}}，LlamaParse 产物 md {@code md/{docId}.md}。
+ * {@code objectKey} 是与后端无关的逻辑键，两端统一口径（由 {@link DocumentBlobService} 生成，业务侧不自己拼）：
+ * 原始文件 {@code {wsId}/{kbId}/raw/{ext}/{uuid}_{原始名}.{ext}}，
+ * 解析产物 md {@code {wsId}/{kbId}/derived/md/{docId}.md}。
  */
 public interface FileStorage {
 

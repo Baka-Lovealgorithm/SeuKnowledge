@@ -169,9 +169,11 @@ public class DocumentCurateService {
      * 再落新 v1，保证初洗编辑器展示的 md 与本轮解析出的 chunk 始终对齐；
      * 新解析**无可用页面时不删不写**（保留旧 md——重解析失败后人工救济的唯一底牌）。
      * 由 {@link DocumentParseExecutor} 在 LlamaParse 解析完成后调用（事务内）。
+     *
+     * @param kbId 知识库 id：md 镜像落点为 {wsId}/{kbId}/derived/md/{docId}.md，空间由存储层解析
      */
     @Transactional
-    public void saveInitialMd(Long docId, List<LlamaParseService.PageMarkdown> pages, Long userId) {
+    public void saveInitialMd(Long docId, Long kbId, List<LlamaParseService.PageMarkdown> pages, Long userId) {
         List<DocumentCurate> rows = new ArrayList<>();
         for (LlamaParseService.PageMarkdown p : pages) {
             if (p.markdown() == null || p.markdown().isBlank()) {
@@ -198,7 +200,7 @@ public class DocumentCurateService {
         curateRepository.saveAll(rows);
         // md 镜像到对象存储（宽松：失败只 WARN）。kb_document_curate 才是权威副本，
         // 存储抖动不该把整篇文档判成解析失败；对象内容与 DB 最新版本严格同源。
-        blobService.putMdQuietly(docId, CurateMdText.assembleRows(rows));
+        blobService.putMdQuietly(kbId, docId, CurateMdText.assembleRows(rows));
         recordLog(docId, "save_md", replaced ? "替换旧初洗 md（至 v" + oldMaxVersion + "）" : null,
                 "v1 " + rows.size() + " 页", userId);
         if (replaced) {
@@ -249,7 +251,7 @@ public class DocumentCurateService {
         // md 镜像覆盖同一对象（严格：失败即抛，事务回滚）。用户主动保存必须能看见失败，
         // 否则会出现「DB 已保存新版本、对象存储还是旧 md」的静默不一致。
         // DB 侧仍按 version=maxVersion+1 append-only 保留全部历史，不受影响。
-        blobService.putMdStrict(docId, CurateMdText.assembleRows(rows));
+        blobService.putMdStrict(doc.getKbId(), docId, CurateMdText.assembleRows(rows));
         // 重分块：分块 + chunk 级清洗 + 事务内删旧插新
         List<ChunkPiece> pieces = parserService.chunkFromPages(pages);
         DocumentCleanService.ChunkCleanResult clean = documentCleanService.cleanChunks(pieces);

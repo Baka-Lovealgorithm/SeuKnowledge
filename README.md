@@ -190,10 +190,10 @@ npm run dev
 | `KB_CACHE_MEMBER_TTL` / `KB_CACHE_MODEL_TTL` / `KB_CACHE_AGENT_TTL` / `KB_CACHE_KB_TTL` / `KB_CACHE_KB_COUNT_TTL` / `KB_CACHE_KB_LIST_TTL` / `KB_CACHE_SESSION_TTL` / `KB_CACHE_HISTORY_TTL` / `KB_CACHE_TASK_TTL` | 300 / 600 / 600 / 300 / 300 / 60 / 60 / 600 / 86400 | 各类缓存 TTL（秒） |
 | `KB_RATE_LIMIT_ENABLED` / `KB_RATE_LIMIT_ASK_PER_MINUTE` | true / 30 | 问答限流开关与每用户每分钟上限（默认开启） |
 | `KB_STORAGE_TYPE` | minio | 文件存储后端：`minio`（对象存储，默认）或 `local`（本地磁盘）。**纯配置切换、不自动降级**——MinIO 不可用即上传失败，不会静默落本地。该值只决定**新写入**去向；读取按 `kb_document.storage_type` 逐行路由，故切换后端后存量文档仍可读 |
-| `KB_MINIO_ENDPOINT` / `KB_MINIO_ACCESS_KEY` / `KB_MINIO_SECRET_KEY` / `KB_MINIO_BUCKET` | http://localhost:9000 / minioadmin / minioadmin / seu-knowledge | MinIO 接入参数（**默认凭证仅供本地开发，生产必须用环境变量覆盖**）。对象键：原始文件 `{kbId}/{uuid}.{ext}`、md 镜像 `md/{docId}.md`（同键覆盖即最新版） |
+| `KB_MINIO_ENDPOINT` / `KB_MINIO_ACCESS_KEY` / `KB_MINIO_SECRET_KEY` / `KB_MINIO_BUCKET` | http://localhost:9000 / minioadmin / minioadmin / seu-knowledge | MinIO 接入参数（**默认凭证仅供本地开发，生产必须用环境变量覆盖**） |
 | `KB_MINIO_AUTO_CREATE_BUCKET` | true | bucket 不存在时自动创建（**不启用版本控制**；md 的历史版本由 `kb_document_curate` 承载） |
 | `KB_STORAGE_TEMP_DIR` | 空（`java.io.tmpdir/seuknowledge`） | 对象存储文档的物化临时目录；仅读取 MinIO 文档时使用，用完即删 |
-| `KB_FILE_STORAGE_PATH` | ./data/files | **local 后端**的文档落盘目录（原始文件 `{kbId}/{uuid}.{ext}`）；`KB_STORAGE_TYPE=minio` 时不用于写入，但仍用于读取存量本地行 |
+| `KB_FILE_STORAGE_PATH` | ./data/files | **local 后端**的文档落盘根目录（键 `{wsId}/{kbId}/raw/{ext}/…`）；`KB_STORAGE_TYPE=minio` 时不用于写入，但仍用于读取存量本地行 |
 | `KB_FILE_MAX_SIZE` | 20971520 (20MB) | 单文件大小上限（字节，与 multipart 上限对齐；上传超大文件需调大） |
 | `KB_QA_MESSAGE_WINDOW` / `KB_QA_MAX_RETRY` | 20 / 2 | 对话记忆窗口条数 / 自检重试上限 |
 | `KB_RERANK_CHUNK_TOP` / `KB_RERANK_OTHER_TOP` | 6 / 4 | 精排配额（文档 chunk / 业务知识+问答对合并；**重排模型本身在模型配置页配置**） |
@@ -207,6 +207,23 @@ npm run dev
 | `KB_LLAMAPARSE_TAKE_SCREENSHOT` / `KB_LLAMAPARSE_FILL_MISSING_PAGES` | true / true | 整页截图返回 / 缺页 VLM 补全（后者需 VISION 模型） |
 | `KB_ES_INDEX` / `KB_ES_DIMENSIONS` | kb_chunk / 1024 | ES 索引名与向量维度（**改维度需重建索引**） |
 | `KB_ASYNC_CORE_SIZE` / `KB_ASYNC_MAX_SIZE` / `KB_ASYNC_QUEUE_CAPACITY` | 8 / 32 / 256 | 通用异步线程池（文档解析、AI 抽取等无限定符 `@Async`） |
+
+### 对象键布局（MinIO 与本地磁盘同口径）
+
+两级前缀是「工作空间 / 知识库」，一个知识库就是一棵完整的子树（删库、导出、配额都只涉及一个前缀）；
+`raw` 与 `derived` 分开原始件与解析产物，`raw` 下再按扩展名分层：
+
+```
+{wsId}/{kbId}/raw/{ext}/{uuid}_{原始主名}.{ext}   原始上传文件
+{wsId}/{kbId}/derived/md/{docId}.md               LlamaParse 产物 / 编辑后的 md（同键覆盖即最新版）
+```
+
+- 对象名带原始主名是为了在 MinIO 控制台里可辨认；主名会做安全化（去目录、去危险字符、按码点截断到 60 字），
+  唯一性由 uuid 前缀保证。**注意**：重命名文档只改 DB 的 `file_name` 与 ES 索引、不搬对象，
+  所以 key 里保留的是**上传时**的名字。
+- 本地后端把同一个 key 落到 `KB_FILE_STORAGE_PATH` 下，即 `data/files/{wsId}/{kbId}/…`。
+- 改造前上传的文件键为 `{kbId}/{uuid}.{ext}`（少两级前缀），读取仍走 `kb_document.file_path` 的**原样路径**，
+  因此存量文件原地不动即可继续读，**无需迁移**。
 | `KB_VECTOR_ASYNC_CORE_SIZE` / `KB_VECTOR_ASYNC_MAX_SIZE` / `KB_VECTOR_ASYNC_QUEUE_CAPACITY` | 2 / 4 / 200 | 向量化专用线程池（精修「确认」与「重建向量」走此池，不再排在分钟级抽取任务后面） |
 | `KB_EXTRACT_CONCURRENCY` | 2 | 抽取任务全局并发上限（公平信号量，超限排队等待） |
 | `KB_TRACING_ENABLED` | true | OpenTelemetry 追踪总开关 |
@@ -236,4 +253,4 @@ $env:SPRING_PROFILES_ACTIVE='dev'; .\mvnw.cmd test
 .\mvnw.cmd test -Dminio.smoke=true -Dtest=MinioStorageSmokeTest -DfailIfNoSpecifiedTests=false
 ```
 
-当前 **76 个测试类、906 个用例**（分块器与标题祖先链、LlamaParse 表格解析、代码围栏分块、Excel 本地解析、文档解析、文档重命名/重建向量/文件名校验、向量化状态回写与线程池装配、文件存储抽象层与真机 MinIO 冒烟、模型解析/配置、模型类型×用途组合矩阵、标题槽位解析链（含历史 `TITLE` 类型兼容）、知识库、会话与滚动摘要、抽取任务、多工作空间成员管理、空间组管理与权限取高、重排客户端/节点、标题生成、答案自检两阶段聚合（并行/串行两路一致）、答案评价（越权拒绝 / 撤销 / 只写反馈列 / 消息缓存失效）、点踩汇总口径（踩率分母、无快照时均值留空、无知识库短路、明细批量取问题不逐行）、旧版本缓存载荷兼容等）。其中 2 个 `@SpringBootTest` 集成测试类（4 个用例）需 MySQL/Redis 环境，纯单元测试 902 个全绿；另有 2 个 MinIO 冒烟用例默认 skipped（`-Dminio.smoke=true` 才跑），故常规全量为 906 用例 / 0 失败 / 2 跳过。
+当前 **77 个测试类、922 个用例**（分块器与标题祖先链、LlamaParse 表格解析、代码围栏分块、Excel 本地解析、文档解析、文档重命名/重建向量/文件名校验、向量化状态回写与线程池装配、文件存储抽象层与对象键口径（工作空间/知识库/raw-derived 分层、文件名安全化与截断）、真机 MinIO 冒烟、模型解析/配置、模型类型×用途组合矩阵、标题槽位解析链（含历史 `TITLE` 类型兼容）、知识库、会话与滚动摘要、抽取任务、多工作空间成员管理、空间组管理与权限取高、重排客户端/节点、标题生成、答案自检两阶段聚合（并行/串行两路一致）、答案评价（越权拒绝 / 撤销 / 只写反馈列 / 消息缓存失效）、点踩汇总口径（踩率分母、无快照时均值留空、无知识库短路、明细批量取问题不逐行）、旧版本缓存载荷兼容等）。其中 2 个 `@SpringBootTest` 集成测试类（4 个用例）需 MySQL/Redis 环境，纯单元测试 916 个全绿；另有 2 个 MinIO 冒烟用例默认 skipped（`-Dminio.smoke=true` 才跑），故常规全量为 922 用例 / 0 失败 / 2 跳过。

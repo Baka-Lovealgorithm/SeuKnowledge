@@ -2,6 +2,7 @@ package com.ai.konwledgerepo.service.storage;
 
 import com.ai.konwledgerepo.config.props.SeuStorageProperties;
 import com.ai.konwledgerepo.entity.Document;
+import com.ai.konwledgerepo.support.StorageTestSupport;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
@@ -92,24 +93,31 @@ class MinioStorageSmokeTest {
         FileStorageRouter router = new FileStorageRouter(
                 List.of(new MinioFileStorage(props())), props());
         router.active().ensureReady();
-        DocumentBlobService blobService = new DocumentBlobService(router);
+        DocumentBlobService blobService =
+                new DocumentBlobService(router, StorageTestSupport.fixedWorkspaceResolver());
 
         // 模拟一次上传：写按配置（minio），落库拿到 storageType=minio / objectKey / filePath=null
         long kbId = 999_999_001L;
-        String storedName = "__smoke__-" + System.nanoTime() + ".txt";
+        String originalName = "项目报告v1.2 (终稿).txt";
         DocumentBlobService.StoredOriginal stored;
         try (var in = new ByteArrayInputStream("payload".getBytes(StandardCharsets.UTF_8))) {
-            stored = blobService.putOriginal(kbId, storedName, "text/plain", in, 7L);
+            stored = blobService.putOriginal(kbId, originalName, "txt", "text/plain", in, 7L);
         }
         assertEquals(FileStorage.MINIO, stored.storageType());
-        assertEquals(kbId + "/" + storedName, stored.objectKey());
         assertNull(stored.localPath(), "minio 行 file_path 应为 null");
+        // 布局契约：{wsId}/{kbId}/raw/{ext}/{uuid}_{安全化的原始主名}.{ext}
+        assertTrue(stored.objectKey().startsWith(
+                        StorageTestSupport.TEST_WORKSPACE_ID + "/" + kbId + "/raw/txt/"),
+                stored.objectKey());
+        assertTrue(stored.objectKey().endsWith("_项目报告v1.2 (终稿).txt"), stored.objectKey());
+        assertEquals(32, stored.objectKey().substring(stored.objectKey().lastIndexOf('/') + 1).indexOf('_'),
+                "uuid 段应固定 32 位");
 
         // 模拟解析：读走行上的 storage_type，物化出临时文件供 PDFBox/POI 类的解析器使用
         Document doc = new Document();
-        doc.setId(999_999_001L);
+        doc.setId(999_999_002L);
         doc.setKbId(kbId);
-        doc.setFileName(storedName);
+        doc.setFileName(originalName);
         doc.setStorageType(stored.storageType());
         doc.setObjectKey(stored.objectKey());
         doc.setFilePath(stored.localPath());
@@ -117,11 +125,12 @@ class MinioStorageSmokeTest {
             assertEquals("payload", Files.readString(mf.path()));
         }
 
-        // md 镜像：同一 docId 重复写 → 覆盖同一对象
-        blobService.putMdStrict(doc.getId(), "# v1");
-        blobService.putMdStrict(doc.getId(), "# v2 最新");
-        try (var in = router.forRow(FileStorage.MINIO)
-                .get(DocumentBlobService.mdKey(doc.getId()))) {
+        // md 镜像落在 derived/ 分支，与原始件的 raw/ 分支分开；同一 docId 重复写 → 覆盖同一对象
+        String mdKey = DocumentBlobService.mdKey(StorageTestSupport.TEST_WORKSPACE_ID, kbId, doc.getId());
+        assertTrue(mdKey.startsWith(StorageTestSupport.TEST_WORKSPACE_ID + "/" + kbId + "/derived/md/"), mdKey);
+        blobService.putMdStrict(kbId, doc.getId(), "# v1");
+        blobService.putMdStrict(kbId, doc.getId(), "# v2 最新");
+        try (var in = router.forRow(FileStorage.MINIO).get(mdKey)) {
             assertEquals("# v2 最新", new String(in.readAllBytes(), StandardCharsets.UTF_8));
         }
 
@@ -129,6 +138,6 @@ class MinioStorageSmokeTest {
         blobService.deleteOriginal(doc);
         blobService.deleteMd(doc);
         assertFalse(router.forRow(FileStorage.MINIO).exists(stored.objectKey()));
-        assertFalse(router.forRow(FileStorage.MINIO).exists(DocumentBlobService.mdKey(doc.getId())));
+        assertFalse(router.forRow(FileStorage.MINIO).exists(mdKey));
     }
 }

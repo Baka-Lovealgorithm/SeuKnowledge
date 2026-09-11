@@ -72,10 +72,11 @@ public class PptxParserService {
      *
      * @param path        落盘文件路径（可能是对象存储物化出的临时副本）
      * @param docId       文档 id，用于把 LlamaParse 产物 md 镜像到对象存储（宽松模式：失败只 WARN）
+     * @param kbId        md 镜像的落点前缀（{wsId}/{kbId}/derived/md/），空间由存储层解析
      * @param fileName    原始文件名（LlamaParse 上传用）
      * @param workspaceId 知识库归属工作空间（识图模型按空间解析）
      */
-    public List<ChunkPiece> parse(java.nio.file.Path path, Long docId, String fileName, Long workspaceId) {
+    public List<ChunkPiece> parse(java.nio.file.Path path, Long docId, Long kbId, String fileName, Long workspaceId) {
         if (!llamaParseService.isConfigured()) {
             throw new BizException("PPTX 解析需要启用 LlamaParse（seuknowledge.document.llamaparse.enabled 且配置 API Key）");
         }
@@ -88,7 +89,7 @@ public class PptxParserService {
         ordered.sort(Comparator.comparingInt(LlamaParseService.PageMarkdown::pageNumber));
         // md 镜像：在识图补全之后取，保证对象内容与下面切出的 chunk 同源
         if (docId != null) {
-            blobService.putMdQuietly(docId, CurateMdText.assemblePages(ordered));
+            blobService.putMdQuietly(kbId, docId, CurateMdText.assemblePages(ordered));
         }
         // 跨页检测页脚标题（如公司名"臻融科技"在多数页以首个标题出现）：供标题提取跳过页脚
         String footer = detectFooter(ordered);

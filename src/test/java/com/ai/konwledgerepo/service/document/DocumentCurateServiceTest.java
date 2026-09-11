@@ -30,6 +30,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -153,7 +154,7 @@ class DocumentCurateServiceTest {
         when(curateRepository.existsByDocId(1L)).thenReturn(true);
         when(curateRepository.maxVersion(1L)).thenReturn(2);
 
-        service.saveInitialMd(1L, List.of(
+        service.saveInitialMd(1L, 1L, List.of(
                 new LlamaParseService.PageMarkdown(1, "新解析第一页"),
                 new LlamaParseService.PageMarkdown(2, "新解析第二页")), 9L);
 
@@ -172,12 +173,14 @@ class DocumentCurateServiceTest {
         verify(curateLogRepository).save(logCap.capture());
         assertEquals("save_md", logCap.getValue().getAction());
         assertTrue(logCap.getValue().getBeforeSummary().contains("替换旧初洗 md（至 v2）"));
+        // md 镜像：参数顺序为 (kbId, docId, md)，kbId 决定对象存储里的 {wsId}/{kbId}/derived/md 前缀
+        verify(blobService).putMdQuietly(eq(1L), eq(1L), anyString());
     }
 
     @Test
     void saveInitialMd_blankPagesWithExisting_keepsOldMd() {
         // 空守卫前置：新解析无可用页面 → 不查存在性、不删、不写（旧 md 原样保留）
-        service.saveInitialMd(1L, List.of(
+        service.saveInitialMd(1L, 1L, List.of(
                 new LlamaParseService.PageMarkdown(1, "   "),
                 new LlamaParseService.PageMarkdown(2, null)), 9L);
 
@@ -191,7 +194,7 @@ class DocumentCurateServiceTest {
     void saveInitialMd_firstParse_savesV1WithoutDelete() {
         when(curateRepository.existsByDocId(1L)).thenReturn(false);
 
-        service.saveInitialMd(1L, List.of(new LlamaParseService.PageMarkdown(1, "首页")), null);
+        service.saveInitialMd(1L, 1L, List.of(new LlamaParseService.PageMarkdown(1, "首页")), null);
 
         verify(curateRepository, never()).deleteByDocId(anyLong());
         ArgumentCaptor<List<DocumentCurate>> rows = ArgumentCaptor.forClass(List.class);

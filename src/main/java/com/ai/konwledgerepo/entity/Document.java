@@ -36,8 +36,11 @@ public class Document extends BaseEntity {
     private String storageType;
 
     /**
-     * 与后端无关的逻辑对象键：原始文件 {@code {kbId}/{uuid}.{ext}}，LlamaParse 产物 md {@code md/{docId}.md}。
+     * 与后端无关的逻辑对象键：原始文件 {@code {wsId}/{kbId}/raw/{ext}/{uuid}_{原始名}.{ext}}。
      * MinIO 行靠它定位对象；local 行同时也会把真实路径写进 {@link #filePath}（兼容旧工具与旧读法）。
+     * <p>
+     * 落库后即权威：读取与删除都按此列路由，不再由 kbId 反推，因此 key 布局调整不影响存量行。
+     * （LlamaParse 产物 md 的镜像键由 {@code DocumentBlobService.mdKey} 单独推导，没有对应列。）
      */
     @Column(name = "object_key", length = 512)
     private String objectKey;

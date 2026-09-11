@@ -22,9 +22,11 @@ ALTER TABLE kb_document
 --                 **NULL 或空白一律按 local 解释**（存量行兼容），因此本脚本不回填任何数据。
 --                 读走这一列逐行路由，所以 MinIO 部署下依然能读旧的本地文件；
 --                 反过来本地部署遇到 minio 行会明确报「后端未启用」，而不是静默失败。
---   object_key  ：与后端无关的逻辑键。
---                 原始文件 {kbId}/{storedName}（与改造前的本地目录布局一致）；
---                 LlamaParse 产物 md  md/{docId}.md（docId 恒定 → 同键覆盖即最新版）。
+--   object_key  ：与后端无关的逻辑键，落库后即权威（读取/删除都按它路由，不再由 kbId 反推）。
+--                 原始文件 {wsId}/{kbId}/raw/{ext}/{uuid}_{原始名}.{ext}（改造前为 {kbId}/{uuid}.{ext}，
+--                          少两级前缀；存量行的 object_key 为空，读取走 file_path，不受影响）；
+--                 LlamaParse 产物 md  {wsId}/{kbId}/derived/md/{docId}.md（docId 恒定 → 同键覆盖即最新版，
+--                          无对应列，由 DocumentBlobService.mdKey 推导）。
 --
 -- file_path 保留不动：local 行的 file_path 为真实本地路径（新上传时同时写 object_key），
 --                     minio 行的 file_path 为 NULL（对象不在本机）。

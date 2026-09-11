@@ -14,12 +14,13 @@ import java.nio.file.StandardCopyOption;
 /**
  * 本地磁盘存储后端（降级/可选后端）。
  * <p>
- * 落盘映射 {@code {storage-path}/{objectKey}}，因此新上传文件的布局与改造前
- * （{@code data/files/{kbId}/{uuid}.{ext}}）完全一致，无需迁移。
+ * 落盘映射 {@code {storage-path}/{objectKey}}，即
+ * {@code data/files/{wsId}/{kbId}/raw/{ext}/...} 与 {@code data/files/{wsId}/{kbId}/derived/md/...}。
  * <p>
- * 读取时兼容存量行：{@code kb_document.file_path} 存的是当时的本地路径（绝对路径，或相对
- * 工作目录的 {@code ./data/files/...}），因此 {@link #resolve(String)} 优先按「原样路径」解释，
- * 只有该路径不存在时才按 {@code storage-path} 下的 key 解释。
+ * 读取时兼容改造前的存量行：当时 key 是 {@code {kbId}/{uuid}.{ext}}（少了两级前缀），
+ * 而 {@code kb_document.file_path} 存的是当时的本地路径，因此 {@link #resolve(String)}
+ * 优先按「原样路径」解释，只有该路径不存在时才按 {@code storage-path} 下的 key 解释——
+ * 老文件原地不动也能继续读，无需迁移。
  */
 public class LocalFileStorage implements FileStorage {
 

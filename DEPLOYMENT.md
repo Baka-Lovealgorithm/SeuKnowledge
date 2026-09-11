@@ -20,8 +20,10 @@
 
 | 取值 | 原始文件位置 | 备份要求 |
 |---|---|---|
-| `local`（Compose 当前默认，见 `.env.example`） | `./runtime/data/files`，键 `{kbId}/{uuid}.{ext}` | 连同 `runtime/data` 一起备份 |
-| `minio`（应用默认值，需要 MinIO 服务） | MinIO 对象存储，键 `{kbId}/{uuid}.{ext}`；md 镜像键 `md/{docId}.md` | 必须单独备份 MinIO 的数据卷，`runtime/data/files` 不再包含新文档 |
+| `local`（Compose 当前默认，见 `.env.example`） | `./runtime/data/files`，键 `{wsId}/{kbId}/raw/{ext}/{uuid}_{原始名}.{ext}` | 连同 `runtime/data` 一起备份 |
+| `minio`（应用默认值，需要 MinIO 服务） | MinIO 对象存储，同上一列的对象键；md 镜像键 `{wsId}/{kbId}/derived/md/{docId}.md` | 必须单独备份 MinIO 的数据卷，`runtime/data/files` 不再包含新文档 |
+
+两级前缀是「工作空间 / 知识库」：一个知识库就是一棵完整的子树（`{wsId}/{kbId}/`），删库、导出、按库设配额都只涉及一个前缀；`raw` 与 `derived` 分开原始件与解析产物，`raw` 下再按扩展名分层。**改造前**上传的文件键为 `{kbId}/{uuid}.{ext}`（少两级前缀），读取走 `kb_document.file_path` 的原样路径，因此存量文件原地不动即可继续读，**切换前后都不需要搬迁文件**。
 
 `kb_document.storage_type` 逐行记录每个文档实际所在的后端，读取时按行路由，因此**切换后端不必搬迁既有文件**：存量行（`storage_type` 为 NULL/`local`）继续从本地目录读取，只有切换后的新上传走新后端。**本仓库的 Compose 暂未包含 MinIO 服务**，所以在 Compose 部署中请保持 `KB_STORAGE_TYPE=local`；要改用它需先自行加入 MinIO 服务并把 bucket 数据卷列入备份。
 
