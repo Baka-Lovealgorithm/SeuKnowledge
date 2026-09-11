@@ -101,17 +101,16 @@ class MinioStorageSmokeTest {
         String originalName = "项目报告v1.2 (终稿).txt";
         DocumentBlobService.StoredOriginal stored;
         try (var in = new ByteArrayInputStream("payload".getBytes(StandardCharsets.UTF_8))) {
-            stored = blobService.putOriginal(kbId, originalName, "txt", "text/plain", in, 7L);
+            stored = blobService.putOriginal(kbId, "txt", "text/plain", in, 7L);
         }
         assertEquals(FileStorage.MINIO, stored.storageType());
         assertNull(stored.localPath(), "minio 行 file_path 应为 null");
-        // 布局契约：{wsId}/{kbId}/raw/{ext}/{uuid}_{安全化的原始主名}.{ext}
+        // 布局契约：{wsId}/{kbId}/raw/{ext}/{uuid}.{ext}——对象名不含原始文件名（重命名无需搬对象）
         assertTrue(stored.objectKey().startsWith(
                         StorageTestSupport.TEST_WORKSPACE_ID + "/" + kbId + "/raw/txt/"),
                 stored.objectKey());
-        assertTrue(stored.objectKey().endsWith("_项目报告v1.2 (终稿).txt"), stored.objectKey());
-        assertEquals(32, stored.objectKey().substring(stored.objectKey().lastIndexOf('/') + 1).indexOf('_'),
-                "uuid 段应固定 32 位");
+        String leaf = stored.objectKey().substring(stored.objectKey().lastIndexOf('/') + 1);
+        assertTrue(leaf.matches("[0-9a-f]{32}\\.txt"), leaf);
 
         // 模拟解析：读走行上的 storage_type，物化出临时文件供 PDFBox/POI 类的解析器使用
         Document doc = new Document();

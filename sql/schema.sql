@@ -152,7 +152,7 @@ CREATE TABLE IF NOT EXISTS kb_chunk (
 
 -- 文档。file_path 为历史字段（local 后端仍写真实路径）；storage_type/object_key 为对象存储改造
 -- 新增列：storage_type ∈ {local, minio}，存量行为 NULL 一律按 local 并用 file_path 解释（零迁移）。
--- object_key 是与后端无关的逻辑键：原始文件 {wsId}/{kbId}/raw/{ext}/{uuid}_{原始名}.{ext}
+-- object_key 是与后端无关的逻辑键：原始文件 {wsId}/{kbId}/raw/{ext}/{uuid}.{ext}
 -- （改造前为 {kbId}/{uuid}.{ext}；存量值为 NULL，读取走 file_path）。
 CREATE TABLE IF NOT EXISTS kb_document (
     chunk_count integer,

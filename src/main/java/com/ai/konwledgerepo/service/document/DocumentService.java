@@ -410,12 +410,12 @@ public class DocumentService {
 
     private Document persistFile(Long kbId, MultipartFile file, Long userId) {
         String ext = extension(file.getOriginalFilename());
-        // 对象名与 key 由 DocumentBlobService 统一生成（uuid + 安全化的原始名 + 按类型/空间/知识库分层）。
+        // 对象名与 key 由 DocumentBlobService 统一生成（纯 uuid，按空间/知识库/类型分层）。
         // 这里只在「对象已写成功、DB 却落库失败」时才需要清理，故 putOriginal 返回前 stored 为 null。
         DocumentBlobService.StoredOriginal stored = null;
         try {
             try (InputStream in = file.getInputStream()) {
-                stored = blobService.putOriginal(kbId, file.getOriginalFilename(), ext,
+                stored = blobService.putOriginal(kbId, ext,
                         file.getContentType(), in, file.getSize());
             }
             Document doc = new Document();

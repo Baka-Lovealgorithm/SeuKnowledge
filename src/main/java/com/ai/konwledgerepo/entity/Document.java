@@ -36,7 +36,7 @@ public class Document extends BaseEntity {
     private String storageType;
 
     /**
-     * 与后端无关的逻辑对象键：原始文件 {@code {wsId}/{kbId}/raw/{ext}/{uuid}_{原始名}.{ext}}。
+     * 与后端无关的逻辑对象键：原始文件 {@code {wsId}/{kbId}/raw/{ext}/{uuid}.{ext}}。
      * MinIO 行靠它定位对象；local 行同时也会把真实路径写进 {@link #filePath}（兼容旧工具与旧读法）。
      * <p>
      * 落库后即权威：读取与删除都按此列路由，不再由 kbId 反推，因此 key 布局调整不影响存量行。

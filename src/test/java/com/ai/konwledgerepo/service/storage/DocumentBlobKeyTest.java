@@ -9,7 +9,7 @@ import java.io.InputStream;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -25,8 +25,8 @@ class DocumentBlobKeyTest {
 
     @Test
     void originalKey_layoutIsWsKbRawTypeName() {
-        assertEquals("3/7/raw/pdf/abc_x.pdf",
-                DocumentBlobService.originalKey(3L, 7L, "pdf", "abc_x.pdf"));
+        assertEquals("3/7/raw/pdf/abc.pdf",
+                DocumentBlobService.originalKey(3L, 7L, "pdf", "abc.pdf"));
     }
 
     @Test
@@ -43,76 +43,32 @@ class DocumentBlobKeyTest {
         assertFalse(md.startsWith("1/2/raw/"));
     }
 
-    // ==================== 文件名安全化 ====================
-
-    @Test
-    void safeBaseName_stripsDirectoryAndExtension() {
-        assertEquals("报告", DocumentBlobService.safeBaseName("报告.pdf"));
-        assertEquals("报告", DocumentBlobService.safeBaseName("../../etc/报告.pdf"));
-        assertEquals("报告", DocumentBlobService.safeBaseName("C:\\Users\\x\\报告.docx"));
-        // 多段扩展名只去最后一段
-        assertEquals("报表v1.2", DocumentBlobService.safeBaseName("报表v1.2.xlsx"));
-    }
-
-    @Test
-    void safeBaseName_keepsChineseSpacesAndInnerDots() {
-        // 中文、空格、括号、中间的点都保留：可读性优先，只有真正危险的字符才换掉
-        assertEquals("项目报告v1.2 (终稿)", DocumentBlobService.safeBaseName("项目报告v1.2 (终稿).pdf"));
-    }
-
-    @Test
-    void safeBaseName_replacesIllegalChars() {
-        assertEquals("a_b_c_d_e_f_g_h", DocumentBlobService.safeBaseName("a:b*c?d\"e<f>g|h.pdf"));
-        assertEquals("a_b", DocumentBlobService.safeBaseName("a\u0000b.txt")); // 控制字符
-        assertEquals("c_d", DocumentBlobService.safeBaseName("c*d.xlsx"));
-    }
-
-    @Test
-    void safeBaseName_rejectsNamesThatCannotBeUsed() {
-        assertNull(DocumentBlobService.safeBaseName(null));
-        assertNull(DocumentBlobService.safeBaseName("   "));
-        assertNull(DocumentBlobService.safeBaseName(".pdf"));    // 以点开头 → 无可用主名
-        assertNull(DocumentBlobService.safeBaseName("...x"));    // 去掉扩展名后只剩点
-        assertNull(DocumentBlobService.safeBaseName("___.txt")); // 只剩替换符
-    }
-
-    @Test
-    void safeBaseName_neverExceedsLimitAndNeverSplitsSurrogatePair() {
-        String longChinese = "报".repeat(100);
-        assertEquals(DocumentBlobService.MAX_NAME_SEGMENT_CODE_POINTS,
-                DocumentBlobService.safeBaseName(longChinese).length());
-
-        // emoji 是代理对：按码点截断，末尾不能留半个字符（否则本地落盘会写出非法文件名）
-        String emoji = "😀".repeat(70);
-        String truncated = DocumentBlobService.safeBaseName(emoji + ".txt");
-        assertEquals(DocumentBlobService.MAX_NAME_SEGMENT_CODE_POINTS,
-                truncated.codePointCount(0, truncated.length()));
-        assertFalse(Character.isHighSurrogate(truncated.charAt(truncated.length() - 1)));
-    }
-
     // ==================== 对象名 ====================
 
+    /**
+     * 纯 uuid + 扩展名：key 里不含任何可读段。
+     * <p>
+     * 这是「重命名文档不必搬对象」的根据——S3 没有 rename 原语（改名 = copy + delete，
+     * 两步非原子且要整份复制），而 key 里的名字又不参与程序逻辑，所以干脆不放。
+     * 该契约由 {@code storedName} 的签名保证（它根本收不到文件名），编译期即成立。
+     */
     @Test
-    void storedName_isUuidPrefixedBySafeName() {
-        String stored = DocumentBlobService.storedName("季度报告.pdf", "pdf");
-        assertTrue(stored.endsWith("_季度报告.pdf"), stored);
-        // uuid 段固定 32 位十六进制（去掉了连字符）
-        assertEquals(32, stored.indexOf('_'));
-        assertTrue(stored.substring(0, 32).matches("[0-9a-f]{32}"), stored);
+    void storedName_isPlainUuidWithExtension() {
+        String stored = DocumentBlobService.storedName("pdf");
+        assertTrue(stored.matches("[0-9a-f]{32}\\.pdf"), stored);
     }
 
+    /** 唯一性完全由 uuid 承担：同一批文件、同样的扩展名也不会撞 key。 */
     @Test
-    void storedName_fallsBackToPlainUuidWhenNameUnusable() {
-        String stored = DocumentBlobService.storedName("   ", "txt");
-        assertFalse(stored.contains("_"), stored);
-        assertTrue(stored.endsWith(".txt"), stored);
-        assertEquals(32 + 4, stored.length());
+    void storedName_isUniqueForIdenticalInput() {
+        assertNotEquals(DocumentBlobService.storedName("pdf"), DocumentBlobService.storedName("pdf"));
     }
 
+    /** 归类段非法时的兜底：返回的对象名仍须可用（fileType 只影响目录，不该阻断上传）。 */
     @Test
-    void storedName_isUniqueEvenForIdenticalInput() {
-        assertFalse(DocumentBlobService.storedName("同名.pdf", "pdf")
-                .equals(DocumentBlobService.storedName("同名.pdf", "pdf")));
+    void storedName_usesFallbackTypeWhenFileTypeInvalid() {
+        String stored = DocumentBlobService.storedName(DocumentBlobService.normalizeFileType(null));
+        assertTrue(stored.endsWith("." + DocumentBlobService.TYPE_FALLBACK), stored);
     }
 
     // ==================== 扩展名归类段 ====================
@@ -134,7 +90,7 @@ class DocumentBlobKeyTest {
     void putOriginal_missingKbId_throwsInsteadOfWritingSomewhereUnknown() {
         DocumentBlobService blobService = StorageTestSupport.localBlobService();
         assertThrows(BizException.class, () -> blobService.putOriginal(
-                null, "a.pdf", "pdf", "application/pdf", InputStream.nullInputStream(), 0L));
+                null, "pdf", "application/pdf", InputStream.nullInputStream(), 0L));
     }
 
     @Test

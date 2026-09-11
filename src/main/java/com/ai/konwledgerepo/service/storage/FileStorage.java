@@ -16,7 +16,7 @@ import java.nio.charset.StandardCharsets;
  * 且调用方无从察觉。后端选择只由配置决定（{@code seuknowledge.storage.type}）。
  * <p>
  * {@code objectKey} 是与后端无关的逻辑键，两端统一口径（由 {@link DocumentBlobService} 生成，业务侧不自己拼）：
- * 原始文件 {@code {wsId}/{kbId}/raw/{ext}/{uuid}_{原始名}.{ext}}，
+ * 原始文件 {@code {wsId}/{kbId}/raw/{ext}/{uuid}.{ext}}，
  * 解析产物 md {@code {wsId}/{kbId}/derived/md/{docId}.md}。
  */
 public interface FileStorage {

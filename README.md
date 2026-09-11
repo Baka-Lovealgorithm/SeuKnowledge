@@ -207,23 +207,6 @@ npm run dev
 | `KB_LLAMAPARSE_TAKE_SCREENSHOT` / `KB_LLAMAPARSE_FILL_MISSING_PAGES` | true / true | 整页截图返回 / 缺页 VLM 补全（后者需 VISION 模型） |
 | `KB_ES_INDEX` / `KB_ES_DIMENSIONS` | kb_chunk / 1024 | ES 索引名与向量维度（**改维度需重建索引**） |
 | `KB_ASYNC_CORE_SIZE` / `KB_ASYNC_MAX_SIZE` / `KB_ASYNC_QUEUE_CAPACITY` | 8 / 32 / 256 | 通用异步线程池（文档解析、AI 抽取等无限定符 `@Async`） |
-
-### 对象键布局（MinIO 与本地磁盘同口径）
-
-两级前缀是「工作空间 / 知识库」，一个知识库就是一棵完整的子树（删库、导出、配额都只涉及一个前缀）；
-`raw` 与 `derived` 分开原始件与解析产物，`raw` 下再按扩展名分层：
-
-```
-{wsId}/{kbId}/raw/{ext}/{uuid}_{原始主名}.{ext}   原始上传文件
-{wsId}/{kbId}/derived/md/{docId}.md               LlamaParse 产物 / 编辑后的 md（同键覆盖即最新版）
-```
-
-- 对象名带原始主名是为了在 MinIO 控制台里可辨认；主名会做安全化（去目录、去危险字符、按码点截断到 60 字），
-  唯一性由 uuid 前缀保证。**注意**：重命名文档只改 DB 的 `file_name` 与 ES 索引、不搬对象，
-  所以 key 里保留的是**上传时**的名字。
-- 本地后端把同一个 key 落到 `KB_FILE_STORAGE_PATH` 下，即 `data/files/{wsId}/{kbId}/…`。
-- 改造前上传的文件键为 `{kbId}/{uuid}.{ext}`（少两级前缀），读取仍走 `kb_document.file_path` 的**原样路径**，
-  因此存量文件原地不动即可继续读，**无需迁移**。
 | `KB_VECTOR_ASYNC_CORE_SIZE` / `KB_VECTOR_ASYNC_MAX_SIZE` / `KB_VECTOR_ASYNC_QUEUE_CAPACITY` | 2 / 4 / 200 | 向量化专用线程池（精修「确认」与「重建向量」走此池，不再排在分钟级抽取任务后面） |
 | `KB_EXTRACT_CONCURRENCY` | 2 | 抽取任务全局并发上限（公平信号量，超限排队等待） |
 | `KB_TRACING_ENABLED` | true | OpenTelemetry 追踪总开关 |
@@ -231,6 +214,24 @@ npm run dev
 | `ACCESS_LOG_ENABLED` | true | Tomcat HTTP 访问日志开关 |
 
 > 完整键清单见 `application.yml` 的 `seuknowledge.*` 段。
+
+### 对象键布局（MinIO 与本地磁盘同口径）
+
+两级前缀是「工作空间 / 知识库」，一个知识库就是一棵完整的子树（删库、导出、配额都只涉及一个前缀）；
+`raw` 与 `derived` 分开原始件与解析产物，`raw` 下再按扩展名分层：
+
+```
+{wsId}/{kbId}/raw/{ext}/{uuid}.{ext}   原始上传文件
+{wsId}/{kbId}/derived/md/{docId}.md    LlamaParse 产物 / 编辑后的 md（同键覆盖即最新版）
+```
+
+- 对象名是**纯 uuid**（32 位十六进制、去连字符）。名字段不参与任何程序逻辑（读取永远只用整串
+  `object_key`），而 S3 没有 rename 原语——改名等于 copy + delete，既要整份复制、两步又非原子，
+  所以干脆不放：**重命名文档无需搬迁对象**，也不存在中间态或孤儿对象。可读名以 DB 的 `file_name`
+  为准，代价仅是 MinIO 控制台里认不出对象属于哪个文档。
+- 本地后端把同一个 key 落到 `KB_FILE_STORAGE_PATH` 下，即 `data/files/{wsId}/{kbId}/…`。
+- 改造前上传的文件键为 `{kbId}/{uuid}.{ext}`（少两级前缀），读取仍走 `kb_document.file_path` 的**原样路径**，
+  因此存量文件原地不动即可继续读，**无需迁移**。
 
 ---
 
@@ -253,4 +254,4 @@ $env:SPRING_PROFILES_ACTIVE='dev'; .\mvnw.cmd test
 .\mvnw.cmd test -Dminio.smoke=true -Dtest=MinioStorageSmokeTest -DfailIfNoSpecifiedTests=false
 ```
 
-当前 **77 个测试类、922 个用例**（分块器与标题祖先链、LlamaParse 表格解析、代码围栏分块、Excel 本地解析、文档解析、文档重命名/重建向量/文件名校验、向量化状态回写与线程池装配、文件存储抽象层与对象键口径（工作空间/知识库/raw-derived 分层、文件名安全化与截断）、真机 MinIO 冒烟、模型解析/配置、模型类型×用途组合矩阵、标题槽位解析链（含历史 `TITLE` 类型兼容）、知识库、会话与滚动摘要、抽取任务、多工作空间成员管理、空间组管理与权限取高、重排客户端/节点、标题生成、答案自检两阶段聚合（并行/串行两路一致）、答案评价（越权拒绝 / 撤销 / 只写反馈列 / 消息缓存失效）、点踩汇总口径（踩率分母、无快照时均值留空、无知识库短路、明细批量取问题不逐行）、旧版本缓存载荷兼容等）。其中 2 个 `@SpringBootTest` 集成测试类（4 个用例）需 MySQL/Redis 环境，纯单元测试 916 个全绿；另有 2 个 MinIO 冒烟用例默认 skipped（`-Dminio.smoke=true` 才跑），故常规全量为 922 用例 / 0 失败 / 2 跳过。
+当前 **77 个测试类、917 个用例**（分块器与标题祖先链、LlamaParse 表格解析、代码围栏分块、Excel 本地解析、文档解析、文档重命名/重建向量/文件名校验、向量化状态回写与线程池装配、文件存储抽象层与对象键口径（工作空间/知识库/raw-derived 分层、纯 uuid 命名）、真机 MinIO 冒烟、模型解析/配置、模型类型×用途组合矩阵、标题槽位解析链（含历史 `TITLE` 类型兼容）、知识库、会话与滚动摘要、抽取任务、多工作空间成员管理、空间组管理与权限取高、重排客户端/节点、标题生成、答案自检两阶段聚合（并行/串行两路一致）、答案评价（越权拒绝 / 撤销 / 只写反馈列 / 消息缓存失效）、点踩汇总口径（踩率分母、无快照时均值留空、无知识库短路、明细批量取问题不逐行）、旧版本缓存载荷兼容等）。其中 2 个 `@SpringBootTest` 集成测试类（4 个用例）需 MySQL/Redis 环境，纯单元测试 913 个全绿；另有 2 个 MinIO 冒烟用例默认 skipped（`-Dminio.smoke=true` 才跑），故常规全量为 917 用例 / 0 失败 / 2 跳过。
