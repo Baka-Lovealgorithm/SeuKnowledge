@@ -22,6 +22,7 @@
 |---|---|
 | 后端 | Java 21、Spring Boot 3.5、Spring AI 1.1（spring-ai-alibaba graph-core 状态图） |
 | 数据 | MySQL 8（业务数据）、Elasticsearch 8（向量与混合检索 BM25+knn+RRF）、Redis（登录态 / 缓存 / 任务进度） |
+| 文件存储 | MinIO 对象存储（默认）或本地磁盘（`KB_STORAGE_TYPE=local`），两种后端纯配置切换，**无自动降级** |
 | 前端 | Vue 3 + Vite + Pinia + Element Plus |
 | 模型 | DashScope（通义千问 / text-embedding / qwen-vl / gte-rerank）+ OpenAI 兼容（DeepSeek / ollama / one-api 等） |
 | 可观测性 | OpenTelemetry SDK + OTLP → Langfuse（未配置自动 no-op） |
@@ -95,6 +96,8 @@ mysql -uroot -p < sql/schema.sql
 > 已有数据库升级：执行 `sql/migrate_v2_unique_draft.sql` 添加 DRAFT 草稿唯一约束（去重 + 生成列索引，防并发重复草稿）。全新部署的 schema.sql 已含此约束，无需迁移。
 >
 > 已有数据库升级到「答案评价」版本：执行 `sql/migrate_v3_qa_feedback.sql`，为 `kb_chat_message` 增加反馈四列（`feedback` / `feedback_at` / `feedback_reason` / `feedback_note`）与答案自检快照四列（`verify_score` / `faithfulness_score` / `retry_count` / `missing_info`）。**全部可空、不回填、无索引、无外键**，存量消息与既有功能不受影响；仅 `role='ASSISTANT'` 的行会有值。若你已用新版应用启动过一次，`ddl-auto: update` 会自动补齐这些列，再执行本脚本会报 `Duplicate column name`（无害，跳过即可）。快照列对存量行是 NULL，因此汇总页的均值类指标只统计含快照的行（页面同时给出该口径的样本数）。
+>
+> 已有数据库升级到「对象存储」版本：执行 `sql/migrate_v4_minio_storage.sql`，为 `kb_document` 增加 `storage_type` / `object_key` 两列。**`file_path` 保留不动、存量行不回填**——`storage_type` 为 NULL 或 `local` 的行一律按本地磁盘解释，因此升级后无需搬迁任何文件；只有新上传的文档才写入 `KB_STORAGE_TYPE` 指定的后端。同样地，用新版启动过一次后 `ddl-auto: update` 会自行补齐，再执行本脚本报 `Duplicate column name` 属正常。
 
 ### 4. 配置模型服务（必配，否则问答/抽取不可用）
 
@@ -186,7 +189,11 @@ npm run dev
 | `KB_TOKEN_TTL` | 604800 | 登录 token 有效期（秒） |
 | `KB_CACHE_MEMBER_TTL` / `KB_CACHE_MODEL_TTL` / `KB_CACHE_AGENT_TTL` / `KB_CACHE_KB_TTL` / `KB_CACHE_KB_COUNT_TTL` / `KB_CACHE_KB_LIST_TTL` / `KB_CACHE_SESSION_TTL` / `KB_CACHE_HISTORY_TTL` / `KB_CACHE_TASK_TTL` | 300 / 600 / 600 / 300 / 300 / 60 / 60 / 600 / 86400 | 各类缓存 TTL（秒） |
 | `KB_RATE_LIMIT_ENABLED` / `KB_RATE_LIMIT_ASK_PER_MINUTE` | true / 30 | 问答限流开关与每用户每分钟上限（默认开启） |
-| `KB_FILE_STORAGE_PATH` | ./data/files | 文档存储目录 |
+| `KB_STORAGE_TYPE` | minio | 文件存储后端：`minio`（对象存储，默认）或 `local`（本地磁盘）。**纯配置切换、不自动降级**——MinIO 不可用即上传失败，不会静默落本地。该值只决定**新写入**去向；读取按 `kb_document.storage_type` 逐行路由，故切换后端后存量文档仍可读 |
+| `KB_MINIO_ENDPOINT` / `KB_MINIO_ACCESS_KEY` / `KB_MINIO_SECRET_KEY` / `KB_MINIO_BUCKET` | http://localhost:9000 / minioadmin / minioadmin / seu-knowledge | MinIO 接入参数（**默认凭证仅供本地开发，生产必须用环境变量覆盖**）。对象键：原始文件 `{kbId}/{uuid}.{ext}`、md 镜像 `md/{docId}.md`（同键覆盖即最新版） |
+| `KB_MINIO_AUTO_CREATE_BUCKET` | true | bucket 不存在时自动创建（**不启用版本控制**；md 的历史版本由 `kb_document_curate` 承载） |
+| `KB_STORAGE_TEMP_DIR` | 空（`java.io.tmpdir/seuknowledge`） | 对象存储文档的物化临时目录；仅读取 MinIO 文档时使用，用完即删 |
+| `KB_FILE_STORAGE_PATH` | ./data/files | **local 后端**的文档落盘目录（原始文件 `{kbId}/{uuid}.{ext}`）；`KB_STORAGE_TYPE=minio` 时不用于写入，但仍用于读取存量本地行 |
 | `KB_FILE_MAX_SIZE` | 20971520 (20MB) | 单文件大小上限（字节，与 multipart 上限对齐；上传超大文件需调大） |
 | `KB_QA_MESSAGE_WINDOW` / `KB_QA_MAX_RETRY` | 20 / 2 | 对话记忆窗口条数 / 自检重试上限 |
 | `KB_RERANK_CHUNK_TOP` / `KB_RERANK_OTHER_TOP` | 6 / 4 | 精排配额（文档 chunk / 业务知识+问答对合并；**重排模型本身在模型配置页配置**） |
@@ -224,6 +231,9 @@ npm run dev
 
 # 全量测试（含 2 个 @SpringBootTest 集成测试类 / 4 个用例，需 MySQL/Redis；ES 缺失时 fail-open 降级）
 $env:SPRING_PROFILES_ACTIVE='dev'; .\mvnw.cmd test
+
+# MinIO 真机冒烟（默认跳过，需 9000 端口已起 MinIO；覆盖 put/读/物化/覆盖/删除与按行路由）
+.\mvnw.cmd test -Dminio.smoke=true -Dtest=MinioStorageSmokeTest -DfailIfNoSpecifiedTests=false
 ```
 
-当前 **75 个测试类、904 个用例**（分块器与标题祖先链、LlamaParse 表格解析、代码围栏分块、Excel 本地解析、文档解析、文档重命名/重建向量/文件名校验、向量化状态回写与线程池装配、模型解析/配置、模型类型×用途组合矩阵、标题槽位解析链（含历史 `TITLE` 类型兼容）、知识库、会话与滚动摘要、抽取任务、多工作空间成员管理、空间组管理与权限取高、重排客户端/节点、标题生成、答案自检两阶段聚合（并行/串行两路一致）、答案评价（越权拒绝 / 撤销 / 只写反馈列 / 消息缓存失效）、点踩汇总口径（踩率分母、无快照时均值留空、无知识库短路、明细批量取问题不逐行）、旧版本缓存载荷兼容等）。其中 2 个 `@SpringBootTest` 集成测试类（4 个用例）需 MySQL/Redis 环境，纯单元测试 900 个全绿。
+当前 **76 个测试类、906 个用例**（分块器与标题祖先链、LlamaParse 表格解析、代码围栏分块、Excel 本地解析、文档解析、文档重命名/重建向量/文件名校验、向量化状态回写与线程池装配、文件存储抽象层与真机 MinIO 冒烟、模型解析/配置、模型类型×用途组合矩阵、标题槽位解析链（含历史 `TITLE` 类型兼容）、知识库、会话与滚动摘要、抽取任务、多工作空间成员管理、空间组管理与权限取高、重排客户端/节点、标题生成、答案自检两阶段聚合（并行/串行两路一致）、答案评价（越权拒绝 / 撤销 / 只写反馈列 / 消息缓存失效）、点踩汇总口径（踩率分母、无快照时均值留空、无知识库短路、明细批量取问题不逐行）、旧版本缓存载荷兼容等）。其中 2 个 `@SpringBootTest` 集成测试类（4 个用例）需 MySQL/Redis 环境，纯单元测试 902 个全绿；另有 2 个 MinIO 冒烟用例默认 skipped（`-Dminio.smoke=true` 才跑），故常规全量为 906 用例 / 0 失败 / 2 跳过。

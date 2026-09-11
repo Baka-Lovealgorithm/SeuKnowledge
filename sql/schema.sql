@@ -150,6 +150,9 @@ CREATE TABLE IF NOT EXISTS kb_chunk (
     primary key (id)
 ) engine=InnoDB;
 
+-- 文档。file_path 为历史字段（local 后端仍写真实路径）；storage_type/object_key 为对象存储改造
+-- 新增列：storage_type ∈ {local, minio}，存量行为 NULL 一律按 local 并用 file_path 解释（零迁移）。
+-- object_key 是与后端无关的逻辑键（原始文件 {kbId}/{uuid}.{ext}，LlamaParse 产物 md md/{docId}.md）。
 CREATE TABLE IF NOT EXISTS kb_document (
     chunk_count integer,
     version integer,
@@ -164,6 +167,8 @@ CREATE TABLE IF NOT EXISTS kb_document (
     error_msg varchar(500),
     file_path varchar(500),
     file_name varchar(255) not null,
+    storage_type varchar(20),
+    object_key varchar(512),
     curate_required bit,
     curate_status varchar(20),
     primary key (id)

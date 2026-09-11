@@ -111,6 +111,17 @@ seuknowledge:
   file:
     storage-path: ${KB_FILE_STORAGE_PATH:./data/files}
     max-size: ${KB_FILE_MAX_SIZE:20971520}   # 单文件大小上限（字节，默认 20MB；与 spring.servlet.multipart.max-file-size 对齐，测试大文件可调大）
+  # 文件物理存储后端：minio（默认）/ local。仅决定「写」走哪个后端，不做自动降级；
+  # 「读」按 kb_document.storage_type 逐行路由，故 minio 部署下仍可读存量本地文件。
+  storage:
+    type: ${KB_STORAGE_TYPE:minio}
+    temp-dir: ${KB_STORAGE_TEMP_DIR:}        # minio 后端把对象物化成临时文件供解析器使用的目录；空则用 java.io.tmpdir/seuknowledge
+    minio:
+      endpoint: ${KB_MINIO_ENDPOINT:http://localhost:9000}
+      access-key: ${KB_MINIO_ACCESS_KEY:minioadmin}
+      secret-key: ${KB_MINIO_SECRET_KEY:minioadmin}
+      bucket: ${KB_MINIO_BUCKET:seu-knowledge}
+      auto-create-bucket: ${KB_MINIO_AUTO_CREATE_BUCKET:true}   # 启动自检时 bucket 不存在则自动创建（不启用版本控制）
   qa:
     message-window: ${KB_QA_MESSAGE_WINDOW:20}   # 对话记忆窗口条数
     max-retry: ${KB_QA_MAX_RETRY:2}              # 自检重试上限

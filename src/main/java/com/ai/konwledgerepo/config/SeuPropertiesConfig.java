@@ -11,6 +11,7 @@ import com.ai.konwledgerepo.config.props.SeuRateLimitProperties;
 import com.ai.konwledgerepo.config.props.SeuRecallProperties;
 import com.ai.konwledgerepo.config.props.SeuRerankProperties;
 import com.ai.konwledgerepo.config.props.SeuSecurityProperties;
+import com.ai.konwledgerepo.config.props.SeuStorageProperties;
 import com.ai.konwledgerepo.config.props.SeuTracingProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
@@ -32,7 +33,8 @@ import org.springframework.context.annotation.Configuration;
         SeuAsyncProperties.class,
         SeuEsProperties.class,
         SeuTracingProperties.class,
-        SeuExtractProperties.class
+        SeuExtractProperties.class,
+        SeuStorageProperties.class
 })
 public class SeuPropertiesConfig {
 }

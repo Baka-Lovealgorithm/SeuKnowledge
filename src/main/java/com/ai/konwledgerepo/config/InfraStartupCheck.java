@@ -1,6 +1,7 @@
 package com.ai.konwledgerepo.config;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import com.ai.konwledgerepo.service.storage.FileStorage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -21,6 +22,7 @@ import java.util.List;
  * <p>
  * - 时机：{@link ApplicationReadyEvent}（晚于各 Runner / 数据初始化，此时探测最贴近"可服务"状态）；
  * - 行为：依次探测 Redis(PING) / MySQL(connection.isValid) / ES(ping)，输出 [OK]/[FAIL] 健康表；
+ *   MinIO 项仅在 {@code seuknowledge.storage.type=minio}（该后端 bean 已装配）时才出现；
  * - 失败项附带"受影响能力"清单并打 ERROR；
  * - 开关：seuknowledge.infra-check.enabled=false 整体跳过；
  * - 阻断：seuknowledge.infra-check.fail-fast=true 时任一失败抛异常阻断启动（生产建议）；
@@ -34,6 +36,8 @@ public class InfraStartupCheck {
     private final StringRedisTemplate redis;
     private final DataSource dataSource;
     private final ElasticsearchClient esClient;
+    /** 已装配的存储后端（local 恒有；minio 仅 type=minio 时存在） */
+    private final List<FileStorage> storages;
 
     @Value("${seuknowledge.infra-check.enabled:true}")
     private boolean enabled;
@@ -51,10 +55,18 @@ public class InfraStartupCheck {
     @Value("${spring.elasticsearch.uris:http://localhost:9200}")
     private String esTarget;
 
-    public InfraStartupCheck(StringRedisTemplate redis, DataSource dataSource, ElasticsearchClient esClient) {
+    @Value("${seuknowledge.storage.minio.endpoint:http://localhost:9000}")
+    private String minioEndpoint;
+
+    @Value("${seuknowledge.storage.minio.bucket:seu-knowledge}")
+    private String minioBucket;
+
+    public InfraStartupCheck(StringRedisTemplate redis, DataSource dataSource, ElasticsearchClient esClient,
+                             List<FileStorage> storages) {
         this.redis = redis;
         this.dataSource = dataSource;
         this.esClient = esClient;
+        this.storages = storages;
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -69,6 +81,12 @@ public class InfraStartupCheck {
         results.add(checkRedis());
         results.add(checkMysql());
         results.add(checkEs());
+        // MinIO 按条件装配：type=local 时该 bean 不存在，自检表里也就不出现这一项
+        storages.stream()
+                .filter(s -> FileStorage.MINIO.equals(s.type()))
+                .findFirst()
+                .map(this::checkMinio)
+                .ifPresent(results::add);
 
         boolean anyFail = false;
         for (Result r : results) {
@@ -126,6 +144,22 @@ public class InfraStartupCheck {
         }
     }
 
+    /**
+     * MinIO 探测：由 {@code MinioFileStorage.ensureReady()} 完成「bucket 存在性校验 / 按配置自动创建」。
+     * 失败即视为该后端不可用——按「不自动降级」约定，此时上传与 md 写入都会直接报错，
+     * 所以必须在启动自检里显式暴露，而不是等用户第一次上传才发现。
+     */
+    private Result checkMinio(FileStorage storage) {
+        long t0 = System.nanoTime();
+        String target = minioEndpoint + "/" + minioBucket;
+        try {
+            storage.ensureReady();
+            return new Result(true, "MinIO", target, costMs(t0), null);
+        } catch (Exception e) {
+            return new Result(false, "MinIO", target, costMs(t0), concise(e));
+        }
+    }
+
     // ===== 工具 =====
 
     private static long costMs(long startedNanos) {
@@ -148,6 +182,8 @@ public class InfraStartupCheck {
             case "Redis" -> "登录 token 降级内存存储、/ask 限流失效、登录防爆破失效、会话互斥锁失效、各类缓存回源 DB";
             case "MySQL" -> "登录/会话/知识库/抽取任务等全部业务数据读写不可用";
             case "ES" -> "问答链路的向量检索与文档召回不可用（上传向量化、检索均失败）";
+            case "MinIO" -> "文档上传/解析（原始文件与 md 读写）全部失败——存储后端不做自动降级，"
+                    + "如需本地磁盘请置 seuknowledge.storage.type=local";
             default -> "-";
         };
     }

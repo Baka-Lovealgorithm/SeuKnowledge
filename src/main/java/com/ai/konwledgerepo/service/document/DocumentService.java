@@ -21,6 +21,7 @@ import com.ai.konwledgerepo.repository.DocumentCurateRepository;
 import com.ai.konwledgerepo.repository.DocumentRepository;
 import com.ai.konwledgerepo.repository.QaPairRepository;
 import com.ai.konwledgerepo.service.knowledgebase.KnowledgeBaseService;
+import com.ai.konwledgerepo.service.storage.DocumentBlobService;
 import com.ai.konwledgerepo.service.vector.VectorIngestionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,8 +31,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -67,7 +67,7 @@ public class DocumentService {
     private final VectorIngestionService vectorIngestionService;
     private final DocumentParseExecutor parseExecutor;
     private final AfterCommitExecutor afterCommitExecutor;
-    private final String storagePath;
+    private final DocumentBlobService blobService;
     private final long maxFileSize;
 
     public DocumentService(DocumentRepository documentRepository,
@@ -81,6 +81,7 @@ public class DocumentService {
                            VectorIngestionService vectorIngestionService,
                            DocumentParseExecutor parseExecutor,
                            AfterCommitExecutor afterCommitExecutor,
+                           DocumentBlobService blobService,
                            SeuFileProperties fileProps) {
         this.documentRepository = documentRepository;
         this.chunkRepository = chunkRepository;
@@ -93,7 +94,7 @@ public class DocumentService {
         this.vectorIngestionService = vectorIngestionService;
         this.parseExecutor = parseExecutor;
         this.afterCommitExecutor = afterCommitExecutor;
-        this.storagePath = fileProps.storagePath();
+        this.blobService = blobService;
         this.maxFileSize = fileProps.maxSize();
     }
 
@@ -236,13 +237,13 @@ public class DocumentService {
         // 删初洗 md（全部版本）与初洗/精修审计
         curateRepository.deleteByDocId(docId);
         curateLogRepository.deleteByDocId(docId);
-        // 删文件
-        if (doc.getFilePath() != null && !doc.getFilePath().isBlank()) {
-            try {
-                Files.deleteIfExists(Path.of(doc.getFilePath()));
-            } catch (IOException e) {
-                log.warn("删除文档文件失败: {}", doc.getFilePath(), e);
-            }
+        // 删文件（本地磁盘 / 对象存储）。DB 记录删除不应被存储可用性阻断，故失败仅告警留痕——
+        // 与改造前 Files.deleteIfExists 失败只 WARN 的语义一致。
+        try {
+            blobService.deleteOriginal(doc);
+            blobService.deleteMd(doc);
+        } catch (RuntimeException e) {
+            log.warn("删除文档物理文件失败（文档记录仍会删除）docId={}: {}", docId, e.getMessage());
         }
         documentRepository.delete(doc);
         log.info("删除文档 {} 完成；保留并解除来源关联：业务知识 {} 条，问答对 {} 条",
@@ -411,42 +412,39 @@ public class DocumentService {
     private Document persistFile(Long kbId, MultipartFile file, Long userId) {
         String ext = extension(file.getOriginalFilename());
         String storedName = UUID.randomUUID().toString().replace("-", "") + "." + ext;
-        Path dir = Path.of(storagePath, String.valueOf(kbId));
-        Path target = null;
+        // 先算出 key：存储写入中途失败时也能据此清理半截产物（putOriginal 返回结果前它仍为 null）
+        String objectKey = DocumentBlobService.originalKey(kbId, storedName);
         try {
-            Files.createDirectories(dir);
-            target = dir.resolve(storedName);
-            file.transferTo(target);
-
+            DocumentBlobService.StoredOriginal stored;
+            try (InputStream in = file.getInputStream()) {
+                stored = blobService.putOriginal(kbId, storedName, file.getContentType(), in, file.getSize());
+            }
             Document doc = new Document();
             doc.setKbId(kbId);
             doc.setFileName(file.getOriginalFilename());
             doc.setFileType(ext);
-            doc.setFilePath(target.toString());
+            doc.setStorageType(stored.storageType());
+            doc.setObjectKey(stored.objectKey());
+            // local 后端同时保留真实路径：旧工具与 Path.of(file_path) 的读法无需改动；
+            // minio 后端为 null（对象不存在于本机）。
+            doc.setFilePath(stored.localPath());
             doc.setFileSize(file.getSize());
             doc.setParseStatus(DocStatus.PENDING.value());
             doc.setCreatedBy(userId);
             // saveAndFlush：让字段超长等完整性异常在本方法内抛出（否则延迟到 commit，已逃出手工清理），
-            // 从而删掉刚写入的磁盘文件——否则文件会永久孤儿留在 data/ 下（不在 git 里，删了找不回来）。
+            // 从而删掉刚写入的对象——否则会永久孤儿留在存储里（不在 git 里，删了找不回来）。
             return documentRepository.saveAndFlush(doc);
         } catch (IOException e) {
-            deleteQuietly(target);
+            blobService.deleteQuietly(objectKey);
             throw new BizException("文件保存失败: " + e.getMessage());
         } catch (DataAccessException e) {
-            deleteQuietly(target);
+            blobService.deleteQuietly(objectKey);
             log.warn("文档记录落库失败，已清理落盘文件 kbId={} file={}", kbId, file.getOriginalFilename(), e);
             throw e;
-        }
-    }
-
-    private static void deleteQuietly(Path path) {
-        if (path == null) {
-            return;
-        }
-        try {
-            Files.deleteIfExists(path);
-        } catch (IOException ex) {
-            log.warn("清理孤儿上传文件失败 {}: {}", path, ex.getMessage());
+        } catch (BizException e) {
+            // 存储后端写入失败：不降级、不吞异常，尽力清理后原样抛出
+            blobService.deleteQuietly(objectKey);
+            throw e;
         }
     }
 

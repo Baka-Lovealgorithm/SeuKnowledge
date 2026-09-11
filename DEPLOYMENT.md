@@ -10,11 +10,22 @@
 |---|---|---|
 | `mysql-data` Docker 卷 | 用户、知识库、文档元数据、chunk、模型配置、会话和审计信息 | 必须保留 |
 | `es-data` Docker 卷 | 向量索引和 BM25 索引 | 可由业务数据重建，但耗时较长 |
-| `./runtime/data/files` | 用户上传的原始文档 | 必须保留，重解析和下载需要它 |
+| `./runtime/data/files` | 用户上传的原始文档（**仅 `KB_STORAGE_TYPE=local` 时**，见下方说明） | 必须保留，重解析和下载需要它 |
 | `./runtime/data/llamaparse` | LlamaParse 的原始 Markdown 产物 | 建议保留，便于质量复盘 |
 | `./runtime/logs` | 应用、访问和模型调用日志 | 可选，但故障排查很有价值 |
 
 这些目录均已被 `.gitignore` 排除，不能提交到 Git。
+
+**原始文件的存储位置由 `KB_STORAGE_TYPE` 决定，且只影响新上传的文件：**
+
+| 取值 | 原始文件位置 | 备份要求 |
+|---|---|---|
+| `local`（Compose 当前默认，见 `.env.example`） | `./runtime/data/files`，键 `{kbId}/{uuid}.{ext}` | 连同 `runtime/data` 一起备份 |
+| `minio`（应用默认值，需要 MinIO 服务） | MinIO 对象存储，键 `{kbId}/{uuid}.{ext}`；md 镜像键 `md/{docId}.md` | 必须单独备份 MinIO 的数据卷，`runtime/data/files` 不再包含新文档 |
+
+`kb_document.storage_type` 逐行记录每个文档实际所在的后端，读取时按行路由，因此**切换后端不必搬迁既有文件**：存量行（`storage_type` 为 NULL/`local`）继续从本地目录读取，只有切换后的新上传走新后端。**本仓库的 Compose 暂未包含 MinIO 服务**，所以在 Compose 部署中请保持 `KB_STORAGE_TYPE=local`；要改用它需先自行加入 MinIO 服务并把 bucket 数据卷列入备份。
+
+注意 MinIO 后端**不做自动降级**：MinIO 不可用时上传会直接失败，而不是回落到本地目录。这是有意为之，避免同一批文档一半在对象存储、一半在本地而无人察觉。
 
 ## 2. 部署前提
 
@@ -50,6 +61,8 @@ LLAMA_CLOUD_API_KEY=your-llamaparse-key
 ```
 
 `.env` 还支持 `VITE_ENABLE_AI_EXTRACTION`（默认 `false`，见 `.env.example`）：前端**构建期**开关，关闭时隐藏「AI 抽取」相关入口与模型配置页的抽取（EXTRACT）用途绑定。设为 `true` 后需要重新构建前端镜像（`docker compose up -d --build frontend`）才能生效；已有的抽取配置数据保留在后端，可随开关恢复。
+
+`.env.example` 已预置 `KB_STORAGE_TYPE=local`，Compose 部署请保持该值——本套 Compose 的服务清单里没有 MinIO（详见第 1 节）。该值是**运行期**开关（不像 `VITE_ENABLE_AI_EXTRACTION` 需要重建），改完 `docker compose up -d backend` 重启后端即可生效，但只影响新上传的文档。
 
 构建并启动整套服务：
 
@@ -155,8 +168,8 @@ docker compose up -d --build backend frontend
 |---|---|
 | `KB_ES_DIMENSIONS` 或向量模型维度 | 新建或重建 `kb_chunk` 索引，再重新向量化全部来源 |
 | ES 分词器、插件或版本 | 构建匹配的 ES 镜像并重新建立索引 |
-| MySQL 表或字段变更 | 上线前使用版本化迁移，长期不能依赖 `ddl-auto=update` |
-| 上传文件存储路径 | 变更前复制 `runtime/data/files`，文档记录中保存有文件路径 |
+| MySQL 表或字段变更 | 上线前使用版本化迁移，长期不能依赖 `ddl-auto=update`。存储后端改造对应 `sql/migrate_v4_minio_storage.sql`（`kb_document` 加 `storage_type` / `object_key`，可空、不回填） |
+| 上传文件存储路径 / 存储后端 | `KB_STORAGE_TYPE=local` 时变更前复制 `runtime/data/files`；切换到 `minio` 前先确认 MinIO 数据卷已纳入备份。既有文件不必搬迁——读取按 `kb_document.storage_type` 逐行路由，存量行继续走原路径 |
 | API 或前端路由变更 | 后端与前端必须作为同一测试版本发布 |
 
 当前项目仍使用 Hibernate `ddl-auto=update`，它适合开发。首次长期生产部署前，应引入 Flyway 或 Liquibase，并让生产环境切换到 schema validation。之后每次表结构变更都应有经审核的版本化迁移和恢复方案。

@@ -15,6 +15,7 @@ import com.ai.konwledgerepo.repository.ChunkReviewLogRepository;
 import com.ai.konwledgerepo.repository.DocumentCurateLogRepository;
 import com.ai.konwledgerepo.repository.DocumentCurateRepository;
 import com.ai.konwledgerepo.repository.DocumentRepository;
+import com.ai.konwledgerepo.service.storage.DocumentBlobService;
 import com.ai.konwledgerepo.service.vector.VectorIngestionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -68,6 +69,7 @@ public class DocumentCurateService {
     private final DocumentParseTx parseTx;
     private final VectorIngestionService vectorIngestionService;
     private final AfterCommitExecutor afterCommitExecutor;
+    private final DocumentBlobService blobService;
 
     public DocumentCurateService(DocumentRepository documentRepository,
                                  ChunkRepository chunkRepository,
@@ -78,7 +80,8 @@ public class DocumentCurateService {
                                  DocumentCleanService documentCleanService,
                                  DocumentParseTx parseTx,
                                  VectorIngestionService vectorIngestionService,
-                                 AfterCommitExecutor afterCommitExecutor) {
+                                 AfterCommitExecutor afterCommitExecutor,
+                                 DocumentBlobService blobService) {
         this.documentRepository = documentRepository;
         this.chunkRepository = chunkRepository;
         this.curateRepository = curateRepository;
@@ -89,6 +92,7 @@ public class DocumentCurateService {
         this.parseTx = parseTx;
         this.vectorIngestionService = vectorIngestionService;
         this.afterCommitExecutor = afterCommitExecutor;
+        this.blobService = blobService;
     }
 
     // ==================== 查询 ====================
@@ -152,7 +156,7 @@ public class DocumentCurateService {
             if (row.getVersion() != version) {
                 break;
             }
-            sb.append("\n<!-- PAGE ").append(row.getPageNum()).append(" -->\n").append(row.getContent());
+            CurateMdText.appendPage(sb, row.getPageNum(), row.getContent());
         }
         return sb.toString();
     }
@@ -192,6 +196,9 @@ public class DocumentCurateService {
             curateRepository.deleteByDocId(docId);
         }
         curateRepository.saveAll(rows);
+        // md 镜像到对象存储（宽松：失败只 WARN）。kb_document_curate 才是权威副本，
+        // 存储抖动不该把整篇文档判成解析失败；对象内容与 DB 最新版本严格同源。
+        blobService.putMdQuietly(docId, CurateMdText.assembleRows(rows));
         recordLog(docId, "save_md", replaced ? "替换旧初洗 md（至 v" + oldMaxVersion + "）" : null,
                 "v1 " + rows.size() + " 页", userId);
         if (replaced) {
@@ -239,6 +246,10 @@ public class DocumentCurateService {
             rows.add(row);
         }
         curateRepository.saveAll(rows);
+        // md 镜像覆盖同一对象（严格：失败即抛，事务回滚）。用户主动保存必须能看见失败，
+        // 否则会出现「DB 已保存新版本、对象存储还是旧 md」的静默不一致。
+        // DB 侧仍按 version=maxVersion+1 append-only 保留全部历史，不受影响。
+        blobService.putMdStrict(docId, CurateMdText.assembleRows(rows));
         // 重分块：分块 + chunk 级清洗 + 事务内删旧插新
         List<ChunkPiece> pieces = parserService.chunkFromPages(pages);
         DocumentCleanService.ChunkCleanResult clean = documentCleanService.cleanChunks(pieces);

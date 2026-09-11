@@ -13,6 +13,7 @@ import com.ai.konwledgerepo.repository.ChunkReviewLogRepository;
 import com.ai.konwledgerepo.repository.DocumentCurateLogRepository;
 import com.ai.konwledgerepo.repository.DocumentCurateRepository;
 import com.ai.konwledgerepo.repository.DocumentRepository;
+import com.ai.konwledgerepo.service.storage.DocumentBlobService;
 import com.ai.konwledgerepo.service.vector.VectorIngestionService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -50,6 +51,7 @@ class DocumentCurateServiceTest {
     private DocumentParseTx parseTx;
     private VectorIngestionService vectorIngestionService;
     private AfterCommitExecutor afterCommitExecutor;
+    private DocumentBlobService blobService;
     private DocumentCurateService service;
 
     @BeforeEach
@@ -64,9 +66,10 @@ class DocumentCurateServiceTest {
         parseTx = mock(DocumentParseTx.class);
         vectorIngestionService = mock(VectorIngestionService.class);
         afterCommitExecutor = mock(AfterCommitExecutor.class);
+        blobService = mock(DocumentBlobService.class);
         service = new DocumentCurateService(documentRepository, chunkRepository, curateRepository,
                 curateLogRepository, reviewLogRepository, parserService, documentCleanService, parseTx,
-                vectorIngestionService, afterCommitExecutor);
+                vectorIngestionService, afterCommitExecutor, blobService);
     }
 
     private Document doc(Long id, String status) {

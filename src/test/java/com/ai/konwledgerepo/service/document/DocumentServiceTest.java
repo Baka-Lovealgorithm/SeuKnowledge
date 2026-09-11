@@ -18,6 +18,7 @@ import com.ai.konwledgerepo.repository.DocumentRepository;
 import com.ai.konwledgerepo.repository.QaPairRepository;
 import com.ai.konwledgerepo.service.knowledgebase.KnowledgeBaseService;
 import com.ai.konwledgerepo.service.vector.VectorIngestionService;
+import com.ai.konwledgerepo.support.StorageTestSupport;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -82,7 +83,8 @@ class DocumentServiceTest {
         service = new DocumentService(documentRepository, chunkRepository, curateRepository, curateLogRepository,
                 chunkReviewLogRepository,
                 businessKnowledgeRepository, qaPairRepository,
-                kbService, vectorIngestionService, parseExecutor, new AfterCommitExecutor(), fileProps);
+                kbService, vectorIngestionService, parseExecutor, new AfterCommitExecutor(),
+                StorageTestSupport.localBlobService(tempDir), fileProps);
 
         when(documentRepository.findById(DOC_ID)).thenReturn(Optional.of(doc("手册.pdf", "pdf", null)));
         KnowledgeBase kb = new KnowledgeBase();

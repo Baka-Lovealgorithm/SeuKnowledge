@@ -26,6 +26,26 @@ public class Document extends BaseEntity {
     @Column(name = "file_path", length = 500)
     private String filePath;
 
+    /**
+     * 文件所在存储后端：{@code local} / {@code minio}。
+     * <p>
+     * 改造前入库的历史行为 NULL —— 一律按 {@code local} 并用 {@link #filePath} 解释，
+     * 因此存量数据零迁移即可继续解析/删除。
+     */
+    @Column(name = "storage_type", length = 20)
+    private String storageType;
+
+    /**
+     * 与后端无关的逻辑对象键：原始文件 {@code {kbId}/{uuid}.{ext}}，LlamaParse 产物 md {@code md/{docId}.md}。
+     * MinIO 行靠它定位对象；local 行同时也会把真实路径写进 {@link #filePath}（兼容旧工具与旧读法）。
+     */
+    @Column(name = "object_key", length = 512)
+    private String objectKey;
+
+    /** 存储后端常量（见 {@code service.storage.FileStorage}） */
+    public static final String STORAGE_LOCAL = "local";
+    public static final String STORAGE_MINIO = "minio";
+
     @Column(name = "file_size")
     private Long fileSize;
 
@@ -109,6 +129,22 @@ public class Document extends BaseEntity {
 
     public void setFilePath(String filePath) {
         this.filePath = filePath;
+    }
+
+    public String getStorageType() {
+        return storageType;
+    }
+
+    public void setStorageType(String storageType) {
+        this.storageType = storageType;
+    }
+
+    public String getObjectKey() {
+        return objectKey;
+    }
+
+    public void setObjectKey(String objectKey) {
+        this.objectKey = objectKey;
     }
 
     public Long getFileSize() {

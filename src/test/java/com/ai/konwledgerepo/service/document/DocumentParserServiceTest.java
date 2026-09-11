@@ -5,6 +5,7 @@ import com.ai.konwledgerepo.config.props.SeuDocumentProperties;
 import com.ai.konwledgerepo.entity.Document;
 import com.ai.konwledgerepo.entity.KnowledgeBase;
 import com.ai.konwledgerepo.service.knowledgebase.WorkspaceIdResolver;
+import com.ai.konwledgerepo.support.StorageTestSupport;
 import com.ai.konwledgerepo.tracing.QaTracing;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
@@ -76,7 +77,8 @@ class DocumentParserServiceTest {
         when(clean.cleanPages(any())).thenAnswer(inv ->
                 new DocumentCleanService.PageCleanResult(inv.getArgument(0), List.of()));
         return new DocumentParserService(llama, new HtmlParserService(), pptx, excel, resolver, pdfService, filler,
-                mock(ParseCacheService.class), clean, tracing, props, localHtmlParserEnabled);
+                mock(ParseCacheService.class), clean, StorageTestSupport.localBlobService(), tracing, props,
+                localHtmlParserEnabled);
     }
 
     /** 测试中关闭识图解析与追踪，保持纯文本分块行为 */

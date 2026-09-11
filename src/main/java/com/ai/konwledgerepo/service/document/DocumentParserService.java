@@ -5,6 +5,8 @@ import com.ai.konwledgerepo.common.Texts;
 import com.ai.konwledgerepo.config.props.SeuDocumentProperties;
 import com.ai.konwledgerepo.entity.Document;
 import com.ai.konwledgerepo.service.knowledgebase.WorkspaceIdResolver;
+import com.ai.konwledgerepo.service.storage.DocumentBlobService;
+import com.ai.konwledgerepo.service.storage.MaterializedFile;
 import com.ai.konwledgerepo.tracing.QaTracing;
 import com.ai.konwledgerepo.tracing.TokenAccumulator;
 import io.opentelemetry.api.trace.Span;
@@ -48,6 +50,7 @@ public class DocumentParserService {
     private final VisionPageFiller visionPageFiller;
     private final ParseCacheService parseCacheService;
     private final DocumentCleanService documentCleanService;
+    private final DocumentBlobService blobService;
     private final QaTracing qaTracing;
     private final int chunkSize;
     private final int chunkOverlap;
@@ -63,6 +66,7 @@ public class DocumentParserService {
                                  VisionPageFiller visionPageFiller,
                                  ParseCacheService parseCacheService,
                                  DocumentCleanService documentCleanService,
+                                 DocumentBlobService blobService,
                                  QaTracing qaTracing,
                                  SeuDocumentProperties docProps,
                                  @Value("${seuknowledge.document.local-html-parser-enabled:false}")
@@ -76,6 +80,7 @@ public class DocumentParserService {
         this.visionPageFiller = visionPageFiller;
         this.parseCacheService = parseCacheService;
         this.documentCleanService = documentCleanService;
+        this.blobService = blobService;
         this.qaTracing = qaTracing;
         this.chunkSize = docProps.chunkSize();
         this.chunkOverlap = docProps.chunkOverlap();
@@ -109,15 +114,19 @@ public class DocumentParserService {
     }
 
     private List<ChunkPiece> doParse(Document doc, Long workspaceId, boolean reuseCache) {
-        try {
-            Path path = Path.of(doc.getFilePath());
+        Long docId = doc.getId();
+        // 物化：local 后端直接返回真实文件（不删），minio 后端先下载到临时副本（close 时删）。
+        // 下游解析器（POI/PDFBox/Jsoup/LlamaParse 上传）全部按内容嗅探，且路径不逃逸本调用栈
+        // （VisionPageFiller 内部线程池 join 后才返回），故 try-with-resources 是安全的清理时机。
+        try (MaterializedFile source = blobService.materializeOriginal(doc)) {
+            Path path = source.path();
             return switch (doc.getFileType().toLowerCase()) {
                 case "txt" -> parseText(path);
                 case "md" -> parseMarkdown(path);
-                case "html" -> parseHtml(path, doc.getFileName(), reuseCache);
-                case "pdf" -> parsePdfWithLlamaParseFallback(path, doc.getFileName(), workspaceId, reuseCache);
-                case "docx" -> parseLlamaParseRequired(path, doc.getFileName(), reuseCache, "DOCX");
-                case "pptx" -> pptxParserService.parse(path, doc.getFileName(), workspaceId);
+                case "html" -> parseHtml(path, docId, doc.getFileName(), reuseCache);
+                case "pdf" -> parsePdfWithLlamaParseFallback(path, docId, doc.getFileName(), workspaceId, reuseCache);
+                case "docx" -> parseLlamaParseRequired(path, docId, doc.getFileName(), reuseCache, "DOCX");
+                case "pptx" -> pptxParserService.parse(path, docId, doc.getFileName(), workspaceId);
                 case "xlsx", "xls" -> excelParserService.parse(path, doc.getFileName());
                 default -> throw new BizException("不支持的文件类型: " + doc.getFileType());
             };
@@ -127,12 +136,12 @@ public class DocumentParserService {
     }
 
     /** HTML 默认使用 LlamaParse；仅显式开启开关时使用本地 Jsoup 备用解析。 */
-    private List<ChunkPiece> parseHtml(Path path, String fileName, boolean reuseCache) {
+    private List<ChunkPiece> parseHtml(Path path, Long docId, String fileName, boolean reuseCache) {
         if (localHtmlParserEnabled) {
             log.info("本地 HTML 备用解析已启用，跳过 LlamaParse: {}", fileName);
             return htmlParserService.parse(path, chunkSize, chunkOverlap);
         }
-        return parseLlamaParseRequired(path, fileName, reuseCache, "HTML");
+        return parseLlamaParseRequired(path, docId, fileName, reuseCache, "HTML");
     }
 
     /** 当前配置下，文件类型是否支持 LlamaParse 的逐页 Markdown 初洗流程。 */
@@ -155,7 +164,6 @@ public class DocumentParserService {
      */
     public List<LlamaParseService.PageMarkdown> parseToPages(Document doc) {
         Long workspaceId = workspaceIdResolver.resolve(doc.getKbId());
-        Path path = Path.of(doc.getFilePath());
         String type = doc.getFileType().toLowerCase();
         if (!"html".equals(type) && !"pdf".equals(type) && !"docx".equals(type)) {
             throw new BizException("初洗门仅支持 HTML/PDF/DOCX（LlamaParse md 产物）");
@@ -163,7 +171,12 @@ public class DocumentParserService {
         if (!llamaParseService.isConfigured()) {
             throw new BizException("初洗门需要启用 LlamaParse（seuknowledge.document.llamaparse.enabled 且配置 API Key）");
         }
-        return pagesFromLlamaParse(path, doc.getFileName(), workspaceId, doc.isReuseCache(), "pdf".equals(type));
+        // 初洗门路径不在本方法内镜像 md：权威落库点是 DocumentCurateService.saveInitialMd（清洗后的 pages），
+        // 避免「原始 md vs 清洗后 md」双写；此处只负责读出文件。
+        try (MaterializedFile source = blobService.materializeOriginal(doc)) {
+            return pagesFromLlamaParse(source.path(), doc.getFileName(), workspaceId,
+                    doc.isReuseCache(), "pdf".equals(type));
+        }
     }
 
     /**
@@ -208,13 +221,14 @@ public class DocumentParserService {
      * PDF 解析：优先 LlamaParse 云端转 Markdown + 递归分块（缺页由识图模型补全）；
      * 未启用/调用失败时回退 PDFBox 纯文本解析（含按需识图）。
      *
+     * @param docId      用于把 LlamaParse 产物 md 镜像到对象存储（回退 PDFBox 时不产生 md，故不镜像）
      * @param reuseCache 用户是否选择复用解析缓存（同内容文件跳过 LlamaParse）
      */
-    private List<ChunkPiece> parsePdfWithLlamaParseFallback(Path path, String fileName, Long workspaceId,
+    private List<ChunkPiece> parsePdfWithLlamaParseFallback(Path path, Long docId, String fileName, Long workspaceId,
                                                             boolean reuseCache) throws IOException {
         if (llamaParseService.isConfigured()) {
             try {
-                return parseWithLlamaParse(path, fileName, workspaceId, reuseCache, true);
+                return parseWithLlamaParse(path, docId, fileName, workspaceId, reuseCache, true);
             } catch (Exception e) {
                 log.warn("LlamaParse 解析 PDF 失败，回退 PDFBox: {}", e.getMessage());
             }
@@ -223,24 +237,32 @@ public class DocumentParserService {
     }
 
     /** HTML/DOCX 解析：必须启用 LlamaParse（无本地回退）。 */
-    private List<ChunkPiece> parseLlamaParseRequired(Path path, String fileName, boolean reuseCache,
+    private List<ChunkPiece> parseLlamaParseRequired(Path path, Long docId, String fileName, boolean reuseCache,
                                                      String fileType) {
         if (!llamaParseService.isConfigured()) {
             throw new BizException(fileType + " 解析需要启用 LlamaParse（seuknowledge.document.llamaparse.enabled 且配置 API Key）");
         }
-        return parseWithLlamaParse(path, fileName, null, reuseCache, false);
+        return parseWithLlamaParse(path, docId, fileName, null, reuseCache, false);
     }
 
     /**
      * LlamaParse 逐页转 Markdown 后递归分块：先检测缺页并用识图模型补全（按页码并入 md 流），
      * 再逐页分块，跨页 carry 延续（页尾重叠文本并入下一页首个片段，标题开头时丢弃），跨页标题继承。
+     * <p>
+     * 同时把逐页 md 镜像到对象存储（宽松模式：失败只 WARN）——这是「自动解析路径」的 md 写点，
+     * 初洗门路径由 {@code DocumentCurateService.saveInitialMd} 负责，两者不重叠。
      *
      * @param reuseCache 用户是否选择复用解析缓存：true 时按文件哈希查缓存，命中跳过 LlamaParse
      *                   复用逐页 markdown；未命中/未选择则全量 LlamaParse 解析并写入缓存。
      */
-    private List<ChunkPiece> parseWithLlamaParse(Path path, String fileName, Long workspaceId, boolean reuseCache,
-                                                 boolean fillPdfMissingPages) {
-        return chunkFromPages(pagesFromLlamaParse(path, fileName, workspaceId, reuseCache, fillPdfMissingPages));
+    private List<ChunkPiece> parseWithLlamaParse(Path path, Long docId, String fileName, Long workspaceId,
+                                                 boolean reuseCache, boolean fillPdfMissingPages) {
+        List<LlamaParseService.PageMarkdown> pages =
+                pagesFromLlamaParse(path, fileName, workspaceId, reuseCache, fillPdfMissingPages);
+        if (docId != null) {
+            blobService.putMdQuietly(docId, CurateMdText.assemblePages(pages));
+        }
+        return chunkFromPages(pages);
     }
 
     /**

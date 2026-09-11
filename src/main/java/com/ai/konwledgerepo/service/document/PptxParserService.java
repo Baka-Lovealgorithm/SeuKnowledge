@@ -3,6 +3,7 @@ package com.ai.konwledgerepo.service.document;
 import com.ai.konwledgerepo.common.BizException;
 import com.ai.konwledgerepo.common.Texts;
 import com.ai.konwledgerepo.config.props.SeuDocumentProperties;
+import com.ai.konwledgerepo.service.storage.DocumentBlobService;
 import com.ai.konwledgerepo.tracing.QaTracing;
 import com.ai.konwledgerepo.tracing.TokenAccumulator;
 import org.slf4j.Logger;
@@ -40,6 +41,7 @@ public class PptxParserService {
 
     private final LlamaParseService llamaParseService;
     private final VisionOcrService visionOcrService;
+    private final DocumentBlobService blobService;
     private final QaTracing qaTracing;
     private final boolean visionParsing;
     private final boolean fillMissingPages;
@@ -49,11 +51,13 @@ public class PptxParserService {
 
     public PptxParserService(LlamaParseService llamaParseService,
                              VisionOcrService visionOcrService,
+                             DocumentBlobService blobService,
                              QaTracing qaTracing,
                              SeuDocumentProperties docProps,
                              @Qualifier("visionTaskExecutor") Executor visionExecutor) {
         this.llamaParseService = llamaParseService;
         this.visionOcrService = visionOcrService;
+        this.blobService = blobService;
         this.qaTracing = qaTracing;
         this.visionParsing = docProps.visionParsing();
         this.fillMissingPages = docProps.llamaparse().fillMissingPages();
@@ -66,11 +70,12 @@ public class PptxParserService {
      * 解析 PPTX 为分块片段列表（每页一个 chunk）。
      * 由 {@link DocumentParserService#parse} 调用（trace 与工作空间解析在调用方完成）。
      *
-     * @param path        落盘文件路径
+     * @param path        落盘文件路径（可能是对象存储物化出的临时副本）
+     * @param docId       文档 id，用于把 LlamaParse 产物 md 镜像到对象存储（宽松模式：失败只 WARN）
      * @param fileName    原始文件名（LlamaParse 上传用）
      * @param workspaceId 知识库归属工作空间（识图模型按空间解析）
      */
-    public List<ChunkPiece> parse(java.nio.file.Path path, String fileName, Long workspaceId) {
+    public List<ChunkPiece> parse(java.nio.file.Path path, Long docId, String fileName, Long workspaceId) {
         if (!llamaParseService.isConfigured()) {
             throw new BizException("PPTX 解析需要启用 LlamaParse（seuknowledge.document.llamaparse.enabled 且配置 API Key）");
         }
@@ -81,6 +86,10 @@ public class PptxParserService {
         // 复制为可变列表再按页码排序（调用方可能返回不可变列表）
         List<LlamaParseService.PageMarkdown> ordered = new ArrayList<>(pages);
         ordered.sort(Comparator.comparingInt(LlamaParseService.PageMarkdown::pageNumber));
+        // md 镜像：在识图补全之后取，保证对象内容与下面切出的 chunk 同源
+        if (docId != null) {
+            blobService.putMdQuietly(docId, CurateMdText.assemblePages(ordered));
+        }
         // 跨页检测页脚标题（如公司名"臻融科技"在多数页以首个标题出现）：供标题提取跳过页脚
         String footer = detectFooter(ordered);
         // 每页一个 chunk

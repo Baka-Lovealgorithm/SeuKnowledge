@@ -35,6 +35,10 @@
         <spring-ai.version>1.1.2</spring-ai.version>
         <spring-ai-alibaba.version>1.1.2.2</spring-ai-alibaba.version>
         <springdoc.version>2.8.9</springdoc.version>
+        <!-- 对象存储 SDK。锁 8.5.7：其依赖 okhttp 4.12.0，与本项目现有 okhttp（dashscope / otel sender）
+             完全一致；8.6.0 会引入 okhttp 5.1.0 + kotlin-stdlib 2.2.0，与 Boot 的 kotlin-bom 1.9.25 冲突。
+             本机 ~/.m2 已存在该版本，构建不必联网。 -->
+        <minio.version>8.5.7</minio.version>
     </properties>
 
     <dependencies>
@@ -124,6 +128,15 @@
             <groupId>org.jsoup</groupId>
             <artifactId>jsoup</artifactId>
             <version>1.18.3</version>
+        </dependency>
+
+        <!-- ===== 对象存储：上传原始文件 + LlamaParse 产物 md（默认 MinIO，本地磁盘可切换）===== -->
+        <!-- 传递依赖 okhttp 4.12.0 / okio / guava / commons-compress / bcprov / snappy 均为既有或本地已备，
+             无需 exclusion（版本仲裁以既有 okhttp 4.12.0 为准，零冲突） -->
+        <dependency>
+            <groupId>io.minio</groupId>
+            <artifactId>minio</artifactId>
+            <version>${minio.version}</version>
         </dependency>
 
         <!-- ===== 可观测性：OpenTelemetry Trace 采集（Langfuse 可视化，OTLP 上报）===== -->
