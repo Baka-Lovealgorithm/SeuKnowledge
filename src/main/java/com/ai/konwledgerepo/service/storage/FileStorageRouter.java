@@ -58,13 +58,4 @@ public class FileStorageRouter {
         }
         return storage;
     }
-
-    /** 已装配的后端标识，供日志与错误提示。 */
-    public java.util.Set<String> availableTypes() {
-        return byType.keySet();
-    }
-
-    public String activeType() {
-        return activeType;
-    }
 }
