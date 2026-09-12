@@ -76,6 +76,7 @@ cd seuknowledge
 | `MYSQL_USER` | root | MySQL 账号 |
 | `DB_POOL_MAX_SIZE` / `DB_POOL_MIN_IDLE` / `DB_POOL_CONN_TIMEOUT` | 20 / 5 / 30000 | Hikari 连接池最大连接 / 最小空闲 / 获取连接超时（毫秒）；并发高时调大 `DB_POOL_MAX_SIZE` |
 | `ES_USERNAME` / `ES_PASSWORD` | 空 | ES 认证（如开启） |
+| `ES_CONN_TIMEOUT` / `ES_SOCKET_TIMEOUT` | 3s / 30s | ES 连接/读超时：一次问答最多 30 次 ES 查询，防止慢节点拖死链路 |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` / `REDIS_DATABASE` | 127.0.0.1 / 6379 / 空 / 0 | Redis 连接 |
 | `SERVER_PORT` | 18080 | 后端端口 |
 | `LLAMA_CLOUD_API_KEY` | 空 | LlamaParse API Key（敏感，建议环境变量注入） |
@@ -177,6 +178,7 @@ npm run dev
 | `DB_POOL_MAX_SIZE` / `DB_POOL_MIN_IDLE` / `DB_POOL_CONN_TIMEOUT` | 20 / 5 / 30000 | Hikari 连接池最大连接 / 最小空闲 / 获取连接超时（毫秒）；并发高时调大 `DB_POOL_MAX_SIZE` |
 | `ES_URIS` | http://localhost:9200 | ES 地址 |
 | `ES_USERNAME` / `ES_PASSWORD` | 空 | ES 认证（如开启） |
+| `ES_CONN_TIMEOUT` / `ES_SOCKET_TIMEOUT` | 3s / 30s | ES 连接/读超时：一次问答最多 30 次 ES 查询，防止慢节点拖死链路 |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` / `REDIS_DATABASE` | 127.0.0.1 / 6379 / 空 / 0 | Redis 连接 |
 | `LLAMA_CLOUD_API_KEY` | 空 | LlamaParse API Key（敏感，建议环境变量注入） |
 | `LANGFUSE_OTEL_ENDPOINT` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | 空 | Langfuse 追踪（可选） |
@@ -254,4 +256,4 @@ $env:SPRING_PROFILES_ACTIVE='dev'; .\mvnw.cmd test
 .\mvnw.cmd test -Dminio.smoke=true -Dtest=MinioStorageSmokeTest -DfailIfNoSpecifiedTests=false
 ```
 
-当前 **77 个测试类、917 个用例**（分块器与标题祖先链、LlamaParse 表格解析、代码围栏分块、Excel 本地解析、文档解析、文档重命名/重建向量/文件名校验、向量化状态回写与线程池装配、文件存储抽象层与对象键口径（工作空间/知识库/raw-derived 分层、纯 uuid 命名）、真机 MinIO 冒烟、模型解析/配置、模型类型×用途组合矩阵、标题槽位解析链（含历史 `TITLE` 类型兼容）、知识库、会话与滚动摘要、抽取任务、多工作空间成员管理、空间组管理与权限取高、重排客户端/节点、标题生成、答案自检两阶段聚合（并行/串行两路一致）、答案评价（越权拒绝 / 撤销 / 只写反馈列 / 消息缓存失效）、点踩汇总口径（踩率分母、无快照时均值留空、无知识库短路、明细批量取问题不逐行）、旧版本缓存载荷兼容等）。其中 2 个 `@SpringBootTest` 集成测试类（4 个用例）需 MySQL/Redis 环境，纯单元测试 913 个全绿；另有 2 个 MinIO 冒烟用例默认 skipped（`-Dminio.smoke=true` 才跑），故常规全量为 917 用例 / 0 失败 / 2 跳过。
+当前 **77 个测试类、921 个用例**（分块器与标题祖先链、LlamaParse 表格解析、代码围栏分块、Excel 本地解析、文档解析、文档重命名/重建向量/文件名校验、批量审核失败隔离（逐项 REQUIRES_NEW 事务）、文档删除的外部清理时序、多文件上传失败孤儿清理、限流与登录失败计数的 TTL 原子化（Lua 脚本 + EXPIRE NX 自愈）、禁用账号拦截与启用状态缓存复核、向量化状态回写与线程池装配、文件存储抽象层与对象键口径（工作空间/知识库/raw-derived 分层、纯 uuid 命名）、真机 MinIO 冒烟、模型解析/配置、模型类型×用途组合矩阵、标题槽位解析链（含历史 `TITLE` 类型兼容）、知识库、会话与滚动摘要、抽取任务、多工作空间成员管理、空间组管理与权限取高、重排客户端/节点、标题生成、答案自检两阶段聚合（并行/串行两路一致）、答案评价（越权拒绝 / 撤销 / 只写反馈列 / 消息缓存失效）、点踩汇总口径（踩率分母、无快照时均值留空、无知识库短路、明细批量取问题不逐行）、旧版本缓存载荷兼容等）。其中 2 个 `@SpringBootTest` 集成测试类（4 个用例）需 MySQL/Redis 环境，纯单元测试 919 个全绿；另有 2 个 MinIO 冒烟用例默认 skipped（`-Dminio.smoke=true` 才跑），故常规全量为 921 用例 / 0 失败 / 2 跳过。

@@ -91,3 +91,6 @@ src/test/java/com/ai/konwledgerepo/service/document/DocumentCleanCompareTest.jav
 ### 本地实验产物（chm 提取 / 代码抽取验证，仅本机使用，不入库）###
 CodeExtractorTest/
 chmTest/
+
+# 内部评审文档：并发性能与安全审查报告（含安全弱点清单，不入库）
+并发性能与安全审查报告.md
