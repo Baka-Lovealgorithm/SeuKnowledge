@@ -13,6 +13,8 @@ import com.ai.konwledgerepo.service.vector.VectorIngestionService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 
 import java.util.List;
 import java.util.Optional;
@@ -24,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -32,6 +35,8 @@ import static org.mockito.Mockito.when;
 /**
  * 文档精修服务测试：SUSPECT 队列 / 保留（DEFER 后触发向量化）/ 编辑（内容+重索引+审计）/
  * 删除（FILTERED+ES 移除+审计）/ 已审核回退待审核（KEEP→SUSPECT+ES 移除）/ 批量 / 幂等与边界。
+ * 批量审核逐项跑在 REQUIRES_NEW 事务里（见 ChunkReviewService#itemTxTemplate），
+ * 测试以 mock 的 PlatformTransactionManager（getTransaction 返回空状态）模拟事务边界。
  */
 class ChunkReviewServiceTest {
 
@@ -47,8 +52,10 @@ class ChunkReviewServiceTest {
         reviewLogRepository = mock(ChunkReviewLogRepository.class);
         documentRepository = mock(DocumentRepository.class);
         vectorIngestionService = mock(VectorIngestionService.class);
+        PlatformTransactionManager txManager = mock(PlatformTransactionManager.class);
+        when(txManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         service = new ChunkReviewService(chunkRepository, reviewLogRepository, documentRepository,
-                vectorIngestionService);
+                vectorIngestionService, txManager);
         when(documentRepository.findById(1L)).thenReturn(Optional.of(doc(1L, "测试.pdf")));
         when(documentRepository.findAllById(any())).thenReturn(List.of(doc(1L, "测试.pdf")));
     }
@@ -274,6 +281,44 @@ class ChunkReviewServiceTest {
     @Test
     void batch_invalidAction_throws() {
         assertThrows(BizException.class, () -> service.batch(List.of(1L), "rename", 99L));
+    }
+
+    /**
+     * 回归锁（批量审核失败隔离）：批量审核每项必须跑在独立事务里。
+     * 此前共用一个事务时，某项向量化失败被 batch 捕获后「对外报失败」，
+     * 但该项已把 clean_status 改成 KEEP 的脏改会随外层提交落库——
+     * DB=KEEP 而 ES 无向量，分块从待审核队列静默消失（内容丢失且不可恢复）。
+     * 改为 REQUIRES_NEW 后失败项整体回滚，且失败项不污染后续项的处理。
+     */
+    @Test
+    void batch_reindexFails_reportedFailedAndDoesNotBlockLaterItems() {
+        Chunk failing = suspectChunk(10L, 1L, null, "会失败的内容", "C3");
+        Chunk following = suspectChunk(11L, 1L, null, "后续内容", "B2");
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(failing));
+        when(chunkRepository.findById(11L)).thenReturn(Optional.of(following));
+        doThrow(new RuntimeException("embedding 服务不可用"))
+                .when(vectorIngestionService).reindexChunk(failing);
+
+        List<ChunkReviewService.BatchItemResult> results = service.batch(List.of(10L, 11L), "keep", 99L);
+
+        assertEquals(2, results.size());
+        assertFalse(results.get(0).success(), "向量化失败项必须对外报失败");
+        assertTrue(results.get(0).reason().contains("embedding"));
+        assertTrue(results.get(1).success(), "失败项不得影响后续项处理");
+        verify(vectorIngestionService).reindexChunk(following);
+    }
+
+    @Test
+    void batch_dropFailure_reportedFailedButItemMarked() {
+        Chunk failing = suspectChunk(10L, 1L, null, "内容", "B1");
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(failing));
+        doThrow(new RuntimeException("ES 删除失败"))
+                .when(vectorIngestionService).deleteByChunkId(10L);
+
+        List<ChunkReviewService.BatchItemResult> results = service.batch(List.of(10L), "drop", 99L);
+
+        assertEquals(1, results.size());
+        assertFalse(results.get(0).success());
     }
 
     // ===== 构造辅助 =====

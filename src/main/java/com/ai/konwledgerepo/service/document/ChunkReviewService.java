@@ -14,7 +14,10 @@ import com.ai.konwledgerepo.service.vector.VectorIngestionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -70,15 +73,20 @@ public class ChunkReviewService {
     private final ChunkReviewLogRepository reviewLogRepository;
     private final DocumentRepository documentRepository;
     private final VectorIngestionService vectorIngestionService;
+    /** 批量审核逐项独立事务（REQUIRES_NEW）：单项失败只回滚该项，其余项不受牵连 */
+    private final TransactionTemplate itemTxTemplate;
 
     public ChunkReviewService(ChunkRepository chunkRepository,
                               ChunkReviewLogRepository reviewLogRepository,
                               DocumentRepository documentRepository,
-                              VectorIngestionService vectorIngestionService) {
+                              VectorIngestionService vectorIngestionService,
+                              PlatformTransactionManager transactionManager) {
         this.chunkRepository = chunkRepository;
         this.reviewLogRepository = reviewLogRepository;
         this.documentRepository = documentRepository;
         this.vectorIngestionService = vectorIngestionService;
+        this.itemTxTemplate = new TransactionTemplate(transactionManager);
+        this.itemTxTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
     /**
@@ -188,9 +196,14 @@ public class ChunkReviewService {
 
     /**
      * 批量审核：逐条 keep/drop，返回每条的结果（部分失败不整体回滚，失败项 reason 说明）。
+     * <p>
+     * 每项跑在独立的 REQUIRES_NEW 事务里（{@link #itemTxTemplate}）：keep/drop 内部含远程调用
+     * （embedding / ES），失败被本方法捕获后逐项继续——若与失败项共用一个事务，失败项已发生的
+     * DB 变更（如 clean_status→KEEP）会在外层提交时一并落库，出现「对外报失败、DB 却已生效而
+     * ES 没有向量」的静默丢失。独立事务保证失败项整体回滚、成功项照常生效。
+     * <p>
      * 编辑类批量操作不在此接口（编辑需逐条提供内容，走单个 edit）。
      */
-    @Transactional
     public List<BatchItemResult> batch(List<Long> ids, String action, Long userId) {
         if (ids == null || ids.isEmpty()) {
             return List.of();
@@ -201,9 +214,9 @@ public class ChunkReviewService {
         List<BatchItemResult> results = new ArrayList<>(ids.size());
         for (Long id : ids) {
             try {
-                Chunk chunk = requireChunk(id);
-                ChunkReviewResponse resp = "keep".equals(action) ? keep(id, userId) : drop(id, userId);
-                results.add(new BatchItemResult(id, true, resp.cleanReason()));
+                ChunkReviewResponse resp = itemTxTemplate.execute(tx ->
+                        "keep".equals(action) ? keep(id, userId) : drop(id, userId));
+                results.add(new BatchItemResult(id, true, resp == null ? null : resp.cleanReason()));
             } catch (Exception e) {
                 log.warn("批量 {} chunk {} 失败: {}", action, id, e.getMessage());
                 results.add(new BatchItemResult(id, false, e.getMessage()));

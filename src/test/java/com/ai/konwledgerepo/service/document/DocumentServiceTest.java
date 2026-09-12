@@ -376,6 +376,32 @@ class DocumentServiceTest {
         }
     }
 
+    /**
+     * 回归锁（多文件上传失败隔离）：第 2 个文件落库失败回滚整个事务时，第 1 个文件已写入存储的
+     * 对象必须被一并清理——行回滚了对象不会自动消失，此前会留成永久孤儿（原始件不可再生）。
+     */
+    @Test
+    void upload_multiFileSecondFails_cleansFirstFileObject() throws Exception {
+        MultipartFile first = new MockMultipartFile("files", "第一份.md", "text/markdown", "第一份内容".getBytes());
+        MultipartFile second = new MockMultipartFile("files", "第二份.md", "text/markdown", "第二份内容".getBytes());
+        when(documentRepository.saveAndFlush(any()))
+                .thenAnswer(i -> {
+                    Document d = i.getArgument(0);
+                    d.setId(99L);
+                    return d;
+                })
+                .thenThrow(new DataIntegrityViolationException("第二份文件落库失败"));
+
+        assertThrows(DataIntegrityViolationException.class,
+                () -> service.upload(KB_ID, List.of(first, second), 7L, false, false, false));
+
+        try (var paths = Files.walk(tempDir)) {
+            List<Path> leftovers = paths.filter(Files::isRegularFile).toList();
+            assertTrue(leftovers.isEmpty(), "第二份文件失败后，第一份已传对象未清理: " + leftovers);
+        }
+        verify(parseExecutor, never()).parseAsync(anyLong(), anyBoolean());
+    }
+
     // ===== 构造辅助 =====
 
     private static Document doc(String fileName, String fileType, String curateStatus) {

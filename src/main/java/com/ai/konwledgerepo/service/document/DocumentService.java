@@ -124,28 +124,38 @@ public class DocumentService {
                                  boolean curateGate) {
         KnowledgeBase kb = kbService.getEntity(kbId);
         List<Document> saved = new ArrayList<>();
-        for (MultipartFile file : files) {
-            validate(file);
-            if (replace) {
-                String name = file.getOriginalFilename();
-                documentRepository.findByKbIdOrderByIdDesc(kbId).stream()
-                        .filter(d -> name != null && name.equalsIgnoreCase(d.getFileName()))
-                        .findFirst()
-                        .ifPresent(this::deleteDoc);
+        // 本次上传已成功落库文件的对象 key。多文件上传时任一后续文件失败会回滚整个事务——
+        // 行会消失而对象不会：必须显式清理已传对象，否则每次失败的多文件上传都把前面的对象
+        // 留成永久孤儿（原始件不在 git 里，删了找不回来）。
+        List<String> persistedObjectKeys = new ArrayList<>();
+        try {
+            for (MultipartFile file : files) {
+                validate(file);
+                if (replace) {
+                    String name = file.getOriginalFilename();
+                    documentRepository.findByKbIdOrderByIdDesc(kbId).stream()
+                            .filter(d -> name != null && name.equalsIgnoreCase(d.getFileName()))
+                            .findFirst()
+                            .ifPresent(this::deleteDoc);
+                }
+                Document doc = persistFile(kbId, file, userId, persistedObjectKeys);
+                doc.setReuseCache(reuseCache);
+                doc.setCurateRequired(curateGate);
+                saved.add(doc);
             }
-            Document doc = persistFile(kbId, file, userId);
-            doc.setReuseCache(reuseCache);
-            doc.setCurateRequired(curateGate);
-            saved.add(doc);
+            // 异步解析分块：独立 bean 承载 @Async，挂到事务提交后触发（避免异步线程读不到未提交数据）
+            for (Document doc : saved) {
+                afterCommitExecutor.runAfterCommit(() -> parseExecutor.parseAsync(doc.getId(), doc.isReuseCache()));
+            }
+            // 文档计数与知识库列表缓存失效
+            kbService.evictDocCount(kbId);
+            kbService.evictKbList(kb.getWorkspaceId());
+            return saved;
+        } catch (RuntimeException e) {
+            // 事务即将回滚：已落库行的对象一并清理（本文件的失败对象由 persistFile 自己清过，不在此列）
+            persistedObjectKeys.forEach(blobService::deleteQuietly);
+            throw e;
         }
-        // 异步解析分块：独立 bean 承载 @Async，挂到事务提交后触发（避免异步线程读不到未提交数据）
-        for (Document doc : saved) {
-            afterCommitExecutor.runAfterCommit(() -> parseExecutor.parseAsync(doc.getId(), doc.isReuseCache()));
-        }
-        // 文档计数与知识库列表缓存失效
-        kbService.evictDocCount(kbId);
-        kbService.evictKbList(kb.getWorkspaceId());
-        return saved;
     }
 
     public List<DocumentResponse> list(Long kbId) {
@@ -220,33 +230,63 @@ public class DocumentService {
      * <p>
      * 结构化知识只解除 sourceDocId，sourceDocName 留作不可变的来源快照；这样不依赖新 DDL，
      * 也不会因删除/覆盖来源文档而破坏已经审核、测试并投入检索的知识。
+     * <p>
+     * ES 向量清理与物理文件删除是<b>不可逆的外部删除</b>，移到事务提交后执行：此前在事务内
+     * 先删 ES/文件、最后删行，一旦后续步骤失败回滚（replace 上传新文件失败、乐观锁冲突等），
+     * 行会恢复而向量/文件已被删——文档永久损坏。提交后失败无法靠回滚弥补，ES 删除带有限重试
+     * 并 ERROR 留痕供人工核查，文件删除保持「失败仅告警、不阻断」的原语义。
      */
     private void deleteDoc(Document doc) {
         Long docId = doc.getId();
         // 先解除结构化知识的实时外部引用；保留知识内容、状态、版本及历史来源名称。
         int detachedBusiness = businessKnowledgeRepository.detachSourceDocumentByDocId(docId);
         int detachedQa = qaPairRepository.detachSourceDocumentByDocId(docId);
-        vectorIngestionService.detachSourceDocumentInIndex(docId);
-
         // 审核日志含 chunkId/docId，必须先于 chunk/document 清理，避免无外键旧库留下孤儿。
         chunkReviewLogRepository.deleteByDocId(docId);
         chunkRepository.deleteByDocId(doc.getId());
-        // 只删 CHUNK（兼容没有 sourceType 的旧索引分块），不删 BUSINESS / QA。
-        vectorIngestionService.deleteByDocId(docId);
         // 删初洗 md（全部版本）与初洗/精修审计
         curateRepository.deleteByDocId(docId);
         curateLogRepository.deleteByDocId(docId);
-        // 删文件（本地磁盘 / 对象存储）。DB 记录删除不应被存储可用性阻断，故失败仅告警留痕——
-        // 与改造前 Files.deleteIfExists 失败只 WARN 的语义一致。
-        try {
-            blobService.deleteOriginal(doc);
-            blobService.deleteMd(doc);
-        } catch (RuntimeException e) {
-            log.warn("删除文档物理文件失败（文档记录仍会删除）docId={}: {}", docId, e.getMessage());
-        }
         documentRepository.delete(doc);
         log.info("删除文档 {} 完成；保留并解除来源关联：业务知识 {} 条，问答对 {} 条",
                 docId, detachedBusiness, detachedQa);
+        // 事务提交后清理外部数据：ES 向量 + 物理文件
+        afterCommitExecutor.runAfterCommit(() -> {
+            // 只删 CHUNK（兼容没有 sourceType 的旧索引分块），不删 BUSINESS / QA
+            vectorIngestionService.detachSourceDocumentInIndex(docId);
+            deleteVectorsAfterCommit(docId);
+            try {
+                blobService.deleteOriginal(doc);
+                blobService.deleteMd(doc);
+            } catch (RuntimeException e) {
+                log.warn("删除文档物理文件失败（文档记录已删除）docId={}: {}", docId, e.getMessage());
+            }
+        });
+    }
+
+    /**
+     * 事务提交后的 ES 向量清理：提交后失败无法靠回滚弥补，最多重试 3 次；
+     * 仍失败时 ERROR 留痕（残留向量为已删文档内容，DB chunk 行已删，需人工核查 ES 索引）。
+     */
+    private void deleteVectorsAfterCommit(Long docId) {
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                vectorIngestionService.deleteByDocId(docId);
+                return;
+            } catch (RuntimeException e) {
+                log.warn("清理文档 {} 的 ES 向量失败（第 {}/3 次）: {}", docId, attempt, e.getMessage());
+                if (attempt == 3) {
+                    log.error("文档 {} 的 ES 向量清理最终失败，检索索引可能残留已删文档内容，请人工核查", docId);
+                } else {
+                    try {
+                        Thread.sleep(500L * attempt);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     /** 文档变更后失效知识库计数与列表缓存 */
@@ -278,11 +318,12 @@ public class DocumentService {
             }
             throw new BizException("文档不存在或已被删除");
         }
-        // 清空旧分块与向量（幂等），重新触发解析
+        // 清空旧分块（幂等）；ES 旧向量清理移到提交后——若保留在事务内，后续步骤失败回滚会
+        // 恢复 chunk 行而向量已被清空，列表显示 indexed N/N 却检索不到
         chunkRepository.deleteByDocId(docId);
-        vectorIngestionService.deleteByDocId(docId);
         evictKbCaches(documentRepository.findById(docId).orElseThrow().getKbId());
-        // 事务提交后异步重新解析（retry 为强制重新解析，不复用缓存）
+        // 事务提交后：先清 ES 旧向量，再异步重新解析（retry 为强制重新解析，不复用缓存）
+        afterCommitExecutor.runAfterCommit(() -> deleteVectorsAfterCommit(docId));
         afterCommitExecutor.runAfterCommit(() -> parseExecutor.parseAsync(docId, false));
     }
 
@@ -408,7 +449,10 @@ public class DocumentService {
         return name.length() <= 60 ? name : name.substring(0, 40) + "…" + name.substring(name.length() - 10);
     }
 
-    private Document persistFile(Long kbId, MultipartFile file, Long userId) {
+    /**
+     * @param persistedObjectKeys 落库成功后追加本文件的对象 key（供 upload 在整体失败时统一清理孤儿对象）
+     */
+    private Document persistFile(Long kbId, MultipartFile file, Long userId, List<String> persistedObjectKeys) {
         String ext = extension(file.getOriginalFilename());
         // 对象名与 key 由 DocumentBlobService 统一生成（纯 uuid，按空间/知识库/类型分层）。
         // 这里只在「对象已写成功、DB 却落库失败」时才需要清理，故 putOriginal 返回前 stored 为 null。
@@ -432,7 +476,9 @@ public class DocumentService {
             doc.setCreatedBy(userId);
             // saveAndFlush：让字段超长等完整性异常在本方法内抛出（否则延迟到 commit，已逃出手工清理），
             // 从而删掉刚写入的对象——否则会永久孤儿留在存储里（不在 git 里，删了找不回来）。
-            return documentRepository.saveAndFlush(doc);
+            Document saved = documentRepository.saveAndFlush(doc);
+            persistedObjectKeys.add(stored.objectKey());
+            return saved;
         } catch (IOException e) {
             cleanupOrphanObject(stored);
             throw new BizException("文件保存失败: " + e.getMessage());

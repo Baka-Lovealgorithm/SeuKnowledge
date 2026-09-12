@@ -248,10 +248,6 @@ public class DocumentCurateService {
             rows.add(row);
         }
         curateRepository.saveAll(rows);
-        // md 镜像覆盖同一对象（严格：失败即抛，事务回滚）。用户主动保存必须能看见失败，
-        // 否则会出现「DB 已保存新版本、对象存储还是旧 md」的静默不一致。
-        // DB 侧仍按 version=maxVersion+1 append-only 保留全部历史，不受影响。
-        blobService.putMdStrict(doc.getKbId(), docId, CurateMdText.assembleRows(rows));
         // 重分块：分块 + chunk 级清洗 + 事务内删旧插新
         List<ChunkPiece> pieces = parserService.chunkFromPages(pages);
         DocumentCleanService.ChunkCleanResult clean = documentCleanService.cleanChunks(pieces);
@@ -259,6 +255,13 @@ public class DocumentCurateService {
         if (!ok) {
             throw new BizException("文档已被删除，无法保存清洗结果");
         }
+        // md 镜像到对象存储：移到事务提交后写入。镜像只是 kb_document_curate 的可重建副本，
+        // 而对象存储是事务管不到的外部系统——此前在事务内先覆写镜像，其后 finalizeRechunk 抛出
+        // 或提交冲突（@Version）回滚时，DB 行恢复而镜像已被覆写成"未来"内容，永久分叉。
+        // 提交后写入失败仅 WARN（putMdQuietly）：DB 已保存成功、镜像留旧版，下次保存自愈；
+        // 用户保存失败依然会被 finalizeRechunk / 落库异常如实暴露，只是不再被存储抖动误伤。
+        afterCommitExecutor.runAfterCommit(() ->
+                blobService.putMdQuietly(doc.getKbId(), docId, CurateMdText.assembleRows(rows)));
         long suspect = clean.outcomes().stream()
                 .filter(o -> o.disposition() == DocumentCleanService.Disposition.SUSPECT).count();
         long autoDrop = clean.outcomes().stream()
