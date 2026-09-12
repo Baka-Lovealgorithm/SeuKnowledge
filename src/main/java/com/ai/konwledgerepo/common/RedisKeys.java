@@ -33,6 +33,7 @@ public final class RedisKeys {
     public static String taskExtract(Long docId) { return TaskRedisKeys.taskExtract(docId); }
     public static String loginFail(String username) { return SecurityRedisKeys.loginFail(username); }
     public static String loginLock(String username) { return SecurityRedisKeys.loginLock(username); }
+    public static String userEnabled(Long userId) { return SecurityRedisKeys.userEnabled(userId); }
     public static String askLock(Long sessionId) { return QaRedisKeys.askLock(sessionId); }
 
     private RedisKeys() {

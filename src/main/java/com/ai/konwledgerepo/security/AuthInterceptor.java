@@ -27,6 +27,7 @@ import java.util.Optional;
 /**
  * 登录态与角色权限拦截器（多工作空间）：
  * 1. 校验 Authorization: Bearer <token>，未登录 401；
+ * 1.5 复核账号启用状态（Redis 60s 短缓存 + DB 回源）：禁用/删除账号在 token TTL 内即失去访问；
  * 2. 加载用户全部工作空间成员记录（多空间可并存），经 Redis 缓存
  *    （seuknowledge:member:list:{userId}，TTL 300s），miss 回源 DB 回填；
  *    角色/归属变更由 WorkspaceService 写路径按模式失效；
@@ -47,6 +48,9 @@ public class AuthInterceptor implements HandlerInterceptor {
     private final ObjectMapper objectMapper;
     private final RedisCacheService redisCacheService;
     private final Duration memberTtl;
+
+    /** 用户启用状态缓存 TTL：禁用/删除账号在此窗口内生效（token 本身 7 天，不复核则禁用形同虚设） */
+    private static final Duration ENABLED_TTL = Duration.ofSeconds(60);
 
     public AuthInterceptor(TokenService tokenService,
                            WorkspaceMemberRepository memberRepository,
@@ -86,6 +90,12 @@ public class AuthInterceptor implements HandlerInterceptor {
             response.setContentType("application/json;charset=UTF-8");
             response.getWriter().write(objectMapper.writeValueAsString(ApiResponse.error(ErrorCodes.UNAUTHORIZED, "未登录或会话失效")));
             return false;
+        }
+        // 账号停用/删除复核：token 有效期内禁用必须生效（此前仅平台接口分支查 enabled，
+        // 被禁用用户的存量 token 在 7 天 TTL 内仍可访问全部接口）
+        if (!isUserEnabled(userId)) {
+            LogContext.clear();
+            return reject(response, ErrorCodes.UNAUTHORIZED, "账号已被禁用或不存在");
         }
         // 平台配置不能由任意工作空间管理员代管：平台角色与 workspace_member.role 完全隔离。
         if (requiresPlatformAdmin(handlerMethod)) {
@@ -151,6 +161,24 @@ public class AuthInterceptor implements HandlerInterceptor {
                 .map(SysUser::getRole)
                 .filter(Roles.ADMIN::equals)
                 .isPresent();
+    }
+
+    /**
+     * 复核账号启用状态：Redis 短 TTL 缓存（60s）兜住每请求的 DB 查询，miss 回源回填；
+     * 用户被删除视为禁用。Redis 故障时缓存读写静默降级为每请求查 DB（fail-open 语义：
+     * 缓存层故障不放大为拒绝服务，可用性优先）。禁用/删除账号最迟 60s 失去访问。
+     */
+    private boolean isUserEnabled(Long userId) {
+        String key = RedisKeys.userEnabled(userId);
+        Optional<String> cached = redisCacheService.getString(key);
+        if (cached.isPresent()) {
+            return "1".equals(cached.get());
+        }
+        boolean enabled = userRepository.findById(userId)
+                .map(user -> Boolean.TRUE.equals(user.getEnabled()))
+                .orElse(false);
+        redisCacheService.setString(key, enabled ? "1" : "0", ENABLED_TTL);
+        return enabled;
     }
 
     /** 请求结束清理日志上下文（防线程复用污染；注意 preHandle 返回 false 的路径已在拒绝分支内联清理） */

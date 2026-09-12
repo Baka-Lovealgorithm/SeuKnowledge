@@ -34,6 +34,9 @@ public class AdminInitializer implements CommandLineRunner {
 
     private static final String DEFAULT_WORKSPACE_NAME = "默认工作空间";
 
+    /** 与 {@link SeuSecurityProperties} 的 adminPassword 默认值一致，仅用于弱口令告警比对 */
+    private static final String DEFAULT_ADMIN_PASSWORD = "admin123";
+
     private final SysUserRepository userRepository;
     private final WorkspaceRepository workspaceRepository;
     private final WorkspaceMemberRepository memberRepository;
@@ -61,6 +64,11 @@ public class AdminInitializer implements CommandLineRunner {
     @Override
     @Transactional
     public void run(String... args) {
+        if (DEFAULT_ADMIN_PASSWORD.equals(securityProps.adminPassword())) {
+            log.warn("管理员初始密码仍为内置默认值 admin123：新部署会以该口令创建 admin 账号。"
+                    + "生产环境请通过 SEUKNOWLEDGE_SECURITY_ADMIN_PASSWORD（或配置文件 seuknowledge.security.admin-password）覆盖，"
+                    + "并尽快登录修改默认账号密码！");
+        }
         String adminUsername = securityProps.adminUsername();
         SysUser admin = userRepository.findByUsername(adminUsername).orElseGet(() -> {
             SysUser user = new SysUser();
