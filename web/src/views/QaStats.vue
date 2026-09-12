@@ -1,18 +1,16 @@
 <template>
   <div class="stats-page">
     <div class="toolbar">
-      <span class="title">问答反馈汇总</span>
       <el-select v-model="days" style="width: 120px" @change="reload">
         <el-option :value="7" label="近 7 天" />
         <el-option :value="30" label="近 30 天" />
         <el-option :value="90" label="近 90 天" />
       </el-select>
       <el-button :loading="loading" @click="reload">刷新</el-button>
-      <span class="scope-tip">统计范围：当前工作空间 {{ workspaceName || '（未选择）' }}</span>
     </div>
 
     <el-alert type="info" :closable="false" class="notice">
-      点踩数据只有提问者本人能提交；本页是空间内跨用户查看，仅 OWNER / ADMIN 可见，访问会在服务端留痕。
+      点踩由提问者本人提交；本页仅空间 OWNER / ADMIN 可见。
     </el-alert>
 
     <div class="cards">
@@ -99,9 +97,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { statsApi } from '../api'
-import { useAuthStore } from '../stores/auth'
 
-const auth = useAuthStore()
 const days = ref(30)
 const overview = ref(null)
 const items = ref([])
@@ -111,7 +107,6 @@ const size = ref(20)
 const loading = ref(false)
 const tableLoading = ref(false)
 
-const workspaceName = computed(() => auth.currentWorkspace?.name || '')
 
 const cards = computed(() => {
   const o = overview.value
@@ -197,8 +192,6 @@ onMounted(reload)
 <style scoped>
 .stats-page { padding: 16px; }
 .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
-.toolbar .title { font-size: 16px; font-weight: 600; }
-.scope-tip { color: #909399; font-size: 12px; margin-left: auto; }
 .notice { margin-bottom: 12px; }
 .cards { display: flex; gap: 12px; flex-wrap: wrap; }
 .card { flex: 1 1 160px; }

@@ -2,7 +2,6 @@
   <div>
     <div class="toolbar">
       <el-button type="primary" @click="openCreate">新增模型配置</el-button>
-      <span class="muted">按调用契约分组：文本 / 识图 / 向量 / 重排；只有文本模型需要选用途（同一契约下的角色槽位，可互相顶替，只是更贵或更差）</span>
     </div>
 
     <el-tabs v-model="activeType" class="model-tabs">
@@ -67,7 +66,7 @@
             <el-radio value="EMBEDDING">向量模型</el-radio>
             <el-radio value="RERANK">重排模型</el-radio>
           </el-radio-group>
-          <div class="muted form-hint">识图必须是独立类型：它与文本同走 chat 端点但能力不同，混进文本后会被「通用文本模型」顶上，把图片发给不支持图像的模型</div>
+          <div class="muted form-hint">识图与文本是不同能力，需单独配置：混在文本模型里会把图片发给不支持图像的模型</div>
         </el-form-item>
         <el-form-item v-if="form.modelType === 'CHAT'" label="用途绑定">
           <el-select v-model="form.usage" style="width: 100%" clearable placeholder="通用（不绑定用途，作为文本模型的兜底）">
@@ -79,16 +78,16 @@
             <el-option label="闲聊 CHITCHAT（闲聊回复）" value="CHITCHAT" />
             <el-option label="标题 TITLE（会话标题概括）" value="TITLE" />
           </el-select>
-          <div class="muted form-hint">一条配置只占一个用途（未绑定的用途回退到「通用」配置）；同一个模型要服务多个用途，请另建一条同模型名的配置</div>
+          <div class="muted form-hint">同一个模型要服务多个用途，请另建一条配置</div>
         </el-form-item>
         <el-form-item v-else label="用途绑定">
-          <span class="muted">{{ singleUsageOf(form.modelType) }}（该类型只有一个用途，与类型同名，无需选择）</span>
+          <span class="muted">{{ singleUsageOf(form.modelType) }}（该类型仅此一个用途，无需选择）</span>
         </el-form-item>
         <el-form-item label="模型名" required>
           <el-input v-model="form.modelName" :placeholder="namePlaceholder" />
         </el-form-item>
         <el-form-item label="API Key">
-          <el-input v-model="form.apiKey" placeholder="推荐填 env:环境变量名（真实 Key 走环境变量注入，不落库）；也可直填 Key" show-password />
+          <el-input v-model="form.apiKey" placeholder="推荐填 env:环境变量名；也可直接填写 Key" show-password />
           <div v-if="editing && !form.apiKey" class="muted form-hint">留空表示保留已保存的 Key 不变</div>
         </el-form-item>
         <el-form-item v-if="form.provider === 'OPENAI_COMPAT'" label="Base URL" required>

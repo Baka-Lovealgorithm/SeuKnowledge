@@ -1,8 +1,8 @@
 <template>
   <div>
     <div class="toolbar">
-      <span class="tip">组用于知识库的组级别授权：把知识库授权给一个组后，组内所有成员共享该权限（取最高权限，EDIT 覆盖 VIEW）。组内成员仅限当前工作空间成员。</span>
       <el-button type="primary" @click="openCreate">新建组</el-button>
+      <span class="tip">组用于知识库的组级别授权：把知识库授权给一个组后，组内所有成员共享该权限（取最高权限，EDIT 覆盖 VIEW）。组内成员仅限当前工作空间成员。</span>
     </div>
 
     <el-table :data="groups" v-loading="loading" border>

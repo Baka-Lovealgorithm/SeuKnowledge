@@ -25,7 +25,7 @@
           type="textarea"
           :rows="6"
           :disabled="!selectedKb"
-          placeholder="定义 Agent 的角色、知识库场景与回答要求；将注入意图路由 / 问题改写 / 答案生成 / 自检各节点"
+          placeholder="定义 Agent 的角色、知识库场景与回答要求"
         />
         <div class="tip">动态修改提示词即刻生效于后续问答；留空使用默认提示词。</div>
       </el-form-item>

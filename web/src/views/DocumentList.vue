@@ -171,13 +171,13 @@ function vectorTip(row) {
   const v = vectorInfo(row)
   if (!v) return ''
   if (v.total === 0) {
-    return `全部 ${v.deferred} 块待人工审核：按 DEFER 决策暂不进向量库，本文档当前检索不到；`
+    return `全部 ${v.deferred} 块待人工审核，暂不进向量库，本文档当前检索不到；`
       + '在「文档精修」页点「保留/编辑」后即单条补索引（无需重新解析）'
   }
   const parts = []
-  if (v.failed > 0) parts.push(`${v.failed} 块向量化/写库失败，可点「重建向量」`)
-  if (v.pending > 0) parts.push(`${v.pending} 块待向量化（向量模型未配置时会一直停在这里）`)
-  if (v.deferred > 0) parts.push(`另有 ${v.deferred} 块待人工审核（不进 ES，需在「文档精修」处置）`)
+  if (v.failed > 0) parts.push(`${v.failed} 块向量化失败，可点「重建向量」`)
+  if (v.pending > 0) parts.push(`${v.pending} 块待向量化（请先在「模型配置」配置向量模型）`)
+  if (v.deferred > 0) parts.push(`另有 ${v.deferred} 块待人工审核（不参与检索，需在「文档精修」处置）`)
   return parts.join('；')
 }
 
@@ -247,7 +247,7 @@ function startPolling() {
         // 向量追平（解析成功后才走这一段，避免同一条 toast 连着弹两次）
         if (before.pending > 0 && pending === 0 && d.parseStatus === 'SUCCESS') {
           if (failed > 0) {
-            ElMessage.warning(`文档「${d.fileName}」${failed} 块向量化失败：${d.errorMsg || '可点「重建向量」重试'}`)
+            ElMessage.warning(`文档「${d.fileName}」${failed} 块向量化失败：${d.errorMsg || '未知原因，可点「重建向量」重试'}`)
           } else {
             ElMessage.success(`文档「${d.fileName}」向量已就绪，共 ${d.vector?.indexed ?? '?'} 块`)
           }
@@ -445,10 +445,10 @@ async function reindex(row) {
   const r = await docApi.reindex(row.id)
   if (r && !r.reset) {
     ElMessage.warning(r.awaitingReview > 0
-      ? `「${row.fileName}」没有 FAILED 块可重建；${r.awaitingReview} 块待人工审核（暂不进 ES），请到「文档精修」页点「保留/编辑」`
-      : `「${row.fileName}」没有需要重建的向量块（无向量化失败的块）`)
+      ? `「${row.fileName}」没有需要重建的分块；${r.awaitingReview} 块待人工审核（暂不进向量库），请到「文档精修」页点「保留/编辑」`
+      : `「${row.fileName}」没有向量化失败的分块`)
   } else {
-    ElMessage.success(`已触发重建向量（${r?.reset ?? 0} 块退回待向量化，不重新解析、不产生云端解析消耗）`)
+    ElMessage.success(`已触发重建向量（${r?.reset ?? 0} 块将重新向量化，不重新解析文档）`)
   }
   load()
 }

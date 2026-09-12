@@ -5,6 +5,18 @@
     <el-aside width="210px" class="aside">
       <div class="logo">📚 SeuKnowledge</div>
       <el-menu :default-active="activeMenu" router class="menu">
+        <el-menu-item index="/chat">
+          <el-icon><ChatDotRound /></el-icon><span>智能问答</span>
+        </el-menu-item>
+        <el-menu-item v-if="auth.isAdmin" index="/stats">
+          <el-icon><TrendCharts /></el-icon><span>问答反馈</span>
+        </el-menu-item>
+        <el-menu-item v-if="auth.canWrite" index="/review">
+          <el-icon><Checked /></el-icon><span>文档精修</span>
+        </el-menu-item>
+        <el-menu-item v-if="auth.canWrite" index="/curate">
+          <el-icon><EditPen /></el-icon><span>文档初洗</span>
+        </el-menu-item>
         <el-menu-item index="/kb">
           <el-icon><FolderOpened /></el-icon><span>知识库</span>
         </el-menu-item>
@@ -17,29 +29,17 @@
         <el-menu-item v-if="features.aiExtraction && auth.canWrite" index="/extract">
           <el-icon><MagicStick /></el-icon><span>AI 抽取</span>
         </el-menu-item>
-        <el-menu-item v-if="auth.canWrite" index="/review">
-          <el-icon><Checked /></el-icon><span>文档精修</span>
-        </el-menu-item>
-        <el-menu-item v-if="auth.canWrite" index="/curate">
-          <el-icon><EditPen /></el-icon><span>文档初洗</span>
-        </el-menu-item>
-        <el-menu-item v-if="auth.isAdmin" index="/models">
-          <el-icon><Cpu /></el-icon><span>模型配置</span>
-        </el-menu-item>
-        <el-menu-item v-if="auth.isAdmin" index="/agent">
-          <el-icon><Setting /></el-icon><span>Agent 配置</span>
-        </el-menu-item>
         <el-menu-item v-if="auth.isAdmin" index="/members">
           <el-icon><User /></el-icon><span>成员管理</span>
         </el-menu-item>
         <el-menu-item v-if="auth.isAdmin" index="/groups">
           <el-icon><Avatar /></el-icon><span>组管理</span>
         </el-menu-item>
-        <el-menu-item index="/chat">
-          <el-icon><ChatDotRound /></el-icon><span>智能问答</span>
+        <el-menu-item v-if="auth.isAdmin" index="/models">
+          <el-icon><Cpu /></el-icon><span>模型配置</span>
         </el-menu-item>
-        <el-menu-item v-if="auth.isAdmin" index="/stats">
-          <el-icon><TrendCharts /></el-icon><span>问答反馈</span>
+        <el-menu-item v-if="auth.isAdmin" index="/agent">
+          <el-icon><Setting /></el-icon><span>Agent 配置</span>
         </el-menu-item>
       </el-menu>
     </el-aside>
@@ -70,7 +70,7 @@
           <span class="header-title">{{ headerTitle }}</span>
         </div>
         <div class="header-right">
-          <span>{{ auth.user?.username || 'admin' }}</span>
+          <span v-if="auth.user?.username">{{ auth.user.username }}</span>
           <el-button link type="primary" @click="logout">退出</el-button>
         </div>
       </el-header>

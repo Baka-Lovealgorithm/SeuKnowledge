@@ -34,7 +34,7 @@
       <el-alert v-if="docId && isCurate" type="warning" :closable="false" class="hint"
                 :title="`精修中：md 已冻结。可对分块编辑/删除/合并/保留（保留后变「已审核」，可回退「待审核」；正常分块默认已审核）；无待审核分块后，「确认完成并向量化」统一入库。${pendingCount > 0 ? `还有 ${pendingCount} 个待审核分块。` : '全部已审核，可以确认向量化。'}`" />
       <el-alert v-else-if="docId" type="info" :closable="false" class="hint"
-                title="普通文档：仅待审核（SUSPECT）分块可编辑/保留/删除（保存后即向量化）；已审核分块可回退待审核。合并仅支持未向量化（初洗门精修中）的分块。" />
+                title="普通文档：仅待审核分块可编辑/保留/删除（保存后即向量化）；已审核分块可回退待审核。合并仅支持未向量化（初洗门精修中）的分块。" />
 
       <el-table :data="sortedChunks" v-loading="loading" border size="small" @selection-change="onSelection">
         <el-table-column v-if="auth.canWrite && docId" type="selection" width="40"
@@ -71,7 +71,7 @@
     </template>
 
     <!-- chunk 精修编辑 -->
-    <el-dialog v-model="editVisible" :title="`编辑 chunk #${editRow?.seq || ''}（${editRow?.docName || ''}）`" width="760px">
+    <el-dialog v-model="editVisible" :title="`编辑分块 #${editRow?.seq || ''}（${editRow?.docName || ''}）`" width="760px">
       <div class="edit-reason" v-if="editRow && editRow.cleanReason">
         <b>命中规则：</b>{{ editRow.cleanReason }}
       </div>
@@ -94,10 +94,10 @@
     <!-- chunk 详情（只读，完整内容） -->
     <ChunkDetail v-model="detailVisible" :row="detailRow" />
 
-    <!-- 合并相邻 chunk：选择保留的目标块 -->
-    <el-dialog v-model="mergeVisible" title="合并相邻 chunk（选择目标）" width="720px" :close-on-click-modal="false">
+    <!-- 合并相邻分块：选择保留的目标块 -->
+    <el-dialog v-model="mergeVisible" title="合并相邻分块（选择目标）" width="720px" :close-on-click-modal="false">
       <el-alert type="info" :closable="false" class="merge-tip"
-                title="将两块内容按文档顺序拼接（seq 小者在前）写入目标块；目标块保留原 id/序号，并置回待审核（确认前不向量化）；另一块将被删除（记录保留）。请选择哪一块作为合并后的目标：" />
+                title="两块内容将按文档顺序拼接写入目标块；目标块回到待审核，另一块将被删除（记录保留）。请选择合并后的目标块：" />
       <el-radio-group v-model="mergeTargetId" class="merge-opts">
         <el-radio v-for="c in mergeCandidates" :key="c.chunkId" :value="c.chunkId" class="merge-opt">
           <div class="merge-opt-title">#{{ c.seq }} {{ c.title || '（无标题）' }}<span v-if="c.pageNum" class="merge-opt-page"> · 第 {{ c.pageNum }} 页</span></div>
@@ -375,7 +375,7 @@ async function unkeep(row) {
 async function drop(row) {
   if (!hasChunkId(row)) return
   try {
-    await ElMessageBox.confirm(`确定删除 chunk #${row.seq}？删除后该块不进向量库（记录保留）。`, '删除 chunk', { type: 'warning' })
+    await ElMessageBox.confirm(`确定删除分块 #${row.seq}？删除后该块不参与检索（记录保留）。`, '删除分块', { type: 'warning' })
   } catch {
     return
   }
@@ -408,7 +408,7 @@ async function doMerge() {
   mergeSaving.value = true
   try {
     const r = await curateApi.mergeChunk(docId.value, { sourceId: source.chunkId, targetId: target.chunkId })
-    ElMessage.success(`已合并为 #${r.seq}（目标块已置回待审核，确认前不向量化；源块已删除）`)
+    ElMessage.success(`已合并为 #${r.seq}（另一分块已删除，目标块回到待审核）`)
     mergeVisible.value = false
     selectedRows.value = []
     await selectDoc(docId.value)

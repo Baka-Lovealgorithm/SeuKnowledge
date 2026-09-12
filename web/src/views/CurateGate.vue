@@ -23,7 +23,7 @@
 
     <template v-else>
       <el-alert v-if="status === 'PREVIEWING'" type="info" :closable="false" class="hint"
-                title="初洗中：分块结果已生成但未向量化。此阶段所有 chunk 只读，不可编辑/修改/合并；可「编辑 md」在线清洗后重新分块（可反复），或「接受」进入文档精修。未决断前不会进入向量库。" />
+                title="初洗中：分块结果已生成但未向量化。此阶段全部分块只读；可「编辑 md」在线清洗后重新分块（可反复），或「接受」进入文档精修。" />
 
       <el-table :data="chunks" v-loading="loading" border size="small">
         <el-table-column prop="seq" label="序号" width="70" />
@@ -206,7 +206,7 @@ async function saveMd() {
   mdSaving.value = true
   try {
     const r = await curateApi.saveMd(docId.value, mdText.value)
-    ElMessage.success(`已保存 v${r.version} 并重新分块：${r.chunkCount} chunk（待审核 ${r.suspect}）`)
+    ElMessage.success(`已保存 v${r.version} 并重新分块：共 ${r.chunkCount} 块，待审核 ${r.suspect} 块`)
     mdVisible.value = false
     await load()
   } catch (e) {
