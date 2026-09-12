@@ -34,6 +34,9 @@ spring:
     uris: ${ES_URIS:http://localhost:9200}
     username: ${ES_USERNAME:}
     password: ${ES_PASSWORD:}
+    # 检索/写入超时：一次问答最多 30 次 ES 查询，慢节点不设超时会拖死整条链路（只能靠外层 200s qaTimeout 兜底）
+    connection-timeout: ${ES_CONN_TIMEOUT:3s}
+    socket-timeout: ${ES_SOCKET_TIMEOUT:30s}
 
   # ===== Redis（登录态 / 缓存 / 任务进度；默认本机 6379 无密码）=====
   data:

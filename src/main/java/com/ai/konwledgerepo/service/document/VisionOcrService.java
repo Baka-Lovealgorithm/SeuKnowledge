@@ -173,7 +173,10 @@ public class VisionOcrService {
                     .data(pngBytes)
                     .build();
             UserMessage message = UserMessage.builder().text(prompt).media(media).build();
-            ChatResponse response = vision.get().call(new Prompt(message));
+            // 并行路径不建 span（ThreadLocal token 累加器跨线程失效），但超时保护必须与串行路径一致：
+            // 此前裸调 .call 无上限，挂死的识图 HTTP 调用会永久占用 vision- 线程并阻塞解析 worker
+            ChatResponse response = LlmTrace.withTimeout("vision",
+                    () -> vision.get().call(new Prompt(message)));
             Usage usage = response == null || response.getMetadata() == null
                     ? null : response.getMetadata().getUsage();
             String text = response == null || response.getResult() == null || response.getResult().getOutput() == null

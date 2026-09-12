@@ -85,6 +85,15 @@ public final class LlmTrace {
         }
     }
 
+    /**
+     * 当前生效的单次调用超时毫秒数。供 LLM HTTP 客户端把 socket 读超时对齐到「逻辑超时 + 余量」：
+     * 逻辑超时（{@code future.cancel}）打不断阻塞中的 socket I/O，读超时才是挂死连接的真正兜底；
+     * 若读超时小于逻辑超时，调大 llm-timeout 配置反而会先撞读超时，故始终跟随本值。
+     */
+    public static long currentTimeoutMillis() {
+        return llmTimeout.toMillis();
+    }
+
     // ===== String 重载（保持兼容，委托给 List<Message> 版本） =====
 
     /** 同步文本调用：返回模型输出文本 */

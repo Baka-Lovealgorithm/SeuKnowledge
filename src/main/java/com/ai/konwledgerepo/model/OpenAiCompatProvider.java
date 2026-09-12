@@ -34,6 +34,8 @@ public class OpenAiCompatProvider implements ModelProvider {
         OpenAiApi api = OpenAiApi.builder()
                 .baseUrl(normalizeBaseUrl(cfg.getBaseUrl()))
                 .apiKey(ModelKeyResolver.resolve(cfg))
+                // connect/read 超时兜底挂死连接（此前 read 无限，逻辑超时 cancel 打不断阻塞 I/O）
+                .restClientBuilder(LlmHttpClients.restClientBuilder())
                 .build();
         OpenAiChatModel.Builder builder = OpenAiChatModel.builder().openAiApi(api);
         if (cfg.getModelName() != null && !cfg.getModelName().isBlank()) {
@@ -47,6 +49,7 @@ public class OpenAiCompatProvider implements ModelProvider {
         OpenAiApi api = OpenAiApi.builder()
                 .baseUrl(normalizeBaseUrl(cfg.getBaseUrl()))
                 .apiKey(ModelKeyResolver.resolve(cfg))
+                .restClientBuilder(LlmHttpClients.restClientBuilder())
                 .build();
         if (cfg.getModelName() != null && !cfg.getModelName().isBlank()) {
             return new OpenAiEmbeddingModel(api, MetadataMode.NONE,

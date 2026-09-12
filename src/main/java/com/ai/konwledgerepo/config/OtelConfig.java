@@ -10,7 +10,7 @@ import io.opentelemetry.exporter.otlp.http.trace.OtlpHttpSpanExporter;
 import io.opentelemetry.sdk.OpenTelemetrySdk;
 import io.opentelemetry.sdk.resources.Resource;
 import io.opentelemetry.sdk.trace.SdkTracerProvider;
-import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
+import io.opentelemetry.sdk.trace.export.BatchSpanProcessor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
@@ -59,7 +59,10 @@ public class OtelConfig {
             SdkTracerProvider tracerProvider = SdkTracerProvider.builder()
                     .setResource(Resource.create(Attributes.of(
                             AttributeKey.stringKey("service.name"), tracingProps.serviceName())))
-                    .addSpanProcessor(SimpleSpanProcessor.create(exporter))
+                    // BatchSpanProcessor 异步批量上报：此前用 SimpleSpanProcessor，每个 span.end() 都同步
+                    // HTTPS POST Langfuse（一次问答几十个 span = 几十次串行阻塞外网往返），Langfuse 稍慢
+                    // 就拖垮问答与解析链路。批量异步上报后 span 仅入内存队列，由后台线程定时刷出。
+                    .addSpanProcessor(BatchSpanProcessor.builder(exporter).build())
                     .build();
             OpenTelemetrySdk sdk = OpenTelemetrySdk.builder()
                     .setTracerProvider(tracerProvider)

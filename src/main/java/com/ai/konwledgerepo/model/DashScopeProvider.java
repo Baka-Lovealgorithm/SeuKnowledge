@@ -32,6 +32,8 @@ public class DashScopeProvider implements ModelProvider {
     public ChatModel createChatModel(ModelConfig cfg) {
         DashScopeApi api = DashScopeApi.builder()
                 .apiKey(ModelKeyResolver.resolve(cfg))
+                // connect/read 超时兜底挂死连接（此前 read 无限，逻辑超时 cancel 打不断阻塞 I/O）
+                .restClientBuilder(LlmHttpClients.restClientBuilder())
                 .build();
         DashScopeChatModel.Builder builder = DashScopeChatModel.builder().dashScopeApi(api);
         if (cfg.getModelName() != null && !cfg.getModelName().isBlank()) {
@@ -44,6 +46,7 @@ public class DashScopeProvider implements ModelProvider {
     public EmbeddingModel createEmbeddingModel(ModelConfig cfg) {
         DashScopeApi api = DashScopeApi.builder()
                 .apiKey(ModelKeyResolver.resolve(cfg))
+                .restClientBuilder(LlmHttpClients.restClientBuilder())
                 .build();
         DashScopeEmbeddingModel.Builder builder = DashScopeEmbeddingModel.builder().dashScopeApi(api);
         if (cfg.getModelName() != null && !cfg.getModelName().isBlank()) {
