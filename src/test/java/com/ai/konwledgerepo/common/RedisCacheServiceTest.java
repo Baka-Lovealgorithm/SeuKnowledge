@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -21,10 +22,12 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -127,7 +130,8 @@ class RedisCacheServiceTest {
 
     @Test
     void redisFailure_incrementReturnsNull_failOpen() {
-        when(valueOps.increment(anyString())).thenThrow(new RuntimeException("redis down"));
+        when(redis.execute(any(DefaultRedisScript.class), anyList(), anyString()))
+                .thenThrow(new RuntimeException("redis down"));
         assertNull(service.increment("k", Duration.ofSeconds(60)));
     }
 
@@ -137,17 +141,19 @@ class RedisCacheServiceTest {
         assertNull(service.setIfAbsent("k", "v", Duration.ofSeconds(5)));
     }
 
+    /**
+     * 回归锁：INCR+EXPIRE 必须经 Lua 脚本原子执行。此前两步分离，EXPIRE 恰好失败一次会留下
+     * 永不过期的固定计数 key（限流/登录锁定以 TTL 为唯一重置机制）→ 用户被永久限流。
+     */
     @Test
-    void increment_setsTtlOnFirstIncrement() {
-        when(valueOps.increment("k")).thenReturn(1L);
-        assertEquals(1L, service.increment("k", Duration.ofSeconds(60)));
-        verify(redis).expire("k", Duration.ofSeconds(60));
-    }
+    void increment_usesAtomicScriptWithTtlSeconds() {
+        when(redis.execute(any(DefaultRedisScript.class), anyList(), anyString())).thenReturn(1L);
 
-    @Test
-    void increment_subsequentNoTtlReset() {
-        when(valueOps.increment("k")).thenReturn(3L);
-        assertEquals(3L, service.increment("k", Duration.ofSeconds(60)));
-        verify(redis, org.mockito.Mockito.never()).expire(anyString(), any());
+        assertEquals(1L, service.increment("k", Duration.ofSeconds(60)));
+
+        verify(redis).execute(any(DefaultRedisScript.class), eq(List.of("k")), eq("60"));
+        // 不再走旧的非原子两步路径
+        verify(valueOps, never()).increment(anyString());
+        verify(redis, never()).expire(anyString(), any(Duration.class));
     }
 }

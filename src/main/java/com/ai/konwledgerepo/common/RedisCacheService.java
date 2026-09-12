@@ -43,6 +43,18 @@ public class RedisCacheService {
             "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
             Long.class);
 
+    /**
+     * 原子自增并设置 TTL 的 Lua 脚本：INCR 与 EXPIRE 必须原子，否则两步之间故障会留下一个永不过期的
+     * 计数 key（限流/登录锁定用固定 key，TTL 是唯一重置机制——TTL 丢失即用户被永久限流）。
+     * EXPIRE 带 NX：只在 key 无 TTL 时设置，每次调用都兜底，还能自愈存量已丢 TTL 的 key。
+     * 需 Redis 7.0+（EXPIRE NX 选项）。
+     */
+    private static final DefaultRedisScript<Long> INCR_WITH_TTL_SCRIPT = new DefaultRedisScript<>(
+            "local c = redis.call('incr', KEYS[1]) "
+                    + "redis.call('expire', KEYS[1], ARGV[1], 'NX') "
+                    + "return c",
+            Long.class);
+
     public RedisCacheService(StringRedisTemplate redis, ObjectMapper objectMapper) {
         this.redis = redis;
         this.objectMapper = objectMapper;
@@ -184,13 +196,13 @@ public class RedisCacheService {
         }
     }
 
-    /** 原子自增；首次自增时设置 TTL，返回当前计数（失败返回 null） */
+    /**
+     * 原子自增并保证 TTL：INCR+EXPIRE 由 Lua 脚本单次执行（见 {@link #INCR_WITH_TTL_SCRIPT}），
+     * 不再可能留下无 TTL 的计数 key；返回当前计数（失败返回 null，调用方 fail-open）。
+     */
     public Long increment(String key, Duration ttl) {
         try {
-            Long count = redis.opsForValue().increment(key);
-            if (count != null && count == 1L) {
-                redis.expire(key, ttl);
-            }
+            Long count = redis.execute(INCR_WITH_TTL_SCRIPT, List.of(key), String.valueOf(ttl.toSeconds()));
             onSuccess();
             return count;
         } catch (Exception e) {
