@@ -3,7 +3,9 @@ import http from './http'
 export const authApi = {
   login: (data) => http.post('/auth/login', data),
   me: () => http.get('/auth/me'),
-  logout: () => http.post('/auth/logout')
+  logout: () => http.post('/auth/logout'),
+  /** 自助修改密码（校验当前密码，成功后清除管理员重置标记） */
+  changePassword: (data) => http.post('/auth/password', data)
 }
 
 export const kbApi = {
@@ -162,5 +164,7 @@ export const workspaceApi = {
   inviteMember: (data) => http.post('/workspace/members/invite', data),
   updateRole: (id, role) => http.put(`/workspace/members/${id}/role`, { role }),
   removeMember: (id) => http.delete(`/workspace/members/${id}`),
-  transferOwnership: (memberId) => http.post('/workspace/owner/transfer', { memberId })
+  transferOwnership: (memberId) => http.post('/workspace/owner/transfer', { memberId }),
+  /** 重置成员密码（生成随机密码，明文仅本次返回一次；用户下次登录强制改密） */
+  resetMemberPassword: (targetUserId) => http.post(`/workspace/members/${targetUserId}/reset-password`)
 }

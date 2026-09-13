@@ -317,6 +317,7 @@ CREATE TABLE IF NOT EXISTS kb_workspace_member (
 
 CREATE TABLE IF NOT EXISTS sys_user (
     enabled bit not null,
+    must_change_password bit not null,
     created_at datetime(6),
     id bigint not null auto_increment,
     updated_at datetime(6),
@@ -332,12 +333,13 @@ CREATE TABLE IF NOT EXISTS sys_user (
 -- ----------------------------------------------------------------------------
 -- 系统唯一内置账号：admin / admin123（BCrypt 哈希存储，与应用启动时
 -- AdminInitializer 自动创建的一致；已通过 BCrypt matches 校验）。
--- 生产环境请登录后修改密码，或通过 seuknowledge.security.admin-password 覆盖。
+-- 生产环境请登录后修改密码（右上角「修改密码」），或通过 seuknowledge.security.admin-password 覆盖。
+-- must_change_password：管理员重置成员密码后置 1，该用户下次登录须先改密（改密成功自动清零）。
 -- 默认工作空间与 OWNER 成员关系与应用启动初始化逻辑一致。
 -- ============================================================================
 
-INSERT IGNORE INTO sys_user (id, username, password, role, enabled, created_at, updated_at)
-VALUES (1, 'admin', '$2a$10$WoVAOQtt2Z.EOKY2xV2qVueBMWvwlwPIdeJ1LHz9MKvf9g6sKOowC', 'ADMIN', 1, NOW(), NOW());
+INSERT IGNORE INTO sys_user (id, username, password, role, enabled, must_change_password, created_at, updated_at)
+VALUES (1, 'admin', '$2a$10$WoVAOQtt2Z.EOKY2xV2qVueBMWvwlwPIdeJ1LHz9MKvf9g6sKOowC', 'ADMIN', 1, 0, NOW(), NOW());
 
 INSERT IGNORE INTO kb_workspace (id, name, owner_user_id, created_at, updated_at)
 VALUES (1, '默认工作空间', 1, NOW(), NOW());

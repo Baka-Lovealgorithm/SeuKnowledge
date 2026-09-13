@@ -57,7 +57,9 @@ export const useAuthStore = defineStore('auth', {
     /** 系统级配置（模型/成员管理）：ADMIN+ */
     isAdmin: (s) => ['OWNER', 'ADMIN'].includes(s.role),
     /** 拥有者 */
-    isOwner: (s) => s.role === 'OWNER'
+    isOwner: (s) => s.role === 'OWNER',
+    /** 管理员重置密码后为 true：登录后强制先改密 */
+    mustChangePassword: (s) => !!(s.user && s.user.mustChangePassword)
   },
   actions: {
     async login(username, password) {
@@ -113,6 +115,13 @@ export const useAuthStore = defineStore('auth', {
       localStorage.removeItem('token')
       localStorage.removeItem(USER_KEY)
       localStorage.removeItem(WS_KEY)
+    },
+    /** 自助改密成功后清除本地强制改密标记（后端已落库清零） */
+    clearMustChangePassword() {
+      if (this.user) {
+        this.user = { ...this.user, mustChangePassword: false }
+        localStorage.setItem(USER_KEY, JSON.stringify(this.user))
+      }
     }
   }
 })

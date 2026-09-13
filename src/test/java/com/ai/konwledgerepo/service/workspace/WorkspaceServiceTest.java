@@ -44,6 +44,7 @@ class WorkspaceServiceTest {
     private KnowledgeBaseRepository kbRepo;
     private KbAccessRepository accessRepo;
     private RedisCacheService cache;
+    private PasswordEncoder passwordEncoder;
     private WorkspaceService service;
 
     private Workspace ws1;
@@ -58,8 +59,10 @@ class WorkspaceServiceTest {
         kbRepo = mock(KnowledgeBaseRepository.class);
         accessRepo = mock(KbAccessRepository.class);
         cache = mock(RedisCacheService.class);
+        passwordEncoder = mock(PasswordEncoder.class);
+        when(passwordEncoder.encode(any())).thenReturn("{bcrypt}hashed");
         service = new WorkspaceService(workspaceRepo, memberRepo, userRepo, kbRepo, accessRepo, cache,
-                mock(PasswordEncoder.class));
+                passwordEncoder);
 
         ws1 = workspace(1L, "空间一", 1L);
         ws2 = workspace(2L, "空间二", 5L);
@@ -201,6 +204,61 @@ class WorkspaceServiceTest {
                 .thenReturn(Optional.of(member(11L, 2L, 1L, WorkspaceMember.ROLE_MEMBER)));
         assertThrows(BizException.class,
                 () -> service.inviteMember(1L, 1L, new InviteMemberRequest("u1", "MEMBER")));
+    }
+
+    // ===== 重置成员密码 =====
+
+    @Test
+    void resetMemberPassword_adminResetsMember_returnsPlainOnceAndFlags() {
+        when(memberRepo.findByWorkspaceIdAndUserId(1L, 1L))
+                .thenReturn(Optional.of(member(10L, 1L, 1L, WorkspaceMember.ROLE_ADMIN)));
+        when(memberRepo.findByWorkspaceIdAndUserId(1L, 2L))
+                .thenReturn(Optional.of(member(11L, 2L, 1L, WorkspaceMember.ROLE_MEMBER)));
+        SysUser target = user(2L, "member1");
+        when(userRepo.findById(2L)).thenReturn(Optional.of(target));
+        when(userRepo.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        WorkspaceService.ResetPasswordResult result = service.resetMemberPassword(1L, 1L, 2L);
+
+        assertEquals("member1", result.username());
+        assertTrue(result.newPassword().matches("^(?=.*[a-zA-Z])(?=.*\\d).{8,}$"),
+                "生成的临时密码须满足策略（≥8 位含字母数字）: " + result.newPassword());
+        assertEquals(12, result.newPassword().length());
+        assertEquals("{bcrypt}hashed", target.getPassword());
+        assertTrue(target.getMustChangePassword());
+        verify(cache).deleteByPattern(RedisKeys.memberListPattern(2L));
+    }
+
+    @Test
+    void resetMemberPassword_targetIsOwner_rejected() {
+        when(memberRepo.findByWorkspaceIdAndUserId(1L, 5L))
+                .thenReturn(Optional.of(member(12L, 5L, 1L, WorkspaceMember.ROLE_ADMIN)));
+        when(memberRepo.findByWorkspaceIdAndUserId(1L, 1L))
+                .thenReturn(Optional.of(owner));
+
+        assertThrows(BizException.class, () -> service.resetMemberPassword(5L, 1L, 1L));
+        verify(userRepo, never()).save(any());
+    }
+
+    @Test
+    void resetMemberPassword_operatorIsMember_rejected() {
+        when(memberRepo.findByWorkspaceIdAndUserId(1L, 2L))
+                .thenReturn(Optional.of(member(11L, 2L, 1L, WorkspaceMember.ROLE_MEMBER)));
+        when(memberRepo.findByWorkspaceIdAndUserId(1L, 3L))
+                .thenReturn(Optional.of(member(13L, 3L, 1L, WorkspaceMember.ROLE_MEMBER)));
+
+        assertThrows(BizException.class, () -> service.resetMemberPassword(2L, 1L, 3L));
+        verify(userRepo, never()).save(any());
+    }
+
+    @Test
+    void resetMemberPassword_targetNotInWorkspace_rejected() {
+        when(memberRepo.findByWorkspaceIdAndUserId(1L, 1L))
+                .thenReturn(Optional.of(member(10L, 1L, 1L, WorkspaceMember.ROLE_ADMIN)));
+        when(memberRepo.findByWorkspaceIdAndUserId(1L, 2L)).thenReturn(Optional.empty());
+
+        assertThrows(BizException.class, () -> service.resetMemberPassword(1L, 1L, 2L));
+        verify(userRepo, never()).save(any());
     }
 
     // ===== 角色修改 / 移除（限当前空间） =====

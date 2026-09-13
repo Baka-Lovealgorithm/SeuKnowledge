@@ -2,6 +2,7 @@ package com.ai.konwledgerepo.service.workspace;
 
 import com.ai.konwledgerepo.common.BizException;
 import com.ai.konwledgerepo.common.ErrorCodes;
+import com.ai.konwledgerepo.common.Passwords;
 import com.ai.konwledgerepo.common.RedisCacheService;
 import com.ai.konwledgerepo.common.RedisKeys;
 import com.ai.konwledgerepo.dto.CreateMemberRequest;
@@ -190,6 +191,38 @@ public class WorkspaceService {
         }
         memberRepository.delete(target);
         evictMemberCache(target.getUserId());
+    }
+
+    /**
+     * 重置成员密码（对齐 Dify 邀请语义的折中）：仅 OWNER/ADMIN，且不可重置拥有者。
+     * 服务端生成 12 位随机密码，明文仅在本次响应返回一次（不落日志）；
+     * 同时置 must_change_password，被重置用户下次登录强制修改。
+     */
+    @Transactional
+    public ResetPasswordResult resetMemberPassword(Long operatorId, Long workspaceId, Long targetUserId) {
+        requireWorkspace(workspaceId);
+        WorkspaceMember operator = requireMember(operatorId, workspaceId);
+        if (!WorkspaceMember.ROLE_OWNER.equals(operator.getRole())
+                && !WorkspaceMember.ROLE_ADMIN.equals(operator.getRole())) {
+            throw new BizException(ErrorCodes.FORBIDDEN, "仅拥有者/管理员可重置成员密码");
+        }
+        WorkspaceMember target = memberRepository.findByWorkspaceIdAndUserId(workspaceId, targetUserId)
+                .orElseThrow(() -> new BizException("该用户不是当前工作空间的成员"));
+        if (WorkspaceMember.ROLE_OWNER.equals(target.getRole())) {
+            throw new BizException("不能重置拥有者的密码");
+        }
+        SysUser user = userRepository.findById(targetUserId)
+                .orElseThrow(() -> new BizException("用户不存在"));
+        String plain = Passwords.generate();
+        user.setPassword(passwordEncoder.encode(plain));
+        user.setMustChangePassword(true);
+        userRepository.save(user);
+        evictMemberCache(targetUserId);
+        return new ResetPasswordResult(user.getUsername(), plain);
+    }
+
+    /** 重置密码结果：明文密码仅此一次返回，前端提示用户自行保存 */
+    public record ResetPasswordResult(String username, String newPassword) {
     }
 
     /** 转让拥有权：原 Owner 降为 ADMIN，目标成员成为新的 Owner；仅 Owner 可操作 */

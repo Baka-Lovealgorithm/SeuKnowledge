@@ -125,6 +125,16 @@ public class WorkspaceController {
         return ApiResponse.ok();
     }
 
+    /** 重置成员密码：生成 12 位随机密码（明文仅本次返回一次），用户下次登录强制修改（不可重置拥有者） */
+    @PostMapping("/members/{targetUserId}/reset-password")
+    @AdminOrAbove
+    public ApiResponse<WorkspaceService.ResetPasswordResult> resetMemberPassword(
+            @RequestAttribute("userId") Long userId,
+            @RequestAttribute("workspaceId") Long workspaceId,
+            @PathVariable Long targetUserId) {
+        return ApiResponse.ok(service.resetMemberPassword(userId, workspaceId, targetUserId));
+    }
+
     // ===== 拥有者专属 =====
 
     /** 转让拥有权：原 Owner 降为 ADMIN */

@@ -1,6 +1,7 @@
 package com.ai.konwledgerepo.controller;
 
 import com.ai.konwledgerepo.common.ApiResponse;
+import com.ai.konwledgerepo.dto.ChangePasswordRequest;
 import com.ai.konwledgerepo.dto.LoginRequest;
 import com.ai.konwledgerepo.dto.LoginResponse;
 import com.ai.konwledgerepo.security.AuthService;
@@ -41,6 +42,14 @@ public class AuthController {
     @PostMapping("/logout")
     public ApiResponse<Void> logout(@RequestHeader(value = "Authorization", required = false) String authorization) {
         authService.logout(authorization);
+        return ApiResponse.ok();
+    }
+
+    /** 自助修改密码（校验当前密码；改密成功清除管理员重置标记） */
+    @PostMapping("/password")
+    public ApiResponse<Void> changePassword(@RequestBody @Valid ChangePasswordRequest request,
+                                            @RequestAttribute("userId") Long userId) {
+        authService.changePassword(userId, request.password(), request.newPassword(), request.confirmPassword());
         return ApiResponse.ok();
     }
 }

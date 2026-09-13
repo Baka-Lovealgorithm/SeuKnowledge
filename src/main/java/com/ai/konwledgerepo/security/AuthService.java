@@ -3,6 +3,7 @@ package com.ai.konwledgerepo.security;
 import com.ai.konwledgerepo.common.BizException;
 import com.ai.konwledgerepo.common.Defaults;
 import com.ai.konwledgerepo.common.ErrorCodes;
+import com.ai.konwledgerepo.common.Passwords;
 import com.ai.konwledgerepo.dto.LoginRequest;
 import com.ai.konwledgerepo.dto.LoginResponse;
 import com.ai.konwledgerepo.dto.WorkspaceInfo;
@@ -94,6 +95,27 @@ public class AuthService {
         }
     }
 
+    /**
+     * 自助修改密码（对齐 Dify /account/password 语义）：旧密码校验 + 新密码策略 + 重新 BCrypt 落库。
+     * 改密成功即清除「须改密」标记（管理员重置后首次登录改完即恢复正常）。
+     * 已有 token 保持有效（改密不等于登出，与 Dify 一致）。
+     */
+    @org.springframework.transaction.annotation.Transactional
+    public void changePassword(Long userId, String oldPassword, String newPassword, String confirmPassword) {
+        if (!java.util.Objects.equals(newPassword, confirmPassword)) {
+            throw new BizException("两次输入的新密码不一致");
+        }
+        Passwords.validate(newPassword);
+        SysUser user = userRepository.findById(userId)
+                .orElseThrow(() -> new BizException(ErrorCodes.UNAUTHORIZED, "用户不存在"));
+        if (!passwordEncoder.matches(oldPassword == null ? "" : oldPassword, user.getPassword())) {
+            throw new BizException("当前密码不正确");
+        }
+        user.setPassword(passwordEncoder.encode(newPassword));
+        user.setMustChangePassword(false);
+        userRepository.save(user);
+    }
+
     private LoginResponse buildResponse(String token, SysUser user, List<WorkspaceMember> members, Long currentWorkspaceId) {
         Map<Long, Workspace> workspaceMap = workspaceRepository.findAllByOrderByIdAsc().stream()
                 .collect(Collectors.toMap(Workspace::getId, Function.identity()));
@@ -110,6 +132,6 @@ public class AuthService {
         return new LoginResponse(token, user.getId(), user.getUsername(),
                 current == null ? null : current.getRole(),
                 current == null ? null : current.getWorkspaceId(),
-                workspaces);
+                workspaces, Boolean.TRUE.equals(user.getMustChangePassword()));
     }
 }

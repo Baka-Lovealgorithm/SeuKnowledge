@@ -25,6 +25,13 @@ public class SysUser extends BaseEntity {
     @Column(nullable = false)
     private Boolean enabled = true;
 
+    /**
+     * 管理员重置密码后置 true：下次登录须先修改密码（前端强制弹窗，改密成功后清零）。
+     * 存量数据默认 false，与旧行为兼容。
+     */
+    @Column(name = "must_change_password", nullable = false)
+    private Boolean mustChangePassword = false;
+
     public String getUsername() {
         return username;
     }
@@ -55,5 +62,13 @@ public class SysUser extends BaseEntity {
 
     public void setEnabled(Boolean enabled) {
         this.enabled = enabled;
+    }
+
+    public Boolean getMustChangePassword() {
+        return mustChangePassword;
+    }
+
+    public void setMustChangePassword(Boolean mustChangePassword) {
+        this.mustChangePassword = mustChangePassword;
     }
 }

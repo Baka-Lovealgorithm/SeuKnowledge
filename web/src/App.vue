@@ -71,6 +71,7 @@
         </div>
         <div class="header-right">
           <span v-if="auth.user?.username">{{ auth.user.username }}</span>
+          <el-button link type="primary" @click="openChangePassword">修改密码</el-button>
           <el-button link type="primary" @click="logout">退出</el-button>
         </div>
       </el-header>
@@ -89,6 +90,31 @@
       <template #footer>
         <el-button @click="wsDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="wsDialogLoading" @click="submitWsDialog">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 修改密码（mustChangePassword=true 时为强制改密：不可关闭，仅允许改密或退出） -->
+    <el-dialog v-model="pwdVisible" :title="forcedChange ? '请先修改密码' : '修改密码'" width="440px"
+               :close-on-click-modal="false" :close-on-press-escape="!forcedChange" :show-close="!forcedChange">
+      <el-alert v-if="forcedChange" type="warning" :closable="false" class="pwd-tip"
+                title="您的密码已被管理员重置，请先设置新密码后再继续使用。" />
+      <el-form label-width="90px" @submit.prevent>
+        <el-form-item label="当前密码">
+          <el-input v-model="pwdForm.oldPassword" type="password" show-password autocomplete="current-password" />
+        </el-form-item>
+        <el-form-item label="新密码">
+          <el-input v-model="pwdForm.newPassword" type="password" show-password autocomplete="new-password"
+                    placeholder="至少 8 位，须包含字母和数字" />
+        </el-form-item>
+        <el-form-item label="确认新密码">
+          <el-input v-model="pwdForm.confirmPassword" type="password" show-password autocomplete="new-password"
+                    @keyup.enter="submitChangePassword" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button v-if="forcedChange" @click="logout">退出登录</el-button>
+        <el-button v-else @click="pwdVisible = false">取消</el-button>
+        <el-button type="primary" :loading="pwdSaving" @click="submitChangePassword">确定修改</el-button>
       </template>
     </el-dialog>
   </el-container>
@@ -136,8 +162,48 @@ const wsDialogMode = ref('create')
 const wsDialogLoading = ref(false)
 const wsName = ref('')
 
+// ===== 修改密码（普通 / 管理员重置后的强制改密共用） =====
+const pwdVisible = ref(false)
+const pwdSaving = ref(false)
+const pwdForm = ref({ oldPassword: '', newPassword: '', confirmPassword: '' })
+const forcedChange = computed(() => auth.mustChangePassword)
+
+/** 打开改密弹窗：管理员重置后的强制场景自动弹出 */
+function openChangePassword() {
+  pwdForm.value = { oldPassword: '', newPassword: '', confirmPassword: '' }
+  pwdVisible.value = true
+}
+
+async function submitChangePassword() {
+  const { oldPassword, newPassword, confirmPassword } = pwdForm.value
+  if (!oldPassword || !newPassword || !confirmPassword) {
+    ElMessage.warning('请填写完整')
+    return
+  }
+  if (newPassword !== confirmPassword) {
+    ElMessage.warning('两次输入的新密码不一致')
+    return
+  }
+  pwdSaving.value = true
+  try {
+    await authApi.changePassword({ password: oldPassword, newPassword, confirmPassword })
+    auth.clearMustChangePassword()
+    pwdVisible.value = false
+    ElMessage.success('密码已修改')
+  } catch (e) {
+    /* 拦截器已提示 */
+  } finally {
+    pwdSaving.value = false
+  }
+}
+
 onMounted(() => {
-  if (auth.isLogin) auth.refresh()
+  if (auth.isLogin) {
+    auth.refresh().then(() => {
+      // 管理员重置后的首次登录：强制弹改密弹窗
+      if (auth.mustChangePassword) openChangePassword()
+    })
+  }
 })
 
 async function onWsCommand(cmd) {
@@ -208,4 +274,5 @@ async function logout() {
 .caret { font-size: 12px; color: #909399; }
 .ws-active { background: #ecf5ff; }
 .ws-role-tag { margin-left: 8px; }
+.pwd-tip { margin-bottom: 14px; }
 </style>

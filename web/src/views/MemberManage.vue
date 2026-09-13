@@ -19,7 +19,7 @@
       <el-table-column prop="createdAt" label="加入时间" width="170">
         <template #default="{ row }">{{ fmt(row.createdAt) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="230" fixed="right">
+      <el-table-column label="操作" width="290" fixed="right">
         <template #default="{ row }">
           <template v-if="row.role !== 'OWNER'">
             <el-select :model-value="row.role" size="small" style="width: 100px; margin-right: 6px"
@@ -29,6 +29,7 @@
               <el-option label="普通成员" value="MEMBER" />
             </el-select>
             <el-button v-if="auth.isOwner" link type="primary" @click="transfer(row)">转让</el-button>
+            <el-button v-if="auth.isAdmin" link type="warning" @click="resetPwd(row)">重置密码</el-button>
             <el-button v-if="auth.isAdmin" link type="danger" @click="remove(row)">移除</el-button>
           </template>
           <span v-else class="owner-badge">拥有者（不可变更）</span>
@@ -74,6 +75,20 @@
       <template #footer>
         <el-button @click="inviteVisible = false">取消</el-button>
         <el-button type="primary" :loading="inviting" @click="submitInvite">邀请</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 重置密码结果（仅显示一次） -->
+    <el-dialog v-model="resetResultVisible" title="密码已重置" width="460px" :close-on-click-modal="false">
+      <el-alert type="warning" :closable="false" class="reset-tip"
+                title="新密码仅本次显示，请立即复制并告知该用户；其下次登录时将强制修改密码。" />
+      <div class="reset-pwd-row">
+        <span class="reset-pwd-user">{{ resetResult.username }}</span>
+        <code class="reset-pwd-value">{{ resetResult.newPassword }}</code>
+        <el-button size="small" type="primary" @click="copyResetPassword">复制</el-button>
+      </div>
+      <template #footer>
+        <el-button type="primary" @click="resetResultVisible = false">我已保存</el-button>
       </template>
     </el-dialog>
   </div>
@@ -155,6 +170,29 @@ async function remove(row) {
   load()
 }
 
+/** 重置密码：生成随机密码仅本次展示，用户下次登录强制修改 */
+const resetResultVisible = ref(false)
+const resetResult = ref({ username: '', newPassword: '' })
+
+async function resetPwd(row) {
+  await ElMessageBox.confirm(
+    `确定重置「${row.username}」的密码？将生成随机密码且仅显示一次，该用户下次登录时须先修改密码。`,
+    '重置密码', { type: 'warning', confirmButtonText: '重置', cancelButtonText: '取消' })
+  const r = await workspaceApi.resetMemberPassword(row.userId)
+  resetResult.value = { username: r.username, newPassword: r.newPassword }
+  resetResultVisible.value = true
+  load()
+}
+
+async function copyResetPassword() {
+  try {
+    await navigator.clipboard.writeText(resetResult.value.newPassword)
+    ElMessage.success('已复制')
+  } catch {
+    ElMessage.warning('复制失败，请手动选择复制')
+  }
+}
+
 async function transfer(row) {
   await ElMessageBox.confirm(
     `转让拥有权给「${row.username}」？转让后您将变为管理员，且无法撤销（除非对方再转让给您）。`,
@@ -188,4 +226,8 @@ onMounted(load)
 .tip { color: #909399; font-size: 12px; }
 .owner-badge { color: #f56c6c; font-size: 12px; }
 .ws-name { font-weight: 600; }
+.reset-tip { margin-bottom: 14px; }
+.reset-pwd-row { display: flex; align-items: center; gap: 12px; }
+.reset-pwd-user { font-weight: 600; }
+.reset-pwd-value { flex: 1; background: #f5f7fa; border: 1px solid #e6e6e6; border-radius: 4px; padding: 6px 10px; font-size: 14px; letter-spacing: 1px; }
 </style>
