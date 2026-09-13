@@ -25,6 +25,12 @@ public final class ChunkDocFields {
     /** 清洗状态（P1 规则清洗）：null=未清洗 / KEEP=保留 / SUSPECT=可疑待人工 / FILTERED=丢弃 */
     public static final String CLEAN_STATUS = "cleanStatus";
 
+    /** title 的可分词 multi-field 子字段（smartcn）：顶层 keyword 全串精确匹配对自然语言问句无效，
+     * BM25 标题召回打在此子字段上。旧索引由 VectorIndexService 启动时原地补充。 */
+    public static final String TITLE_TEXT = TITLE + ".text";
+    /** docName 的可分词 multi-field 子字段（smartcn），同 {@link #TITLE_TEXT} */
+    public static final String DOC_NAME_TEXT = DOC_NAME + ".text";
+
     /** 构建一份写入 ES 的文档（chunk 与结构化来源共用，sourceType 区分） */
     public static Map<String, Object> document(Long chunkId, Long docId, Long kbId, String docName,
                                                int pageNum, String title, String sourceType,

@@ -2,7 +2,7 @@
 
 后端所有配置集中在 `src/main/resources/application.yml`，**全部支持环境变量覆盖**（推荐部署方式，密钥不入库、不入日志）。本文收录常用的环境变量、模型服务配置、对象存储布局、数据库升级、日志与测试说明；完整键清单见 `application.yml` 的 `seuknowledge.*` 段（均带默认值）。
 
-> 启动 / 部署入口见 [README.md](README.md)；Docker Compose 部署见 [DEPLOYMENT.md](DEPLOYMENT.md)。
+> 启动 / 部署入口见 [README.md](README.md)；Docker Compose 部署见 [DEPLOYMENT.md](DEPLOYMENT.md)；存量 ES 索引的标题召回升级见 [ES_TITLE_RECALL_UPGRADE.md](ES_TITLE_RECALL_UPGRADE.md)。
 
 ## 环境变量参考
 

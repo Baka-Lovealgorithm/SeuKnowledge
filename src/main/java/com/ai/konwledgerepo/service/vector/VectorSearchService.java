@@ -223,22 +223,30 @@ public class VectorSearchService implements EvidenceSearcher {
         Query sourceFilter = sourceTypeFilter(sourceTypes);
         SearchResponse<Map> resp = esClient.search(s -> s
                         .index(indexName)
-                        .query(q -> q.bool(b -> {
-                            // 正文为主，章节标题语义强（boost 更高），文档名辅助匹配（低权重）
-                            b.must(m -> m.multiMatch(mm -> mm
-                                    .fields(ChunkDocFields.CONTENT + "^1.0",
-                                            ChunkDocFields.TITLE + "^2.0",
-                                            ChunkDocFields.DOC_NAME + "^0.5")
-                                    .query(query)));
-                            b.filter(f -> f.term(t -> t.field(ChunkDocFields.KB_ID).value(kbId)));
-                            if (sourceFilter != null) {
-                                b.filter(sourceFilter);
-                            }
-                            return b;
-                        }))
+                        .query(bm25Query(kbId, query, sourceFilter))
                         .size(topK),
                 Map.class);
         return resp.hits().hits();
+    }
+
+    /**
+     * BM25 查询体（静态包内可见，供单元测试断言字段）：
+     * 正文为主；标题/文档名打在可分词的 .text 子字段上（顶层 keyword 对自然语言问句无效；
+     * 旧索引子字段未补齐时 ES 自动忽略未映射字段，退化为只查 content）。
+     */
+    static Query bm25Query(Long kbId, String query, Query sourceFilter) {
+        return Query.of(q -> q.bool(b -> {
+            b.must(m -> m.multiMatch(mm -> mm
+                    .fields(ChunkDocFields.CONTENT + "^1.0",
+                            ChunkDocFields.TITLE_TEXT + "^2.0",
+                            ChunkDocFields.DOC_NAME_TEXT + "^0.5")
+                    .query(query)));
+            b.filter(f -> f.term(t -> t.field(ChunkDocFields.KB_ID).value(kbId)));
+            if (sourceFilter != null) {
+                b.filter(sourceFilter);
+            }
+            return b;
+        }));
     }
 
     /** 构建 knn 过滤：知识库 + 可选来源类型（bool filter 多个条件） */
