@@ -30,9 +30,12 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -398,6 +401,61 @@ class DocumentCurateServiceTest {
         verify(chunkRepository, never()).save(any());
     }
 
+    // ===== createChunk（精修阶段新增分块：纯 DB 不触 ES） =====
+
+    @Test
+    void createChunk_accepted_insertsAfterAnchorShiftsSeqWithoutEs() {
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc(1L, Document.CURATE_ACCEPTED)));
+        Chunk anchor = chunk(10L, 1L, "KEEP");
+        anchor.setSeq(3);
+        anchor.setPageNum(4);
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(anchor));
+
+        ChunkReviewResponse r = service.createChunk(1L, 10L, "新块内容", "新标题", 9L);
+
+        verify(chunkRepository).shiftSeqFrom(1L, 4);
+        ArgumentCaptor<Chunk> captor = ArgumentCaptor.forClass(Chunk.class);
+        verify(chunkRepository).saveAndFlush(captor.capture());
+        Chunk created = captor.getValue();
+        assertEquals(4, created.getSeq());
+        assertEquals("KEEP", created.getCleanStatus());
+        assertEquals(ChunkStatus.EMBEDDING.value(), created.getStatus());
+        assertEquals(4, created.getPageNum());
+        verify(vectorIngestionService, never()).reindexChunk(any());
+        verify(reviewLogRepository).save(any());
+        assertEquals(4, r.seq());
+    }
+
+    @Test
+    void createChunk_accepted_bumpsDocChunkCount() {
+        Document d = doc(1L, Document.CURATE_ACCEPTED);
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(d));
+        Chunk anchor = chunk(10L, 1L, "KEEP");
+        anchor.setSeq(1);
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(anchor));
+
+        service.createChunk(1L, 10L, "新块内容", null, 9L);
+
+        ArgumentCaptor<Document> captor = ArgumentCaptor.forClass(Document.class);
+        verify(documentRepository).save(captor.capture());
+        assertEquals(4, captor.getValue().getChunkCount());
+    }
+
+    @Test
+    void createChunk_notAccepted_rejected() {
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc(1L, Document.CURATE_PREVIEWING)));
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(chunk(10L, 1L, "KEEP")));
+        assertThrows(BizException.class, () -> service.createChunk(1L, 10L, "内容", null, 9L));
+        verify(chunkRepository, never()).shiftSeqFrom(anyLong(), any());
+    }
+
+    @Test
+    void createChunk_blankContent_rejected() {
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc(1L, Document.CURATE_ACCEPTED)));
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(chunk(10L, 1L, "KEEP")));
+        assertThrows(BizException.class, () -> service.createChunk(1L, 10L, "  ", null, 9L));
+    }
+
     // ===== unkeepChunk（已审核回退待审核） =====
 
     @Test
@@ -492,5 +550,91 @@ class DocumentCurateServiceTest {
         when(documentRepository.findByKbIdAndCurateStatusInOrderByIdDesc(anyLong(), any()))
                 .thenReturn(List.of());
         assertTrue(service.queue(7L).isEmpty());
+    }
+
+    @Test
+    void chunkPage_suspectSort_usesSuspectFirstQueryAndReturnsStats() {
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc(1L, Document.CURATE_ACCEPTED)));
+        org.springframework.data.domain.Page<Chunk> page =
+                new org.springframework.data.domain.PageImpl<>(List.of(chunk(10L, 1L, "SUSPECT")));
+        when(chunkRepository.pageByDocSuspectFirst(eq(1L), isNull(), any())).thenReturn(page);
+        when(chunkRepository.countByDocIdAndCleanStatus(1L, "SUSPECT")).thenReturn(3L);
+
+        com.ai.konwledgerepo.dto.ChunkPageResponse<ChunkReviewResponse> resp =
+                service.chunkPage(1L, 0, 20, "suspect", "");
+
+        verify(chunkRepository).pageByDocSuspectFirst(eq(1L), isNull(), any());
+        verify(chunkRepository, never()).pageByDocSeq(anyLong(), any(), any());
+        assertEquals(1, resp.items().size());
+        assertEquals(1L, resp.total());
+        assertEquals(0, resp.page());
+        assertEquals(20, resp.size());
+        assertEquals(3L, resp.suspectCount());
+    }
+
+    @Test
+    void chunkPage_seqSort_usesSeqQueryWithStatusFilter() {
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc(1L, Document.CURATE_ACCEPTED)));
+        when(chunkRepository.pageByDocSeq(eq(1L), eq("SUSPECT"), any())).thenReturn(
+                new org.springframework.data.domain.PageImpl<>(List.of()));
+
+        service.chunkPage(1L, 2, 50, "seq", " SUSPECT ");
+
+        verify(chunkRepository).pageByDocSeq(eq(1L), eq("SUSPECT"), any());
+        verify(chunkRepository, never()).pageByDocSuspectFirst(anyLong(), any(), any());
+    }
+
+    @Test
+    void chunkPage_pageAndSizeAreSanitized() {
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc(1L, Document.CURATE_ACCEPTED)));
+        when(chunkRepository.pageByDocSeq(anyLong(), any(), any())).thenReturn(
+                new org.springframework.data.domain.PageImpl<>(List.of()));
+
+        service.chunkPage(1L, -5, 9999, "seq", null);
+
+        verify(chunkRepository).pageByDocSeq(eq(1L), isNull(),
+                eq(org.springframework.data.domain.PageRequest.of(0, 200)));
+    }
+
+    @Test
+    void batchKeepAll_keepsAllSuspectsWithoutTouchingVectorIndex() {
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc(1L, Document.CURATE_ACCEPTED)));
+        when(chunkRepository.findByDocIdAndCleanStatusOrderBySeqAsc(1L, "SUSPECT"))
+                .thenReturn(List.of(chunk(10L, 1L, "SUSPECT"), chunk(11L, 1L, "SUSPECT")));
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(chunk(10L, 1L, "SUSPECT")));
+        when(chunkRepository.findById(11L)).thenReturn(Optional.of(chunk(11L, 1L, "SUSPECT")));
+
+        DocumentCurateService.BatchKeepResult result = service.batchKeepAll(1L, 9L);
+
+        assertEquals(2, result.total());
+        assertEquals(2, result.kept());
+        assertEquals(0, result.failed());
+        verify(chunkRepository, times(2)).save(argThat((Chunk c) -> "KEEP".equals(c.getCleanStatus())));
+        // 红线：确认前不触 ES（向量化统一在 confirm）
+        verify(vectorIngestionService, never()).ingestAsync(anyLong());
+    }
+
+    @Test
+    void batchKeepAll_singleFailureDoesNotBlockOthers() {
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc(1L, Document.CURATE_ACCEPTED)));
+        // chunk 10 指向不存在的文档 99：keepChunk 内部 requireDoc(99) 抛异常 → 跳过继续
+        when(chunkRepository.findByDocIdAndCleanStatusOrderBySeqAsc(1L, "SUSPECT"))
+                .thenReturn(List.of(chunk(10L, 99L, "SUSPECT"), chunk(11L, 1L, "SUSPECT")));
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(chunk(10L, 99L, "SUSPECT")));
+        when(chunkRepository.findById(11L)).thenReturn(Optional.of(chunk(11L, 1L, "SUSPECT")));
+
+        DocumentCurateService.BatchKeepResult result = service.batchKeepAll(1L, 9L);
+
+        assertEquals(2, result.total());
+        assertEquals(1, result.kept());
+        assertEquals(1, result.failed());
+    }
+
+    @Test
+    void batchKeepAll_rejectedWhenNotAccepted() {
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(doc(1L, Document.CURATE_PREVIEWING)));
+
+        assertThrows(BizException.class, () -> service.batchKeepAll(1L, 9L));
+        verify(chunkRepository, never()).findByDocIdAndCleanStatusOrderBySeqAsc(anyLong(), anyString());
     }
 }

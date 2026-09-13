@@ -1,6 +1,7 @@
 package com.ai.konwledgerepo.controller;
 
 import com.ai.konwledgerepo.common.ApiResponse;
+import com.ai.konwledgerepo.dto.ChunkPageResponse;
 import com.ai.konwledgerepo.dto.ChunkResponse;
 import com.ai.konwledgerepo.dto.DocumentRenameRequest;
 import com.ai.konwledgerepo.dto.DocumentResponse;
@@ -77,6 +78,27 @@ public class DocumentController {
                                                    @RequestAttribute("workspaceId") Long workspaceId) {
         workspaceAccess.requireDocAccess(id, workspaceId, userId, false);
         return ApiResponse.ok(documentService.chunks(id));
+    }
+
+    /** 分页查文档分块（大文档全量加载慢）：page 0 起，size 1~200；cleanStatus 空 = 不过滤 */
+    @GetMapping("/documents/{id}/chunks/page")
+    public ApiResponse<ChunkPageResponse<ChunkResponse>> chunkPage(@PathVariable Long id,
+                                                                   @RequestAttribute("userId") Long userId,
+                                                                   @RequestAttribute("workspaceId") Long workspaceId,
+                                                                   @RequestParam(defaultValue = "0") int page,
+                                                                   @RequestParam(defaultValue = "20") int size,
+                                                                   @RequestParam(required = false) String cleanStatus) {
+        workspaceAccess.requireDocAccess(id, workspaceId, userId, false);
+        return ApiResponse.ok(documentService.chunkPage(id, page, size, cleanStatus));
+    }
+
+    /** 该文档全部待人工审核（SUSPECT）chunk id（一键通过：前端取 id 后调批量审核接口） */
+    @GetMapping("/documents/{id}/chunks/suspect-ids")
+    public ApiResponse<List<Long>> suspectChunkIds(@PathVariable Long id,
+                                                   @RequestAttribute("userId") Long userId,
+                                                   @RequestAttribute("workspaceId") Long workspaceId) {
+        workspaceAccess.requireDocAccess(id, workspaceId, userId, false);
+        return ApiResponse.ok(documentService.suspectChunkIds(id));
     }
 
     @PostMapping("/documents/{id}/retry")

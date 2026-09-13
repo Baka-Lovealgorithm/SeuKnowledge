@@ -3,8 +3,12 @@ package com.ai.konwledgerepo.service.document;
 import com.ai.konwledgerepo.common.AfterCommitExecutor;
 import com.ai.konwledgerepo.common.BizException;
 import com.ai.konwledgerepo.config.props.SeuFileProperties;
+import com.ai.konwledgerepo.dto.ChunkPageResponse;
+import com.ai.konwledgerepo.dto.ChunkResponse;
 import com.ai.konwledgerepo.dto.DocumentResponse;
 import com.ai.konwledgerepo.dto.ReindexResponse;
+import com.ai.konwledgerepo.entity.Chunk;
+import com.ai.konwledgerepo.entity.ChunkStatus;
 import com.ai.konwledgerepo.entity.DocStatus;
 import com.ai.konwledgerepo.entity.Document;
 import com.ai.konwledgerepo.entity.KnowledgeBase;
@@ -38,6 +42,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -403,6 +409,57 @@ class DocumentServiceTest {
     }
 
     // ===== 构造辅助 =====
+
+    @Test
+    void chunkPage_returnsPageItemsWithSuspectCount() {
+        Chunk keep = chunk(11L, "KEEP");
+        when(chunkRepository.pageByDocSeq(eq(DOC_ID), isNull(), any()))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(
+                        List.of(keep), org.springframework.data.domain.PageRequest.of(0, 20), 42L));
+        when(chunkRepository.countByDocIdAndCleanStatus(DOC_ID, "SUSPECT")).thenReturn(3L);
+
+        ChunkPageResponse<ChunkResponse> resp = service.chunkPage(DOC_ID, 0, 20, null);
+
+        assertEquals(1, resp.items().size());
+        assertEquals(42L, resp.total());
+        assertEquals(3L, resp.suspectCount());
+        assertEquals(11L, resp.items().get(0).id());
+    }
+
+    @Test
+    void chunkPage_passesCleanStatusFilterThrough() {
+        when(chunkRepository.pageByDocSeq(eq(DOC_ID), eq("SUSPECT"), any()))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of()));
+
+        service.chunkPage(DOC_ID, 1, 50, " SUSPECT ");
+
+        verify(chunkRepository).pageByDocSeq(eq(DOC_ID), eq("SUSPECT"),
+                eq(org.springframework.data.domain.PageRequest.of(1, 50)));
+    }
+
+    @Test
+    void suspectChunkIds_returnsOnlySuspectChunkIds() {
+        Chunk s1 = chunk(11L, "SUSPECT");
+        Chunk s2 = chunk(12L, "SUSPECT");
+        when(chunkRepository.findByDocIdAndCleanStatusOrderBySeqAsc(DOC_ID, "SUSPECT"))
+                .thenReturn(List.of(s1, s2));
+
+        List<Long> ids = service.suspectChunkIds(DOC_ID);
+
+        assertEquals(List.of(11L, 12L), ids);
+    }
+
+    private static Chunk chunk(long id, String cleanStatus) {
+        Chunk c = new Chunk();
+        c.setId(id);
+        c.setDocId(DOC_ID);
+        c.setKbId(KB_ID);
+        c.setSeq(1);
+        c.setContent("内容 " + id);
+        c.setStatus(ChunkStatus.EMBEDDING.value());
+        c.setCleanStatus(cleanStatus);
+        return c;
+    }
 
     private static Document doc(String fileName, String fileType, String curateStatus) {
         Document d = new Document();

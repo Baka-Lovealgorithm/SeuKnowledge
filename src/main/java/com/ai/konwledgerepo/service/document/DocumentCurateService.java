@@ -3,6 +3,7 @@ package com.ai.konwledgerepo.service.document;
 import com.ai.konwledgerepo.common.AfterCommitExecutor;
 import com.ai.konwledgerepo.common.BizException;
 import com.ai.konwledgerepo.common.Texts;
+import com.ai.konwledgerepo.dto.ChunkPageResponse;
 import com.ai.konwledgerepo.dto.ChunkReviewResponse;
 import com.ai.konwledgerepo.entity.Chunk;
 import com.ai.konwledgerepo.entity.ChunkReviewLog;
@@ -141,6 +142,65 @@ public class DocumentCurateService {
                         .comparing((ChunkReviewResponse r) -> !"SUSPECT".equals(r.cleanStatus()) ? 1 : 0)
                         .thenComparing(ChunkReviewResponse::seq))
                 .toList();
+    }
+
+    /** 排序模式：「待审核优先」（SUSPECT 排最前） */
+    public static final String SORT_SUSPECT = "suspect";
+    /** 排序模式：按 seq 自然顺序 */
+    public static final String SORT_SEQ = "seq";
+
+    /**
+     * 分页查文档分块（精修 / 初洗预览共用）：大文档（千级 chunk）全量加载响应慢，改为后端分页。
+     *
+     * @param page        页码（从 0 起，负数归零）
+     * @param size        页大小（限 1~200，越界归一）
+     * @param sort        {@link #SORT_SUSPECT}（默认，SUSPECT 优先）或 {@link #SORT_SEQ}（自然顺序）
+     * @param cleanStatus 只看指定清洗状态（如 SUSPECT）；null/空串不过滤
+     */
+    public ChunkPageResponse chunkPage(Long docId, int page, int size, String sort, String cleanStatus) {
+        Document doc = requireDoc(docId);
+        int safePage = Math.max(page, 0);
+        int safeSize = Math.min(Math.max(size, 1), 200);
+        String status = (cleanStatus == null || cleanStatus.isBlank()) ? null : cleanStatus.trim();
+        var pageable = org.springframework.data.domain.PageRequest.of(safePage, safeSize);
+        var chunkPage = SORT_SEQ.equals(sort)
+                ? chunkRepository.pageByDocSeq(docId, status, pageable)
+                : chunkRepository.pageByDocSuspectFirst(docId, status, pageable);
+        List<ChunkReviewResponse> items = chunkPage.getContent().stream()
+                .map(c -> ChunkReviewResponse.of(c, doc.getFileName()))
+                .toList();
+        return new ChunkPageResponse(items, chunkPage.getTotalElements(), safePage, safeSize,
+                chunkRepository.countByDocIdAndCleanStatus(docId, "SUSPECT"));
+    }
+
+    /** 一键通过结果：total=执行前 SUSPECT 数，kept/failed 为逐条保留的成功/失败数 */
+    public record BatchKeepResult(long total, int kept, int failed) {
+    }
+
+    /**
+     * 一键通过（精修）：保留该文档全部待人工审核（SUSPECT）分块。纯 DB 操作——
+     * 确认前不触 ES（向量化统一在 confirm），逐条 try/catch 使单条失败不中断其余；
+     * 仅精修中（ACCEPTED）可执行（与单块 keep 的阶段约束一致）。
+     */
+    @Transactional
+    public BatchKeepResult batchKeepAll(Long docId, Long userId) {
+        requireAccepted(docId);
+        List<Chunk> suspects = chunkRepository.findByDocIdAndCleanStatusOrderBySeqAsc(docId, "SUSPECT");
+        int kept = 0;
+        int failed = 0;
+        for (Chunk chunk : suspects) {
+            try {
+                keepChunk(chunk.getId(), userId);
+                kept++;
+            } catch (Exception e) {
+                failed++;
+                log.warn("一键通过：chunk {} 保留失败（跳过继续）：{}", chunk.getId(), e.getMessage());
+            }
+        }
+        if (kept > 0) {
+            recordLog(docId, "batch_keep", null, "一键保留 " + kept + " 个待审核分块", userId);
+        }
+        return new BatchKeepResult(suspects.size(), kept, failed);
     }
 
     /** 取最新版本整篇 md（页标记拼回，供在线编辑回显） */
@@ -432,6 +492,41 @@ public class DocumentCurateService {
         recordChunkLog(target, "merge", beforeTarget, merged, userId);
         recordChunkLog(source, "merge-source", beforeSource, "并入 chunk " + target.getId(), userId);
         return ChunkReviewResponse.of(target, docName(target.getDocId()));
+    }
+
+    /**
+     * 精修：新增分块（锚点后插入，后续 seq 让位后移一位）。
+     * 新块 clean_status=KEEP（人工添加即视为已确认，confirm 的 SUSPECT 校验自然放行）、
+     * status=EMBEDDING——确认前<b>不触 ES</b>，与其他精修动作一致，向量化统一在 confirm。
+     */
+    @Transactional
+    public ChunkReviewResponse createChunk(Long docId, Long afterChunkId, String content, String title, Long userId) {
+        if (content == null || content.trim().isEmpty()) {
+            throw new BizException("新增分块内容不能为空");
+        }
+        Document doc = requireDoc(docId);
+        requireAccepted(docId);
+        Chunk anchor = requireChunk(afterChunkId);
+        if (!docId.equals(anchor.getDocId())) {
+            throw new BizException("锚点分块不属于该文档");
+        }
+        int insertSeq = anchor.getSeq() + 1;
+        chunkRepository.shiftSeqFrom(docId, insertSeq);
+        Chunk chunk = new Chunk();
+        chunk.setDocId(docId);
+        chunk.setKbId(anchor.getKbId());
+        chunk.setSeq(insertSeq);
+        chunk.setContent(content);
+        chunk.setTitle(title);
+        chunk.setPageNum(anchor.getPageNum() == null ? 0 : anchor.getPageNum());
+        chunk.setStatus(ChunkStatus.EMBEDDING.value());
+        chunk.setCleanStatus(ChunkReviewService.CLEAN_KEEP);
+        chunk.setCleanReason("人工新增（锚点 chunk " + anchor.getId() + "）");
+        chunkRepository.saveAndFlush(chunk);
+        doc.setChunkCount(doc.getChunkCount() == null ? 1 : doc.getChunkCount() + 1);
+        documentRepository.save(doc);
+        recordChunkLog(chunk, "create", null, content, userId);
+        return ChunkReviewResponse.of(chunk, doc.getFileName());
     }
 
     // ==================== 工具 ====================

@@ -2,6 +2,7 @@ package com.ai.konwledgerepo.controller;
 
 import com.ai.konwledgerepo.common.ApiResponse;
 import com.ai.konwledgerepo.common.BizException;
+import com.ai.konwledgerepo.dto.ChunkPageResponse;
 import com.ai.konwledgerepo.dto.ChunkReviewResponse;
 import com.ai.konwledgerepo.security.EditorOrAbove;
 import com.ai.konwledgerepo.service.document.DocumentCurateService;
@@ -12,6 +13,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -69,6 +71,36 @@ public class DocumentCurateController {
                                                          @RequestAttribute("workspaceId") Long workspaceId) {
         workspaceAccess.requireDocAccess(id, workspaceId, userId, false);
         return ApiResponse.ok(curateService.chunks(id));
+    }
+
+    /**
+     * 分页查文档分块（大文档全量加载慢，供精修/初洗前端分页）。
+     *
+     * @param page        页码，从 0 起（默认 0）
+     * @param size        页大小 1~200（默认 20）
+     * @param sort        suspect（默认，待审核优先）/ seq（自然顺序）
+     * @param cleanStatus 只看指定清洗状态（如 SUSPECT）；空 = 不过滤
+     */
+    @GetMapping("/documents/{id}/curate/chunks/page")
+    public ApiResponse<ChunkPageResponse> chunkPage(@PathVariable Long id,
+                                                    @RequestAttribute("userId") Long userId,
+                                                    @RequestAttribute("workspaceId") Long workspaceId,
+                                                    @RequestParam(defaultValue = "0") int page,
+                                                    @RequestParam(defaultValue = "20") int size,
+                                                    @RequestParam(defaultValue = "suspect") String sort,
+                                                    @RequestParam(required = false) String cleanStatus) {
+        workspaceAccess.requireDocAccess(id, workspaceId, userId, false);
+        return ApiResponse.ok(curateService.chunkPage(id, page, size, sort, cleanStatus));
+    }
+
+    /** 一键通过：保留该文档全部待审核（SUSPECT）分块（纯 DB 操作，确认前不触 ES）；弹窗确认由前端负责 */
+    @PostMapping("/documents/{id}/curate/chunks/batch-keep")
+    @EditorOrAbove
+    public ApiResponse<DocumentCurateService.BatchKeepResult> batchKeep(@PathVariable Long id,
+                                                                        @RequestAttribute("userId") Long userId,
+                                                                        @RequestAttribute("workspaceId") Long workspaceId) {
+        workspaceAccess.requireDocAccess(id, workspaceId, userId, true);
+        return ApiResponse.ok(curateService.batchKeepAll(id, userId));
     }
 
     /** 保存整篇 md（初洗在线编辑 → 切页 → 重分块，仍 PREVIEWING） */
@@ -163,6 +195,18 @@ public class DocumentCurateController {
         return ApiResponse.ok(curateService.mergeChunk(id, request.sourceId(), request.targetId(), userId));
     }
 
+    /** 精修：新增 chunk（锚点后插入，后续 seq 让位；纯 DB 不触 ES，确认时统一向量化） */
+    @PostMapping("/documents/{id}/curate/chunks")
+    @EditorOrAbove
+    public ApiResponse<ChunkReviewResponse> createChunk(@PathVariable Long id,
+                                                        @RequestBody CreateChunkRequest request,
+                                                        @RequestAttribute("userId") Long userId,
+                                                        @RequestAttribute("workspaceId") Long workspaceId) {
+        workspaceAccess.requireDocAccess(id, workspaceId, userId, true);
+        return ApiResponse.ok(curateService.createChunk(id, request.afterChunkId(),
+                request.content(), request.title(), userId));
+    }
+
     public record SaveMdRequest(String content) {
     }
 
@@ -170,5 +214,8 @@ public class DocumentCurateController {
     }
 
     public record MergeRequest(Long sourceId, Long targetId) {
+    }
+
+    public record CreateChunkRequest(Long afterChunkId, String content, String title) {
     }
 }

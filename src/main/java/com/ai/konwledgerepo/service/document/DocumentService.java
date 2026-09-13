@@ -3,10 +3,12 @@ package com.ai.konwledgerepo.service.document;
 import com.ai.konwledgerepo.common.AfterCommitExecutor;
 import com.ai.konwledgerepo.common.BizException;
 import com.ai.konwledgerepo.config.props.SeuFileProperties;
+import com.ai.konwledgerepo.dto.ChunkPageResponse;
 import com.ai.konwledgerepo.dto.ChunkResponse;
 import com.ai.konwledgerepo.dto.DocumentResponse;
 import com.ai.konwledgerepo.dto.ReindexResponse;
 import com.ai.konwledgerepo.dto.VectorStats;
+import com.ai.konwledgerepo.entity.Chunk;
 import com.ai.konwledgerepo.entity.ChunkStatus;
 import com.ai.konwledgerepo.entity.DocStatus;
 import com.ai.konwledgerepo.entity.Document;
@@ -306,6 +308,29 @@ public class DocumentService {
         return chunkRepository.findByDocIdOrderBySeqAsc(docId).stream()
                 .map(ChunkResponse::from)
                 .toList();
+    }
+
+    /**
+     * 分页查文档分块（普通文档侧，精修工作台用）：大文档全量加载响应慢，改为后端分页。
+     * 自然 seq 顺序；cleanStatus 为空不过滤。
+     */
+    public ChunkPageResponse<ChunkResponse> chunkPage(Long docId, int page, int size, String cleanStatus) {
+        getEntity(docId);
+        int safePage = Math.max(page, 0);
+        int safeSize = Math.min(Math.max(size, 1), 200);
+        String status = (cleanStatus == null || cleanStatus.isBlank()) ? null : cleanStatus.trim();
+        var chunkPage = chunkRepository.pageByDocSeq(docId, status,
+                org.springframework.data.domain.PageRequest.of(safePage, safeSize));
+        return new ChunkPageResponse<>(chunkPage.getContent().stream().map(ChunkResponse::from).toList(),
+                chunkPage.getTotalElements(), safePage, safeSize,
+                chunkRepository.countByDocIdAndCleanStatus(docId, "SUSPECT"));
+    }
+
+    /** 该文档全部待人工审核（SUSPECT）chunk id（一键通过取 id 后走批量审核，逐条 REQUIRES_NEW 失败隔离） */
+    public List<Long> suspectChunkIds(Long docId) {
+        getEntity(docId);
+        return chunkRepository.findByDocIdAndCleanStatusOrderBySeqAsc(docId, "SUSPECT")
+                .stream().map(Chunk::getId).toList();
     }
 
     /** 解析失败重试：CAS 仅允许从 SUCCESS/FAILED/ERROR 进入 PENDING，0 行 → 解析中或已删除 */

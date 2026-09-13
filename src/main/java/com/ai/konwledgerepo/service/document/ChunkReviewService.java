@@ -6,6 +6,7 @@ import com.ai.konwledgerepo.dto.ChunkReviewResponse;
 import com.ai.konwledgerepo.entity.Chunk;
 import com.ai.konwledgerepo.entity.ChunkReviewLog;
 import com.ai.konwledgerepo.entity.ChunkStatus;
+import com.ai.konwledgerepo.entity.DocStatus;
 import com.ai.konwledgerepo.entity.Document;
 import com.ai.konwledgerepo.repository.ChunkRepository;
 import com.ai.konwledgerepo.repository.ChunkReviewLogRepository;
@@ -27,20 +28,23 @@ import java.util.stream.Collectors;
 
 /**
  * 文档精修：对 P1 规则清洗打标的待审核（SUSPECT）chunk 提供
- * 保留/编辑/删除/回退待审核/批量操作。
+ * 保留/编辑/删除/回退待审核/批量操作；同时也是<b>已向量化文档</b>（确认后 / 未经初洗门）
+ * 全量分块运维（编辑/删除/新增/合并，任何非 FILTERED 分块）的统一入口——
+ * 每次操作即时单块向量化（reindexChunk）或移出 ES（deleteByChunkId），DB 与 ES 同步生效。
  * <p>
  * 术语（全项目统一，勿再引入旧名）：
  * <b>初洗</b>=解析后人工确认分段（文档级，PREVIEWING，可编辑整篇 md 重分块）；
  * <b>精修</b>=初洗接受后按文件复核 chunk（文档级，ACCEPTED，可编辑/删除/合并/保留）；
- * 本类处理的是<b>精修</b>动作，也是普通文档（未经初洗门）SUSPECT 分块复核的统一入口。
- * 旧称「清洗人工审核 / 清洗复核 / 人工策展」均已废弃。
+ * 本类处理的是<b>精修</b>动作与确认后的分块运维。旧称「清洗人工审核 / 清洗复核 / 人工策展」均已废弃。
  * <p>
  * DEFER 决策：SUSPECT chunk 审核前不进 ES（VectorIngestionService.ingest 已跳过）；
  * 审核通过（keep/edit）后由本服务触发单 chunk 向量化（{@link VectorIngestionService#reindexChunk}）。
  * 已审核回退待审核（unkeep）时若已进 ES 则移出（恢复 DEFER）。
  * 所有动作写入 {@link ChunkReviewLog} 审计（编辑前后内容留痕）。
  * <p>
- * 红线：只允许改 content/title，pageNum/docId/seq/chunkId 不可变（证据展示溯源稳定）。
+ * 红线：只允许改 content/title，pageNum/docId/seq 中 docId 不可变（证据展示溯源稳定）；
+ * seq 仅在人工新增分块时让位重排（shiftSeqFrom），删除/合并不重排（留空洞）。
+ * 初洗/精修流程中的文档（PREVIEWING/ACCEPTED）在本类的所有写操作均被拒绝（确认前不触 ES）。
  */
 @Service
 public class ChunkReviewService {
@@ -128,17 +132,19 @@ public class ChunkReviewService {
 
     /**
      * 编辑并保留：更新 content/title，clean_status→KEEP 并重新向量化（只做一次，无"先进后改"浪费）。
+     * 任何未删除（非 FILTERED）分块均可编辑——含已向量化普通块（确认后人工修订的唯一通道），
+     * 不再限于 SUSPECT；编辑即代表人工确认，故统一落 KEEP。
      * 编辑后内容为空 → 拒绝（防止产生不可检索的废块）。
      */
     @Transactional
     public ChunkReviewResponse edit(Long chunkId, String content, String title, Long userId) {
         Chunk chunk = requireChunk(chunkId);
-        requireNotCurating(chunk.getDocId());
+        Document doc = requireNotCurating(chunk.getDocId());
         if (content == null || content.trim().isEmpty()) {
             throw new BizException("编辑后内容不能为空");
         }
-        if (!CLEAN_SUSPECT.equals(chunk.getCleanStatus())) {
-            throw new BizException("仅 SUSPECT 状态可编辑（当前 " + chunk.getCleanStatus() + "）");
+        if (CLEAN_FILTERED.equals(chunk.getCleanStatus())) {
+            throw new BizException("已删除的分块不可编辑");
         }
         String before = chunk.getContent();
         chunk.setContent(content);
@@ -147,19 +153,20 @@ public class ChunkReviewService {
         chunkRepository.save(chunk);
         vectorIngestionService.reindexChunk(chunk);
         recordLog(chunk, "edit", before, content, userId);
-        return ChunkReviewResponse.of(chunk, docName(chunk.getDocId()));
+        return ChunkReviewResponse.of(chunk, doc.getFileName());
     }
 
     /**
      * 删除：clean_status/status→FILTERED 并从 ES 移除（记录保留在 MySQL，供"查看全文"历史证据兜底）。
-     * 非 SUSPECT chunk 幂等返回。
+     * 任何未删除（非 FILTERED）分块均可删除——含已向量化普通块（删 ES 使其立即不可召回）；
+     * FILTERED 幂等返回（已删除，不重复操作）。
      */
     @Transactional
     public ChunkReviewResponse drop(Long chunkId, Long userId) {
         Chunk chunk = requireChunk(chunkId);
         requireNotCurating(chunk.getDocId());
-        if (!CLEAN_SUSPECT.equals(chunk.getCleanStatus())) {
-            log.info("chunk {} 非 SUSPECT（cleanStatus={}），删除动作跳过", chunkId, chunk.getCleanStatus());
+        if (CLEAN_FILTERED.equals(chunk.getCleanStatus())) {
+            log.info("chunk {} 已是 FILTERED，删除动作跳过", chunkId);
             return ChunkReviewResponse.of(chunk, docName(chunk.getDocId()));
         }
         String before = chunk.getContent();
@@ -192,6 +199,97 @@ public class ChunkReviewService {
         }
         recordLog(chunk, "unkeep", before, CLEAN_SUSPECT, userId);
         return ChunkReviewResponse.of(chunk, docName(chunk.getDocId()));
+    }
+
+    /**
+     * 新增分块（已向量化文档）：插入到 afterChunk 之后，其后所有块 seq 让位后移一位；
+     * 新块 clean_status=KEEP（人工添加即视为已确认）、status=EMBEDDING → 落库后立即单块向量化进 ES。
+     * pageNum 沿用锚点块；title 由用户指定。初洗/精修中的文档拒绝（走精修页接口）。
+     */
+    @Transactional
+    public ChunkReviewResponse createChunk(Long docId, Long afterChunkId, String content, String title, Long userId) {
+        if (content == null || content.trim().isEmpty()) {
+            throw new BizException("新增分块内容不能为空");
+        }
+        Document doc = requireNotCurating(docId);
+        if (DocStatus.PARSING.is(doc.getParseStatus()) || DocStatus.PENDING.is(doc.getParseStatus())) {
+            throw new BizException("文档尚未完成解析，不能新增分块");
+        }
+        Chunk anchor = requireChunk(afterChunkId);
+        if (!docId.equals(anchor.getDocId())) {
+            throw new BizException("锚点分块不属于该文档");
+        }
+        int insertSeq = anchor.getSeq() + 1;
+        chunkRepository.shiftSeqFrom(docId, insertSeq);
+        Chunk chunk = new Chunk();
+        chunk.setDocId(docId);
+        chunk.setKbId(anchor.getKbId());
+        chunk.setSeq(insertSeq);
+        chunk.setContent(content);
+        chunk.setTitle(title);
+        chunk.setPageNum(anchor.getPageNum() == null ? 0 : anchor.getPageNum());
+        chunk.setStatus(ChunkStatus.EMBEDDING.value());
+        chunk.setCleanStatus(CLEAN_KEEP);
+        chunk.setCleanReason("人工新增（锚点 chunk " + anchor.getId() + "）");
+        chunkRepository.saveAndFlush(chunk);
+        // 立即单块向量化：失败抛出 → 整体回滚（DB 与 ES 均不残留半成品）
+        vectorIngestionService.reindexChunk(chunk);
+        doc.setChunkCount(doc.getChunkCount() == null ? 1 : doc.getChunkCount() + 1);
+        documentRepository.save(doc);
+        recordLog(chunk, "create", null, content, userId);
+        return ChunkReviewResponse.of(chunk, doc.getFileName());
+    }
+
+    /**
+     * 合并相邻分块（已向量化文档）：source 并入 target（保留 target id/seq/title，按 seq 顺序拼接），
+     * target 置 KEEP 后立即重新向量化；source 软删 FILTERED 并从 ES 移除。
+     * 约束：同文档、|seq差|=1、双方非 FILTERED、合并后内容非空；初洗/精修中的文档拒绝。
+     * <p>
+     * ES 写入顺序刻意为先 target 后 source：reindexChunk 失败会抛异常整体回滚，
+     * 此时 ES 尚无任何变更；若先删 source 再嵌 target，reindex 失败回滚后 source 的 ES 向量已被删，
+     * DB 里却仍是 INDEXED——出现「库里有、检索不到」的静默丢失。
+     */
+    @Transactional
+    public ChunkReviewResponse mergeChunk(Long docId, Long sourceId, Long targetId, Long userId) {
+        Chunk source = requireChunk(sourceId);
+        Chunk target = requireChunk(targetId);
+        if (!source.getDocId().equals(docId) || !target.getDocId().equals(docId)) {
+            throw new BizException("分块不属于该文档");
+        }
+        Document doc = requireNotCurating(docId);
+        if (sourceId.equals(targetId)) {
+            throw new BizException("合并源与目标不能是同一分块");
+        }
+        if (Math.abs(source.getSeq() - target.getSeq()) != 1) {
+            throw new BizException("仅支持合并相邻分块（当前 seq " + source.getSeq() + " / " + target.getSeq() + "）");
+        }
+        if (CLEAN_FILTERED.equals(source.getCleanStatus()) || CLEAN_FILTERED.equals(target.getCleanStatus())) {
+            throw new BizException("已删除的分块不可参与合并");
+        }
+        Chunk first = source.getSeq() < target.getSeq() ? source : target;
+        Chunk second = source.getSeq() < target.getSeq() ? target : source;
+        String merged = first.getContent() + "\n" + second.getContent();
+        if (merged.trim().isEmpty()) {
+            throw new BizException("合并后内容不能为空");
+        }
+        String beforeTarget = target.getContent();
+        String beforeSource = source.getContent();
+        target.setContent(merged);
+        target.setPageNum(Math.min(
+                source.getPageNum() == null ? 0 : source.getPageNum(),
+                target.getPageNum() == null ? 0 : target.getPageNum()));
+        target.setCleanStatus(CLEAN_KEEP);
+        target.setCleanReason("人工合并（原 chunk " + source.getId() + "、" + target.getId() + "）");
+        chunkRepository.save(target);
+        source.setCleanStatus(CLEAN_FILTERED);
+        source.setStatus(ChunkStatus.FILTERED.value());
+        chunkRepository.save(source);
+        // 先重嵌 target（失败回滚、ES 未动），再删 source 的 ES 向量（静默容错）
+        vectorIngestionService.reindexChunk(target);
+        vectorIngestionService.deleteByChunkId(source.getId());
+        recordLog(target, "merge", beforeTarget, merged, userId);
+        recordLog(source, "merge-source", beforeSource, "并入 chunk " + target.getId(), userId);
+        return ChunkReviewResponse.of(target, doc.getFileName());
     }
 
     /**
@@ -235,12 +333,14 @@ public class ChunkReviewService {
     }
 
     /** 初洗/精修流程中的文档（PREVIEWING/ACCEPTED）拒绝在常规精修接口处理（须走精修页，确认前不触 ES） */
-    private void requireNotCurating(Long docId) {
-        Document doc = documentRepository.findById(docId).orElse(null);
-        if (doc != null && DocumentCurateService.isCurating(doc)) {
+    private Document requireNotCurating(Long docId) {
+        Document doc = documentRepository.findById(docId)
+                .orElseThrow(() -> new BizException("文档不存在: " + docId));
+        if (DocumentCurateService.isCurating(doc)) {
             throw new BizException("该文档处于初洗/精修流程（" + doc.getCurateStatus()
                     + "），请在精修页处理；确认向量化后可在此复核剩余待审核分块");
         }
+        return doc;
     }
 
     private String docName(Long docId) {

@@ -10,8 +10,9 @@
       </el-select>
       <template v-if="status">
         <el-tag type="warning">初洗中 · 待决断</el-tag>
-        <span class="stat">共 {{ chunks.length }} chunk ｜ 待审核 {{ suspectCount }}</span>
+        <span class="stat">共 {{ info.chunkCount ?? 0 }} chunk ｜ 待审核 {{ suspectCount }}</span>
       </template>
+      <el-switch v-if="docId" v-model="onlySuspect" active-text="只看待审核" size="small" @change="onFilterChange" />
       <div class="spacer" />
       <template v-if="auth.canWrite && status === 'PREVIEWING'">
         <el-button type="primary" :loading="mdLoading" @click="openMd">编辑 md（清洗后重新分块）</el-button>
@@ -48,6 +49,12 @@
           </template>
         </el-table-column>
       </el-table>
+      <div v-if="docId" class="pager">
+        <el-pagination v-model:current-page="pageIndex" v-model:page-size="pageSize"
+                       :total="total" :page-sizes="[20, 50, 100, 200]"
+                       layout="total, sizes, prev, pager, next"
+                       @current-change="onPageChange" @size-change="onSizeChange" />
+      </div>
     </template>
 
     <!-- md 在线编辑（分屏：左源码右渲染预览） -->
@@ -99,6 +106,13 @@ const detailRow = ref(null)
 const status = computed(() => info.value.curateStatus)
 const suspectCount = computed(() => info.value.suspectCount ?? 0)
 
+/** 分页状态：page 0 基（请求用），pageIndex 1 基（el-pagination 用）；初洗列表固定 SUSPECT 优先排序 */
+const page = ref(0)
+const pageIndex = ref(1)
+const pageSize = ref(20)
+const total = ref(0)
+const onlySuspect = ref(false)
+
 const mdPreview = computed(() => renderMarkdown(mdText.value.replace(/<!--\s*PAGE\s*\d+\s*-->/g, '\n\n---\n\n')))
 
 const cleanTagType = (row) => {
@@ -112,15 +126,39 @@ const statusText = (s) => (s === 'PREVIEWING' ? '初洗中' : s === 'ACCEPTED' ?
 const docLabel = (d) => `${d.fileName}（${statusText(d.curateStatus)} · 待审核 ${d.suspectCount ?? 0}）`
 
 async function load() {
+  await loadPage(page.value)
+}
+
+/** 分页加载：初洗列表后端 SUSPECT 优先排序 + 可选只看待审核 */
+async function loadPage(p = 0) {
   if (!docId.value) return
   loading.value = true
   try {
-    const [i, cs] = await Promise.all([curateApi.info(docId.value), curateApi.chunks(docId.value)])
+    page.value = p
+    pageIndex.value = p + 1
+    const [i, resp] = await Promise.all([
+      curateApi.info(docId.value),
+      curateApi.chunkPage(docId.value, p, pageSize.value, 'suspect', onlySuspect.value ? 'SUSPECT' : '')
+    ])
     info.value = i
-    chunks.value = cs
+    chunks.value = resp.items
+    total.value = resp.total
   } finally {
     loading.value = false
   }
+}
+
+async function onFilterChange() {
+  if (!docId.value) return
+  await loadPage(0)
+}
+
+async function onPageChange(p) {
+  await loadPage(p - 1)
+}
+
+async function onSizeChange() {
+  await loadPage(0)
 }
 
 /** 初洗队列：仅展示初洗中（PREVIEWING）文档；原始队列保留用于深链状态判定 */
@@ -162,7 +200,7 @@ async function init() {
       if (found) {
         if (found.curateStatus === 'ACCEPTED') {
           // 已进入精修：跳到文档精修页处理
-          ElMessage.info('该文档已进入精修阶段，已跳转到「文档精修」页')
+          ElMessage.info('该文档已进入精修阶段，已跳转到「文档分块」页')
           router.replace(`/review?docId=${found.docId}`)
           return
         }
@@ -208,7 +246,7 @@ async function saveMd() {
     const r = await curateApi.saveMd(docId.value, mdText.value)
     ElMessage.success(`已保存 v${r.version} 并重新分块：共 ${r.chunkCount} 块，待审核 ${r.suspect} 块`)
     mdVisible.value = false
-    await load()
+    await loadPage(0)
   } catch (e) {
     /* 拦截器已提示 */
   } finally {
@@ -220,7 +258,7 @@ async function accept() {
   acting.value = true
   try {
     await curateApi.accept(docId.value)
-    ElMessage.success('已接受，md 不可再编辑，分块进入「文档精修」')
+    ElMessage.success('已接受，md 不可再编辑，分块进入精修阶段（「文档分块」页处理）')
     router.push(`/review?docId=${docId.value}`)
   } catch (e) {
     /* 拦截器已提示 */
@@ -251,4 +289,5 @@ onMounted(init)
 .md-src { flex: 1; }
 .md-src :deep(textarea) { font-family: 'JetBrains Mono', Consolas, monospace; font-size: 13px; line-height: 1.6; }
 .md-preview { flex: 1; overflow: auto; border: 1px solid #e4e7ed; border-radius: 4px; padding: 12px; background: #fff; }
+.pager { display: flex; justify-content: flex-end; margin-top: 8px; }
 </style>

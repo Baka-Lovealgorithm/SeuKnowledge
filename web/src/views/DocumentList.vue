@@ -64,34 +64,6 @@
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="chunkVisible" :title="chunkTitle" width="860px">
-      <el-table :data="chunks" size="small" border max-height="520">
-        <el-table-column prop="seq" label="序号" width="70" />
-        <el-table-column prop="title" label="所属标题" min-width="130" show-overflow-tooltip />
-        <el-table-column prop="pageNum" label="页码" width="70" />
-        <el-table-column label="内容" min-width="300">
-          <template #default="{ row }">
-            <div class="content-cell">{{ row.content }}</div>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="100">
-          <template #default="{ row }">
-            <el-tooltip v-if="row.cleanReason" :content="row.cleanReason" placement="top">
-              <el-tag :type="chunkStatusType(row)" size="small">{{ chunkStatusText(row) }}</el-tag>
-            </el-tooltip>
-            <el-tag v-else :type="chunkStatusType(row)" size="small">{{ chunkStatusText(row) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="80" fixed="right">
-          <template #default="{ row }">
-            <el-button link type="info" @click="openDetail(row)">详情</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-dialog>
-
-    <!-- chunk 详情（只读，完整内容） -->
-    <ChunkDetail v-model="detailVisible" :row="detailRow" />
   </div>
 </template>
 
@@ -101,7 +73,6 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { docApi } from '../api'
 import { useAuthStore } from '../stores/auth'
-import ChunkDetail from '../components/ChunkDetail.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -109,12 +80,7 @@ const auth = useAuthStore()
 const kbId = route.params.kbId
 const list = ref([])
 const loading = ref(false)
-const chunkVisible = ref(false)
-const chunks = ref([])
-const chunkTitle = ref('')
 const curateOn = ref(false)
-const detailVisible = ref(false)
-const detailRow = ref(null)
 
 /** 过渡态轮询定时器（解析状态自动刷新） */
 let timer = null
@@ -172,29 +138,18 @@ function vectorTip(row) {
   if (!v) return ''
   if (v.total === 0) {
     return `全部 ${v.deferred} 块待人工审核，暂不进向量库，本文档当前检索不到；`
-      + '在「文档精修」页点「保留/编辑」后即单条补索引（无需重新解析）'
+      + '在「文档分块」页点「保留/编辑」后即单条补索引（无需重新解析）'
   }
   const parts = []
   if (v.failed > 0) parts.push(`${v.failed} 块向量化失败，可点「重建向量」`)
   if (v.pending > 0) parts.push(`${v.pending} 块待向量化（请先在「模型配置」配置向量模型）`)
-  if (v.deferred > 0) parts.push(`另有 ${v.deferred} 块待人工审核（不参与检索，需在「文档精修」处置）`)
+  if (v.deferred > 0) parts.push(`另有 ${v.deferred} 块待人工审核（不参与检索，需在「文档分块」页处置）`)
   return parts.join('；')
 }
 
 /** 初洗/精修流程中不给重建向量（确认前不触 ES 是后端红线，前端就别给按钮） */
 function canReindex(row) {
   return auth.canWrite && !row.curateStatus && (row.parseStatus === 'SUCCESS' || row.parseStatus === 'ERROR')
-}
-
-const chunkStatusType = (row) => {
-  if (row.cleanStatus === 'SUSPECT') return 'warning'
-  if (row.cleanStatus === 'FILTERED' || row.status === 'FILTERED') return 'info'
-  return { INDEXED: 'success', EMBEDDING: 'primary', FAILED: 'danger' }[row.status] || 'info'
-}
-const chunkStatusText = (row) => {
-  if (row.cleanStatus === 'SUSPECT') return 'SUSPECT'
-  if (row.cleanStatus === 'FILTERED' || row.status === 'FILTERED') return 'FILTERED'
-  return row.status || ''
 }
 
 function sizeText(n) {
@@ -408,27 +363,23 @@ async function flushUploadBatch() {
 }
 
 async function viewChunks(row) {
-  chunks.value = await docApi.chunks(row.id)
-  chunkTitle.value = `分块结果：${row.fileName}`
-  chunkVisible.value = true
-}
-
-function openDetail(row) {
-  detailRow.value = row
-  detailVisible.value = true
+  // 跳转「文档分块」工作台（已向量化文档可就地编辑/删除/合并/新增；精修中文档走原精修流程）
+  router.push(`/review?docId=${row.id}`)
 }
 
 /**
  * 重试 = 全量重新解析：会删掉现有 chunk 与向量后重跑解析。
  * 二次确认必须区分初洗/精修中文档——那条路径上还会用人家解析结果整体替换初洗 md，
- * 人工编辑过的 md 历史版本（append-only 版本行）被硬删且不可恢复。
+ * 人工编辑过的 md 历史版本（append-only 版本行）被硬删且不可恢复；
+ * 已向量化文档则要明确提示人工的分块编辑（增/删/改/合并）会全部丢失。
  */
 async function retry(row) {
   const stage = row.curateStatus === 'PREVIEWING' ? '初洗' : row.curateStatus === 'ACCEPTED' ? '精修' : ''
   const msg = stage
     ? `「${row.fileName}」正处于「${stage}」中：重新解析会删除现有分块与向量，并用新的解析结果整体替换初洗 md`
       + '——你在初洗里编辑过的 md 历史版本会一并丢弃，且不可恢复。确定继续？'
-    : `确定重新解析「${row.fileName}」？将删除现有分块与向量后重新解析生成。`
+    : `确定重新解析「${row.fileName}」？将删除现有分块与向量后重新解析生成`
+      + '——你在「文档分块」里做过的人工编辑（修改/删除/新增/合并）会全部丢失，且不可恢复。确定继续？'
   await ElMessageBox.confirm(msg, '重新解析', { type: 'warning', confirmButtonText: '确定重新解析', cancelButtonText: '取消' })
   await docApi.retry(row.id)
   ElMessage.success('已触发重新解析')
@@ -445,7 +396,7 @@ async function reindex(row) {
   const r = await docApi.reindex(row.id)
   if (r && !r.reset) {
     ElMessage.warning(r.awaitingReview > 0
-      ? `「${row.fileName}」没有需要重建的分块；${r.awaitingReview} 块待人工审核（暂不进向量库），请到「文档精修」页点「保留/编辑」`
+      ? `「${row.fileName}」没有需要重建的分块；${r.awaitingReview} 块待人工审核（暂不进向量库），请到「文档分块」页点「保留/编辑」`
       : `「${row.fileName}」没有向量化失败的分块`)
   } else {
     ElMessage.success(`已触发重建向量（${r?.reset ?? 0} 块将重新向量化，不重新解析文档）`)
@@ -507,9 +458,4 @@ onUnmounted(stopPolling)
 .toolbar .tip { color: #909399; font-size: 12px; }
 .upload-progress { color: #409eff; font-size: 13px; }
 .rename-btn { margin-left: 4px; font-size: 12px; }
-.content-cell {
-  max-height: 60px; overflow: hidden; text-overflow: ellipsis;
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
-  white-space: pre-line; word-break: break-all; font-size: 13px;
-}
 </style>

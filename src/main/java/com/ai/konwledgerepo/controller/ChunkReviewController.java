@@ -20,7 +20,7 @@ import java.util.List;
 
 /**
  * 文档精修接口（原"清洗人工审核"）：待审核（SUSPECT）队列查询（读：MEMBER+）、
- * 保留/编辑/删除/回退待审核/批量（写：EDITOR+）。
+ * 保留/编辑/删除/回退待审核/批量、已向量化文档分块的新增/合并（写：EDITOR+）。
  * 精修动作按 chunk 归属文档做空间与 ACL 校验。
  */
 @RestController
@@ -98,6 +98,29 @@ public class ChunkReviewController {
         return ApiResponse.ok(reviewService.batch(request.ids(), request.action(), userId));
     }
 
+    /** 新增分块（已向量化文档）：插入到锚点分块之后，后续 seq 让位，落库即单块向量化 */
+    @PostMapping("/documents/{id}/chunks")
+    @EditorOrAbove
+    public ApiResponse<ChunkReviewResponse> createChunk(@PathVariable Long id,
+                                                        @RequestBody CreateChunkRequest request,
+                                                        @RequestAttribute("userId") Long userId,
+                                                        @RequestAttribute("workspaceId") Long workspaceId) {
+        workspaceAccess.requireDocAccess(id, workspaceId, userId, true);
+        return ApiResponse.ok(reviewService.createChunk(id, request.afterChunkId(),
+                request.content(), request.title(), userId));
+    }
+
+    /** 合并相邻分块（已向量化文档）：source 并入 target，target 立即重嵌、source 移出 ES */
+    @PostMapping("/documents/{id}/chunks/merge")
+    @EditorOrAbove
+    public ApiResponse<ChunkReviewResponse> mergeChunk(@PathVariable Long id,
+                                                       @RequestBody MergeChunkRequest request,
+                                                       @RequestAttribute("userId") Long userId,
+                                                       @RequestAttribute("workspaceId") Long workspaceId) {
+        workspaceAccess.requireDocAccess(id, workspaceId, userId, true);
+        return ApiResponse.ok(reviewService.mergeChunk(id, request.sourceId(), request.targetId(), userId));
+    }
+
     private void requireDocAccess(Long chunkId, Long workspaceId, Long userId) {
         Chunk chunk = chunkRepository.findById(chunkId)
                 .orElseThrow(() -> new BizException("chunk 不存在: " + chunkId));
@@ -108,5 +131,11 @@ public class ChunkReviewController {
     }
 
     public record BatchRequest(List<Long> ids, String action) {
+    }
+
+    public record CreateChunkRequest(Long afterChunkId, String content, String title) {
+    }
+
+    public record MergeChunkRequest(Long sourceId, Long targetId) {
     }
 }

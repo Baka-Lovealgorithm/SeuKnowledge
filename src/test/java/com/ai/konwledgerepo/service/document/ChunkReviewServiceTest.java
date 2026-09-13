@@ -148,11 +148,41 @@ class ChunkReviewServiceTest {
     }
 
     @Test
-    void edit_nonSuspect_rejected() {
+    void edit_keepChunk_allowedAndReindexes() {
         Chunk c = suspectChunk(10L, 1L, null, "正文", "C3");
         c.setCleanStatus("KEEP");
+        c.setEsId("es_10");
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(c));
+
+        ChunkReviewResponse resp = service.edit(10L, "新内容", null, 99L);
+
+        assertEquals("新内容", c.getContent());
+        assertEquals("KEEP", c.getCleanStatus());
+        verify(vectorIngestionService).reindexChunk(c);
+        assertEquals(10L, resp.chunkId());
+    }
+
+    @Test
+    void edit_normalNullChunk_allowedAndReindexes() {
+        Chunk c = suspectChunk(10L, 1L, null, "正文", "C3");
+        c.setCleanStatus(null);
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(c));
+
+        service.edit(10L, "修订内容", "修订标题", 99L);
+
+        assertEquals("修订内容", c.getContent());
+        assertEquals("KEEP", c.getCleanStatus());
+        verify(vectorIngestionService).reindexChunk(c);
+    }
+
+    @Test
+    void edit_filteredChunk_rejected() {
+        Chunk c = suspectChunk(10L, 1L, null, "正文", "C3");
+        c.setCleanStatus("FILTERED");
+        c.setStatus(ChunkStatus.FILTERED.value());
         when(chunkRepository.findById(10L)).thenReturn(Optional.of(c));
         assertThrows(BizException.class, () -> service.edit(10L, "新内容", null, 99L));
+        verify(vectorIngestionService, never()).reindexChunk(any(Chunk.class));
     }
 
     // ===== drop =====
@@ -184,6 +214,169 @@ class ChunkReviewServiceTest {
         service.drop(10L, 99L);
 
         verify(vectorIngestionService, never()).deleteByChunkId(anyLong());
+    }
+
+    // ===== createChunk（已向量化文档新增分块） =====
+
+    @Test
+    void createChunk_insertsAfterAnchorShiftsSeqAndReindexes() {
+        Chunk anchor = suspectChunk(10L, 1L, "锚点标题", "锚点内容", null);
+        anchor.setSeq(3);
+        anchor.setCleanStatus("KEEP");
+        anchor.setPageNum(5);
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(anchor));
+
+        ChunkReviewResponse resp = service.createChunk(1L, 10L, "新块内容", "新标题", 99L);
+
+        verify(chunkRepository).shiftSeqFrom(1L, 4);
+        ArgumentCaptor<Chunk> captor = ArgumentCaptor.forClass(Chunk.class);
+        verify(chunkRepository).saveAndFlush(captor.capture());
+        Chunk created = captor.getValue();
+        assertEquals(4, created.getSeq());
+        assertEquals("KEEP", created.getCleanStatus());
+        assertEquals(ChunkStatus.EMBEDDING.value(), created.getStatus());
+        assertEquals(5, created.getPageNum());
+        verify(vectorIngestionService).reindexChunk(created);
+        verify(reviewLogRepository).save(any(ChunkReviewLog.class));
+        assertEquals(4, resp.seq());
+        assertEquals("新块内容", resp.content());
+    }
+
+    @Test
+    void createChunk_blankContent_rejected() {
+        assertThrows(BizException.class, () -> service.createChunk(1L, 10L, "  ", null, 99L));
+        verify(chunkRepository, never()).shiftSeqFrom(anyLong(), any());
+    }
+
+    @Test
+    void createChunk_anchorOfOtherDoc_rejected() {
+        Chunk anchor = suspectChunk(10L, 2L, null, "锚点", null);
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(anchor));
+        assertThrows(BizException.class, () -> service.createChunk(1L, 10L, "内容", null, 99L));
+    }
+
+    @Test
+    void createChunk_curatingDoc_rejected() {
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(curatingDoc(1L)));
+        assertThrows(BizException.class, () -> service.createChunk(1L, 10L, "内容", null, 99L));
+        verify(chunkRepository, never()).shiftSeqFrom(anyLong(), any());
+    }
+
+    @Test
+    void createChunk_reindexFails_chunkCountNotBumped() {
+        Chunk anchor = suspectChunk(10L, 1L, null, "锚点", null);
+        anchor.setCleanStatus("KEEP");
+        anchor.setSeq(2);
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(anchor));
+        doThrow(new RuntimeException("embedding 失败"))
+                .when(vectorIngestionService).reindexChunk(any(Chunk.class));
+
+        assertThrows(RuntimeException.class, () -> service.createChunk(1L, 10L, "内容", null, 99L));
+        verify(documentRepository, never()).save(any(Document.class));
+    }
+
+    // ===== mergeChunk（已向量化文档合并相邻分块） =====
+
+    @Test
+    void mergeChunk_adjacentIndexedChunks_mergesReindexesAndDropsSource() {
+        Chunk source = suspectChunk(11L, 1L, null, "后块内容", null);
+        source.setSeq(4);
+        source.setCleanStatus(null);
+        source.setEsId("es_11");
+        source.setStatus(ChunkStatus.INDEXED.value());
+        Chunk target = suspectChunk(10L, 1L, "目标标题", "前块内容", null);
+        target.setSeq(3);
+        target.setCleanStatus("KEEP");
+        target.setEsId("es_10");
+        target.setStatus(ChunkStatus.INDEXED.value());
+        target.setPageNum(2);
+        source.setPageNum(3);
+        when(chunkRepository.findById(11L)).thenReturn(Optional.of(source));
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(target));
+
+        ChunkReviewResponse resp = service.mergeChunk(1L, 11L, 10L, 99L);
+
+        assertEquals("前块内容\n后块内容", target.getContent());
+        assertEquals("KEEP", target.getCleanStatus());
+        assertEquals(2, target.getPageNum());
+        assertEquals("FILTERED", source.getCleanStatus());
+        assertEquals(ChunkStatus.FILTERED.value(), source.getStatus());
+        verify(vectorIngestionService).reindexChunk(target);
+        verify(vectorIngestionService).deleteByChunkId(11L);
+        ArgumentCaptor<ChunkReviewLog> captor = ArgumentCaptor.forClass(ChunkReviewLog.class);
+        verify(reviewLogRepository, org.mockito.Mockito.times(2)).save(captor.capture());
+        assertEquals("merge", captor.getAllValues().get(0).getAction());
+        assertEquals("merge-source", captor.getAllValues().get(1).getAction());
+        assertEquals(10L, resp.chunkId());
+    }
+
+    @Test
+    void mergeChunk_sourceFirstConcatenatesInSeqOrder() {
+        Chunk source = suspectChunk(10L, 1L, null, "前块", null);
+        source.setSeq(3);
+        source.setCleanStatus(null);
+        Chunk target = suspectChunk(11L, 1L, null, "后块", null);
+        target.setSeq(4);
+        target.setCleanStatus(null);
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(source));
+        when(chunkRepository.findById(11L)).thenReturn(Optional.of(target));
+
+        service.mergeChunk(1L, 10L, 11L, 99L);
+
+        assertEquals("前块\n后块", target.getContent());
+    }
+
+    @Test
+    void mergeChunk_nonAdjacent_rejected() {
+        Chunk source = suspectChunk(10L, 1L, null, "a", null);
+        source.setSeq(3);
+        source.setCleanStatus(null);
+        Chunk target = suspectChunk(11L, 1L, null, "b", null);
+        target.setSeq(5);
+        target.setCleanStatus(null);
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(source));
+        when(chunkRepository.findById(11L)).thenReturn(Optional.of(target));
+
+        assertThrows(BizException.class, () -> service.mergeChunk(1L, 10L, 11L, 99L));
+        verify(vectorIngestionService, never()).reindexChunk(any(Chunk.class));
+    }
+
+    @Test
+    void mergeChunk_sameChunk_rejected() {
+        Chunk c = suspectChunk(10L, 1L, null, "a", null);
+        c.setCleanStatus(null);
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(c));
+        assertThrows(BizException.class, () -> service.mergeChunk(1L, 10L, 10L, 99L));
+    }
+
+    @Test
+    void mergeChunk_filteredInvolved_rejected() {
+        Chunk source = suspectChunk(10L, 1L, null, "a", null);
+        source.setSeq(3);
+        source.setCleanStatus(null);
+        Chunk target = suspectChunk(11L, 1L, null, "b", null);
+        target.setSeq(4);
+        target.setCleanStatus("FILTERED");
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(source));
+        when(chunkRepository.findById(11L)).thenReturn(Optional.of(target));
+
+        assertThrows(BizException.class, () -> service.mergeChunk(1L, 10L, 11L, 99L));
+    }
+
+    @Test
+    void mergeChunk_curatingDoc_rejected() {
+        Chunk source = suspectChunk(10L, 1L, null, "a", null);
+        source.setSeq(3);
+        source.setCleanStatus(null);
+        Chunk target = suspectChunk(11L, 1L, null, "b", null);
+        target.setSeq(4);
+        target.setCleanStatus(null);
+        when(chunkRepository.findById(10L)).thenReturn(Optional.of(source));
+        when(chunkRepository.findById(11L)).thenReturn(Optional.of(target));
+        when(documentRepository.findById(1L)).thenReturn(Optional.of(curatingDoc(1L)));
+
+        assertThrows(BizException.class, () -> service.mergeChunk(1L, 10L, 11L, 99L));
+        verify(vectorIngestionService, never()).reindexChunk(any(Chunk.class));
     }
 
     // ===== unkeep（已审核回退待审核） =====
@@ -342,6 +535,7 @@ class ChunkReviewServiceTest {
         d.setId(id);
         d.setKbId(7L);
         d.setFileName(name);
+        d.setParseStatus(com.ai.konwledgerepo.entity.DocStatus.SUCCESS.value());
         return d;
     }
 

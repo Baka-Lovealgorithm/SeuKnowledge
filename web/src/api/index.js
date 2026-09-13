@@ -38,6 +38,11 @@ export const docApi = {
   list: (kbId) => http.get(`/kb/${kbId}/documents`),
   remove: (id) => http.delete(`/documents/${id}`),
   chunks: (id, filter) => http.get(`/documents/${id}/chunks`, { params: { filter } }),
+  /** 分页查分块（大文档全量加载慢）：page 0 起，size 1~200，cleanStatus 空 = 不过滤 */
+  chunkPage: (id, page = 0, size = 20, cleanStatus = '') =>
+    http.get(`/documents/${id}/chunks/page`, { params: { page, size, cleanStatus: cleanStatus || undefined } }),
+  /** 该文档全部待审核（SUSPECT）chunk id（一键通过：取 id 后走批量审核） */
+  suspectIds: (id) => http.get(`/documents/${id}/chunks/suspect-ids`),
   retry: (id) => http.post(`/documents/${id}/retry`),
   /** 重命名（只改元数据与检索引用名，不重解析；扩展名必须保持不变） */
   rename: (id, fileName) => http.patch(`/documents/${id}/name`, { fileName }),
@@ -52,23 +57,34 @@ export const curateApi = {
   getMd: (id) => http.get(`/documents/${id}/curate/md`),
   saveMd: (id, content) => http.post(`/documents/${id}/curate/md`, { content }),
   chunks: (id) => http.get(`/documents/${id}/curate/chunks`),
+  /** 分页查分块：sort = suspect（待审核优先，默认）/ seq（自然顺序） */
+  chunkPage: (id, page = 0, size = 20, sort = 'suspect', cleanStatus = '') =>
+    http.get(`/documents/${id}/curate/chunks/page`, { params: { page, size, sort, cleanStatus: cleanStatus || undefined } }),
+  /** 一键通过：保留该文档全部待审核（SUSPECT）分块（纯 DB 操作，确认前不触 ES） */
+  batchKeep: (id) => http.post(`/documents/${id}/curate/chunks/batch-keep`),
   accept: (id) => http.post(`/documents/${id}/curate/accept`),
   confirm: (id) => http.post(`/documents/${id}/curate/confirm`),
   editChunk: (id, chunkId, data) => http.post(`/documents/${id}/curate/chunks/${chunkId}/edit`, data),
   dropChunk: (id, chunkId) => http.post(`/documents/${id}/curate/chunks/${chunkId}/drop`),
   keepChunk: (id, chunkId) => http.post(`/documents/${id}/curate/chunks/${chunkId}/keep`),
   unkeepChunk: (id, chunkId) => http.post(`/documents/${id}/curate/chunks/${chunkId}/unkeep`),
-  mergeChunk: (id, data) => http.post(`/documents/${id}/curate/chunks/merge`, data)
+  mergeChunk: (id, data) => http.post(`/documents/${id}/curate/chunks/merge`, data),
+  /** 精修阶段新增分块（锚点后插入，纯 DB，确认时统一向量化） */
+  addChunk: (id, data) => http.post(`/documents/${id}/curate/chunks`, data)
 }
 
-/** 文档精修（普通文档 SUSPECT 复核入口）：待审核（SUSPECT）块 保留/编辑/删除/回退待审核/批量 */
+/** 文档精修（普通文档分块复核/运维入口）：SUSPECT 队列 + 已向量化文档的编辑/删除/新增/合并（操作即时单块向量化） */
 export const reviewApi = {
   suspectQueue: (kbId) => http.get(`/kb/${kbId}/chunks/suspect`),
   keep: (id) => http.post(`/chunks/${id}/review/keep`),
   drop: (id) => http.post(`/chunks/${id}/review/drop`),
   unkeep: (id) => http.post(`/chunks/${id}/review/unkeep`),
   edit: (id, data) => http.post(`/chunks/${id}/edit`, data),
-  batch: (ids, action) => http.post('/chunks/review/batch', { ids, action })
+  batch: (ids, action) => http.post('/chunks/review/batch', { ids, action }),
+  /** 新增分块（插入锚点之后，后续 seq 让位，落库即向量化） */
+  addChunk: (docId, data) => http.post(`/documents/${docId}/chunks`, data),
+  /** 合并相邻分块（source 并入 target，target 重嵌、source 移出 ES） */
+  mergeChunk: (docId, data) => http.post(`/documents/${docId}/chunks/merge`, data)
 }
 
 export const modelApi = {

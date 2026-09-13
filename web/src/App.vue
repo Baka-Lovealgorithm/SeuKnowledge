@@ -9,10 +9,10 @@
           <el-icon><ChatDotRound /></el-icon><span>智能问答</span>
         </el-menu-item>
         <el-menu-item v-if="auth.isAdmin" index="/stats">
-          <el-icon><TrendCharts /></el-icon><span>问答反馈</span>
+          <el-icon><DataLine /></el-icon><span>问答反馈</span>
         </el-menu-item>
-        <el-menu-item v-if="auth.canWrite" index="/review">
-          <el-icon><Checked /></el-icon><span>文档精修</span>
+        <el-menu-item index="/review">
+          <el-icon><Finished /></el-icon><span>文档分块</span>
         </el-menu-item>
         <el-menu-item v-if="auth.canWrite" index="/curate">
           <el-icon><EditPen /></el-icon><span>文档初洗</span>
@@ -21,10 +21,10 @@
           <el-icon><FolderOpened /></el-icon><span>知识库</span>
         </el-menu-item>
         <el-menu-item v-if="auth.canWrite" index="/bk">
-          <el-icon><Collection /></el-icon><span>业务知识</span>
+          <el-icon><Notebook /></el-icon><span>业务知识</span>
         </el-menu-item>
         <el-menu-item v-if="auth.canWrite" index="/qa">
-          <el-icon><QuestionFilled /></el-icon><span>问答对</span>
+          <el-icon><ChatLineSquare /></el-icon><span>问答对</span>
         </el-menu-item>
         <el-menu-item v-if="features.aiExtraction && auth.canWrite" index="/extract">
           <el-icon><MagicStick /></el-icon><span>AI 抽取</span>
@@ -33,7 +33,7 @@
           <el-icon><User /></el-icon><span>成员管理</span>
         </el-menu-item>
         <el-menu-item v-if="auth.isAdmin" index="/groups">
-          <el-icon><Avatar /></el-icon><span>组管理</span>
+          <el-icon><Share /></el-icon><span>组管理</span>
         </el-menu-item>
         <el-menu-item v-if="auth.isAdmin" index="/models">
           <el-icon><Cpu /></el-icon><span>模型配置</span>
@@ -97,7 +97,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowDown, Avatar, ChatDotRound, Checked, Collection, Cpu, EditPen, FolderOpened, MagicStick, OfficeBuilding, QuestionFilled, Setting, TrendCharts, User } from '@element-plus/icons-vue'
+import { ArrowDown, ChatDotRound, ChatLineSquare, Cpu, DataLine, EditPen, Finished, FolderOpened, MagicStick, Notebook, OfficeBuilding, Setting, Share, User } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from './stores/auth'
 import { authApi, workspaceApi } from './api'

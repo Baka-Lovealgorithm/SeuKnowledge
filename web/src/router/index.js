@@ -33,7 +33,7 @@ const routes = [
   {
     path: '/review',
     component: () => import('../views/Review.vue'),
-    meta: { auth: true, title: '文档精修' }
+    meta: { auth: true, title: '文档分块' }
   },
   {
     path: '/curate',
