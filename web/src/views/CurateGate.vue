@@ -11,6 +11,15 @@
       <template v-if="status">
         <span class="stat">共 {{ info.chunkCount ?? 0 }} chunk ｜ 待审核 {{ suspectCount }}</span>
       </template>
+      <el-tooltip v-if="status === 'PREVIEWING'" placement="bottom">
+        <template #content>
+          <div class="hint-tip">
+            <div>初洗中：分块结果已生成但未向量化。此阶段全部分块只读；</div>
+            <div>可「编辑 md」在线清洗后重新分块（可反复），或「接受」进入文档精修。</div>
+          </div>
+        </template>
+        <el-icon class="tip-icon"><QuestionFilled /></el-icon>
+      </el-tooltip>
       <el-switch v-if="docId" v-model="onlySuspect" active-text="只看待审核" size="small" @change="onFilterChange" />
       <div class="spacer" />
       <template v-if="auth.canWrite && status === 'PREVIEWING'">
@@ -22,9 +31,6 @@
     <el-empty v-if="!loading && !docId" :description="kbId ? '该知识库暂无初洗中的文档' : '请选择知识库（上传文档时勾选「初洗门」后，文档会出现在这里）'" />
 
     <template v-else>
-      <el-alert v-if="status === 'PREVIEWING'" type="info" :closable="false" class="hint"
-                title="初洗中：分块结果已生成但未向量化。此阶段全部分块只读；可「编辑 md」在线清洗后重新分块（可反复），或「接受」进入文档精修。" />
-
       <el-table :data="chunks" v-loading="loading" border size="small">
         <el-table-column prop="seq" label="序号" width="70" />
         <el-table-column prop="pageNum" label="页码" width="70" />
@@ -73,6 +79,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { QuestionFilled } from '@element-plus/icons-vue'
 import { curateApi, kbApi } from '../api'
 import { renderMarkdown } from '../utils/markdown'
 import { loadViewState, saveViewState } from '../utils/viewState'
@@ -325,6 +332,8 @@ onMounted(init)
 <style scoped>
 .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
 .stat { color: #909399; font-size: 13px; }
+.tip-icon { color: #909399; font-size: 16px; cursor: help; }
+.hint-tip { line-height: 1.7; }
 .spacer { flex: 1; }
 .hint { margin-bottom: 12px; }
 .content-cell {

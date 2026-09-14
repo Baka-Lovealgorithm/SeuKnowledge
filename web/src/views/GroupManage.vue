@@ -2,7 +2,16 @@
   <div>
     <div class="toolbar">
       <el-button type="primary" @click="openCreate">新建组</el-button>
-      <span class="tip">组用于知识库的组级别授权：把知识库授权给一个组后，组内所有成员共享该权限（取最高权限，EDIT 覆盖 VIEW）。组内成员仅限当前工作空间成员。</span>
+      <el-tooltip placement="bottom-start">
+        <template #content>
+          <div class="group-tip">
+            <div>组用于知识库的组级别授权：把知识库授权给一个组后，</div>
+            <div>组内所有成员共享该权限（取最高权限，EDIT 覆盖 VIEW）。</div>
+            <div>组内成员仅限当前工作空间成员。</div>
+          </div>
+        </template>
+        <el-icon class="tip-icon"><QuestionFilled /></el-icon>
+      </el-tooltip>
     </div>
 
     <el-table :data="groups" v-loading="loading" border>
@@ -80,6 +89,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { QuestionFilled } from '@element-plus/icons-vue'
 import { groupApi, workspaceApi } from '../api'
 import { confirmAction } from '../utils/confirm'
 import { formatDateTime } from '../utils/format'
@@ -208,6 +218,7 @@ onMounted(load)
 
 <style scoped>
 .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
-.tip { color: #909399; font-size: 12px; }
+.tip-icon { color: #909399; font-size: 16px; cursor: help; }
+.group-tip { line-height: 1.7; }
 .member-add { display: flex; align-items: center; margin-bottom: 12px; }
 </style>

@@ -7,11 +7,13 @@
         <el-option :value="90" label="近 90 天" />
       </el-select>
       <el-button :loading="loading" @click="reload">刷新</el-button>
+      <el-tooltip placement="bottom-start">
+        <template #content>
+          <div class="tip-text">点踩由提问者本人提交；本页仅空间 OWNER / ADMIN 可见。</div>
+        </template>
+        <el-icon class="tip-icon"><QuestionFilled /></el-icon>
+      </el-tooltip>
     </div>
-
-    <el-alert type="info" :closable="false" class="notice">
-      点踩由提问者本人提交；本页仅空间 OWNER / ADMIN 可见。
-    </el-alert>
 
     <div class="cards">
       <el-card v-for="c in cards" :key="c.label" shadow="never" class="card">
@@ -37,7 +39,12 @@
         <el-card shadow="never" class="block">
           <template #header>
             自检快照视角
-            <span class="sub-tip">（只统计含快照的回答，共 {{ overview?.snapshotCount ?? 0 }} 条；采集上线前的存量行不参与）</span>
+            <el-tooltip placement="bottom-start">
+              <template #content>
+                <div class="tip-text">只统计含快照的回答，共 {{ overview?.snapshotCount ?? 0 }} 条；采集上线前的存量行不参与。</div>
+              </template>
+              <el-icon class="tip-icon small"><QuestionFilled /></el-icon>
+            </el-tooltip>
           </template>
           <el-descriptions :column="1" border size="small">
             <el-descriptions-item label="全部回答的自检分均值">{{ num(overview?.avgVerifyScore) }}</el-descriptions-item>
@@ -45,8 +52,13 @@
             <el-descriptions-item label="事实一致性均值">{{ num(overview?.avgFaithfulness) }}</el-descriptions-item>
           </el-descriptions>
           <div class="gap-tip">
-            两个均值差距越大，说明用户踩得越"准"（低质量答案被踩）；若被踩答案的均值不低于整体，
-            更可能是检索没覆盖到用户真正想问的内容，而不是生成质量差。
+            均值差异解读
+            <el-tooltip placement="top-start">
+              <template #content>
+                <div class="tip-text wide">两个均值差距越大，说明用户踩得越"准"（低质量答案被踩）；<br />若被踩答案的均值不低于整体，更可能是检索没覆盖到用户真正想问的内容，而不是生成质量差。</div>
+              </template>
+              <el-icon class="tip-icon small"><QuestionFilled /></el-icon>
+            </el-tooltip>
           </div>
         </el-card>
       </el-col>
@@ -55,7 +67,7 @@
     <el-card shadow="never" class="block">
       <template #header>
         点踩明细
-        <span class="sub-tip">（共 {{ total }} 条）</span>
+        <el-tag type="warning" size="small" effect="light" class="count-tag">共 {{ total }} 条</el-tag>
       </template>
       <el-table :data="items" :loading="tableLoading" size="small" border>
         <el-table-column prop="question" label="问题" min-width="180" show-overflow-tooltip />
@@ -96,6 +108,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { QuestionFilled } from '@element-plus/icons-vue'
 import { statsApi } from '../api'
 
 const days = ref(30)
@@ -192,7 +205,10 @@ onMounted(reload)
 <style scoped>
 .stats-page { padding: 16px; }
 .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
-.notice { margin-bottom: 12px; }
+.tip-icon { color: #909399; font-size: 16px; cursor: help; }
+.tip-icon.small { font-size: 14px; margin-left: 4px; vertical-align: middle; }
+.tip-text { line-height: 1.7; max-width: 380px; }
+.tip-text.wide { max-width: 460px; }
 .cards { display: flex; gap: 12px; flex-wrap: wrap; }
 .card { flex: 1 1 160px; }
 .card-label { font-size: 13px; color: #606266; }
@@ -200,7 +216,7 @@ onMounted(reload)
 .card-hint { font-size: 12px; color: #a8abb2; }
 .row { margin-top: 12px; }
 .block { margin-top: 12px; }
-.sub-tip { color: #a8abb2; font-size: 12px; font-weight: 400; }
+.count-tag { margin-left: 8px; font-weight: 600; vertical-align: middle; }
 .reason-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .reason-name { width: 96px; font-size: 13px; color: #606266; }
 .reason-bar { flex: 1; }
