@@ -15,9 +15,21 @@
         <el-button type="primary">上传文档 (.txt/.md/.html/.pdf/.docx/.pptx/.xlsx/.xls)</el-button>
       </el-upload>
       <span v-if="uploading" class="upload-progress">{{ uploading }}</span>
+      <el-select v-model="statusFilter" placeholder="解析状态" style="width: 150px">
+        <el-option label="全部解析状态" value="" />
+        <el-option label="解析成功" value="SUCCESS" />
+        <el-option label="解析中" value="PARSING" />
+        <el-option label="待解析" value="PENDING" />
+        <el-option label="解析失败" value="FAILED" />
+        <el-option label="向量失败" value="ERROR" />
+      </el-select>
+      <el-select v-model="typeFilter" placeholder="文件类型" style="width: 130px">
+        <el-option label="全部类型" value="" />
+        <el-option v-for="t in typeOptions" :key="t" :label="t.toUpperCase()" :value="t" />
+      </el-select>
       <span v-if="auth.canWrite" class="tip">文件名后的 ✎ 只改展示与检索引用名；「重建向量」不重新解析</span>
     </div>
-    <el-table :data="list" v-loading="loading" border>
+    <el-table :data="pagedList" v-loading="loading" border>
       <el-table-column prop="fileName" label="文件名" min-width="200">
         <template #default="{ row }">
           <span>{{ row.fileName }}</span>
@@ -63,12 +75,16 @@
         </template>
       </el-table-column>
     </el-table>
-
+    <div class="pager">
+      <el-pagination v-model:current-page="pageIndex" v-model:page-size="pageSize"
+                     :total="filteredList.length" :page-sizes="[20, 50]"
+                     layout="total, sizes, prev, pager, next" />
+    </div>
   </div>
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { docApi } from '../api'
@@ -81,6 +97,36 @@ const kbId = route.params.kbId
 const list = ref([])
 const loading = ref(false)
 const curateOn = ref(false)
+
+// ===== 过滤 + 分页（纯前端）：列表接口返回全量，筛选与翻页都在浏览器侧完成，
+//       因而保留轮询所需的完整列表（hasActive 要拿全量才能判断哪些文档还在解析/向量中）=====
+const statusFilter = ref('')  // 解析状态：'' = 全部
+const typeFilter = ref('')    // 文件类型：'' = 全部
+const pageIndex = ref(1)
+const pageSize = ref(20)
+
+/** 类型下拉：按当前列表动态汇总（只列该库真实用到的类型），不写死枚举 */
+const typeOptions = computed(() => [...new Set(list.value.map((d) => d.fileType).filter(Boolean))].sort())
+
+const filteredList = computed(() => list.value.filter((d) => {
+  if (statusFilter.value && d.parseStatus !== statusFilter.value) return false
+  if (typeFilter.value && d.fileType !== typeFilter.value) return false
+  return true
+}))
+
+/** 当前页数据（前端切片；轮询刷新 list 后自动重算） */
+const pagedList = computed(() => {
+  const start = (pageIndex.value - 1) * pageSize.value
+  return filteredList.value.slice(start, start + pageSize.value)
+})
+
+// 过滤条件或每页条数变化 → 回第 1 页
+watch([statusFilter, typeFilter, pageSize], () => { pageIndex.value = 1 })
+// 结果集收缩（删除 / 改过滤）后当前页可能越界 → 收敛到最后一页
+watch(filteredList, (rows) => {
+  const maxPage = Math.max(1, Math.ceil(rows.length / pageSize.value))
+  if (pageIndex.value > maxPage) pageIndex.value = maxPage
+})
 
 /** 过渡态轮询定时器（解析状态自动刷新） */
 let timer = null
@@ -454,8 +500,9 @@ onUnmounted(stopPolling)
 </script>
 
 <style scoped>
-.toolbar { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
+.toolbar { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
 .toolbar .tip { color: #909399; font-size: 12px; }
 .upload-progress { color: #409eff; font-size: 13px; }
 .rename-btn { margin-left: 4px; font-size: 12px; }
+.pager { display: flex; justify-content: flex-end; margin-top: 12px; }
 </style>

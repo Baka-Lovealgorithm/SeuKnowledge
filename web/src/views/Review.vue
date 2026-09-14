@@ -11,11 +11,12 @@
       <el-tag v-if="docId" :type="isCurate ? 'warning' : 'success'" size="small" effect="plain">
         {{ isCurate ? '精修中 · 确认前' : '已向量化 · 修改即时生效' }}
       </el-tag>
-      <el-radio-group v-if="docId" v-model="sortMode" size="small" @change="onFilterChange">
-        <el-radio-button value="suspect">待审核优先</el-radio-button>
-        <el-radio-button value="seq">自然顺序</el-radio-button>
-      </el-radio-group>
-      <el-switch v-if="docId" v-model="onlySuspect" active-text="只看待审核" size="small" @change="onFilterChange" />
+      <el-select v-if="docId" v-model="statusFilter" style="width: 132px" @change="onFilterChange">
+        <el-option label="全部状态" value="" />
+        <el-option v-if="showSuspectOption" label="待审核" value="SUSPECT" />
+        <el-option label="通过" value="KEEP" />
+        <el-option label="已删除" value="FILTERED" />
+      </el-select>
       <div class="spacer" />
       <template v-if="auth.canWrite && docId && suspectCount > 0">
         <el-button type="warning" :loading="batchKeeping" title="保留本文档全部待审核分块（跨页）"
@@ -28,8 +29,8 @@
                    title="全部未删除分块均为已审核后可用" @click="confirm">确认完成并向量化</el-button>
       </template>
       <template v-if="auth.canWrite && !isCurate && docId && selectedSuspectCount > 0">
-        <el-button type="primary" size="small" :loading="acting" @click="batchKeep">批量保留 ({{ selectedSuspectCount }})</el-button>
-        <el-button type="danger" size="small" :loading="acting" @click="batchDrop">批量删除 ({{ selectedSuspectCount }})</el-button>
+        <el-button type="primary" :loading="acting" @click="batchKeep">批量保留 ({{ selectedSuspectCount }})</el-button>
+        <el-button type="danger" :loading="acting" @click="batchDrop">批量删除 ({{ selectedSuspectCount }})</el-button>
       </template>
     </div>
 
@@ -169,9 +170,9 @@ const pageIndex = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
 const suspectCount = ref(0)
-const onlySuspect = ref(false)
+/** 状态过滤（下拉框值）：'' = 全部 / SUSPECT / KEEP / FILTERED；取代原「只看待审核」开关，排序则固定 seq 自然序 */
+const statusFilter = ref('')
 const batchKeeping = ref(false)
-const sortMode = ref('suspect')
 const loading = ref(false)
 const acting = ref(false)
 const selectedRows = ref([])
@@ -194,6 +195,11 @@ const mergeCandidates = ref([])
 
 /** 待审核（SUSPECT）计数：后端随分页响应返回（全文档口径，不受当前页/过滤影响） */
 const pendingCount = computed(() => suspectCount.value)
+/**
+ * 「待审核」筛选项的出现条件：文档确实存在 SUSPECT 块时才有意义（已向量化的文档通常没有）。
+ * 额外保留「当前正筛待审核」的情形，避免把最后一块处置完的瞬间选项自己消失、下拉值悬空。
+ */
+const showSuspectOption = computed(() => suspectCount.value > 0 || statusFilter.value === 'SUSPECT')
 /** 确认完成前置：精修中 + 文档有分块 + 无待审核分块（服务端 confirm 仍会做最终校验） */
 const canConfirm = computed(() => isCurate.value && docId.value && total.value > 0 && pendingCount.value === 0)
 /** 勾选中可批量处置的待审核分块（批量保留/删除仅对 SUSPECT 有意义） */
@@ -294,16 +300,19 @@ async function selectDoc(id) {
   await loadPage(0)
 }
 
-/** 拉取指定页（后端排序/过滤）：sort=suspect|seq，onlySuspect 转为 cleanStatus=SUSPECT 过滤 */
+/**
+ * 拉取指定页（后端排序/过滤）：排序固定 seq 自然序（即按页码顺序），状态过滤来自下拉框。
+ * 精修侧仍显式传 sort='seq'——后端该参数默认是「SUSPECT 优先」，显式传值才能与已向量化路径同口径。
+ */
 async function loadPage(p = page.value) {
   if (!docId.value) return
   loading.value = true
   try {
     page.value = p
     pageIndex.value = p + 1
-    const status = onlySuspect.value ? 'SUSPECT' : ''
+    const status = statusFilter.value || ''
     const resp = isCurate.value
-      ? await curateApi.chunkPage(docId.value, p, pageSize.value, sortMode.value, status)
+      ? await curateApi.chunkPage(docId.value, p, pageSize.value, 'seq', status)
       : await docApi.chunkPage(docId.value, p, pageSize.value, status)
     chunks.value = normalizeChunks(resp.items)
     total.value = resp.total
@@ -314,7 +323,7 @@ async function loadPage(p = page.value) {
   }
 }
 
-/** 排序 / 只看待审核变化：回第 1 页 */
+/** 状态过滤变化：回第 1 页 */
 async function onFilterChange() {
   if (!docId.value) return
   await loadPage(0)
@@ -330,13 +339,13 @@ async function onSizeChange() {
 
 /**
  * 单块操作后原地更新行（不整页重拉）：按 chunkId 替换；
- * 「只看待审核」下该行已不再是待审核则从当前页移除（页空时自动回退一页）。
+ * 当前有状态过滤时，该行新状态若不匹配过滤条件则从本页移除（页空时自动回退一页）。
  */
 function applyRowUpdate(newRow) {
   const norm = { ...newRow, chunkId: newRow.chunkId ?? newRow.id }
   const idx = chunks.value.findIndex((c) => c.chunkId === norm.chunkId)
   if (idx < 0) return
-  if (onlySuspect.value && norm.cleanStatus !== 'SUSPECT') {
+  if (statusFilter.value && norm.cleanStatus !== statusFilter.value) {
     chunks.value.splice(idx, 1)
     total.value = Math.max(0, total.value - 1)
     if (!chunks.value.length && page.value > 0) {
@@ -548,7 +557,7 @@ async function keepAll() {
       const ok = results.filter((x) => x.success).length
       ElMessage.success(`一键通过完成：保留 ${ok}${ids.length - ok ? `，失败 ${ids.length - ok}` : ''}`)
     }
-    await loadPage(onlySuspect.value ? 0 : page.value)
+    await loadPage(statusFilter.value ? 0 : page.value)
   } catch (e) {
     /* 拦截器已提示 */
   } finally {
