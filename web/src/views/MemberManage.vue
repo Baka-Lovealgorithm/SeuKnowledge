@@ -5,10 +5,30 @@
       <el-button type="primary" @click="openCreate">新建成员</el-button>
       <el-button @click="openInvite">邀请已有用户</el-button>
       <el-button v-if="auth.isOwner" link type="danger" @click="deleteWorkspace">删除工作空间</el-button>
-      <span class="tip">角色：拥有者（唯一） / 管理员（可管理成员与模型） / 编辑者（内容生产） / 普通成员（只读）</span>
+      <div class="filters">
+        <el-select v-model="roleFilter" placeholder="身份" style="width: 130px">
+          <el-option label="全部身份" value="" />
+          <el-option label="拥有者" value="OWNER" />
+          <el-option label="管理员" value="ADMIN" />
+          <el-option label="编辑者" value="EDITOR" />
+          <el-option label="普通成员" value="MEMBER" />
+        </el-select>
+        <el-input v-model="keyword" placeholder="搜索用户名" clearable style="width: 180px" />
+        <el-tooltip placement="top">
+          <template #content>
+            <div class="role-tip">
+              <div>拥有者（唯一）</div>
+              <div>管理员（可管理成员与模型）</div>
+              <div>编辑者（内容生产）</div>
+              <div>普通成员（只读）</div>
+            </div>
+          </template>
+          <el-icon class="tip-icon"><QuestionFilled /></el-icon>
+        </el-tooltip>
+      </div>
     </div>
 
-    <el-table :data="members" v-loading="loading" border>
+    <el-table :data="pagedList" v-loading="loading" border>
       <el-table-column prop="id" label="ID" width="70" />
       <el-table-column prop="username" label="用户名" min-width="140" />
       <el-table-column label="角色" width="120">
@@ -36,6 +56,11 @@
         </template>
       </el-table-column>
     </el-table>
+
+    <div class="pager">
+      <Pager v-model:page="pageIndex" v-model:page-size="pageSize"
+             :total="filteredList.length" :page-sizes="[20, 50]" />
+    </div>
 
     <el-dialog v-model="createVisible" title="新建成员" width="420px">
       <el-form :model="form" label-width="80px">
@@ -95,13 +120,15 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { QuestionFilled } from '@element-plus/icons-vue'
 import { workspaceApi } from '../api'
 import { useAuthStore } from '../stores/auth'
 import { confirmAction } from '../utils/confirm'
 import { copyText } from '../utils/clipboard'
 import { formatDateTime } from '../utils/format'
+import Pager from '../components/Pager.vue'
 
 const auth = useAuthStore()
 const members = ref([])
@@ -112,6 +139,35 @@ const form = reactive({ username: '', password: '', role: 'EDITOR' })
 const inviteVisible = ref(false)
 const inviting = ref(false)
 const inviteForm = reactive({ username: '', role: 'MEMBER' })
+
+// ===== 过滤 + 分页（纯前端）：成员列表接口一次返回全量，筛选与翻页都在浏览器侧完成 =====
+const roleFilter = ref('')  // 身份：'' = 全部
+const keyword = ref('')     // 用户名模糊匹配（不区分大小写，忽略首尾空格）
+const pageIndex = ref(1)
+const pageSize = ref(20)
+
+const filteredList = computed(() => {
+  const kw = keyword.value.trim().toLowerCase()
+  return members.value.filter((m) => {
+    if (roleFilter.value && m.role !== roleFilter.value) return false
+    if (kw && !String(m.username || '').toLowerCase().includes(kw)) return false
+    return true
+  })
+})
+
+/** 当前页数据（前端切片） */
+const pagedList = computed(() => {
+  const start = (pageIndex.value - 1) * pageSize.value
+  return filteredList.value.slice(start, start + pageSize.value)
+})
+
+// 过滤条件或每页条数变化 → 回第 1 页
+watch([roleFilter, keyword, pageSize], () => { pageIndex.value = 1 })
+// 结果集收缩（移除成员 / 改过滤）后当前页可能越界 → 收敛到最后一页
+watch(filteredList, (rows) => {
+  const maxPage = Math.max(1, Math.ceil(rows.length / pageSize.value))
+  if (pageIndex.value > maxPage) pageIndex.value = maxPage
+})
 
 const roleLabel = (r) => ({ OWNER: '拥有者', ADMIN: '管理员', EDITOR: '编辑者', MEMBER: '普通成员' }[r] || r)
 const roleTag = (r) => ({ OWNER: 'danger', ADMIN: 'warning', EDITOR: 'primary', MEMBER: 'info' }[r] || 'info')
@@ -221,7 +277,10 @@ onMounted(load)
 
 <style scoped>
 .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
-.tip { color: #909399; font-size: 12px; }
+.filters { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+.tip-icon { color: #909399; font-size: 16px; cursor: help; }
+.role-tip div { line-height: 1.7; }
+.pager { display: flex; justify-content: flex-end; margin-top: 12px; }
 .owner-badge { color: #f56c6c; font-size: 12px; }
 .ws-name { font-weight: 600; }
 .reset-tip { margin-bottom: 14px; }

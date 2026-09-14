@@ -1,13 +1,8 @@
 <template>
   <div>
     <div class="toolbar">
-      <el-select v-model="kbId" placeholder="选择知识库" style="width: 200px" @change="onKbChange">
-        <el-option v-for="kb in kbs" :key="kb.id" :label="kb.name" :value="kb.id" />
-      </el-select>
-      <el-select v-model="docId" placeholder="选择文档" style="width: 340px" filterable clearable
-                 :disabled="!kbId || !docs.length" @change="onDocChange">
-        <el-option v-for="d in docs" :key="d.docId" :label="docLabel(d)" :value="d.docId" />
-      </el-select>
+      <el-button @click="goList">← 返回文件列表</el-button>
+      <span v-if="docName" class="doc-name" :title="docName">{{ docName }}</span>
       <el-tag v-if="docId" :type="isCurate ? 'warning' : 'success'" size="small" effect="plain">
         {{ isCurate ? '精修中 · 确认前' : '已向量化 · 修改即时生效' }}
       </el-tag>
@@ -34,7 +29,7 @@
       </template>
     </div>
 
-    <el-empty v-if="!loading && !docId" :description="kbId ? '该知识库暂无可处理的文档' : '请选择知识库'" />
+    <el-empty v-if="!docId" description="正在加载文档…" />
 
     <template v-else>
       <el-alert v-if="docId && isCurate" type="warning" :closable="false" class="hint"
@@ -146,21 +141,21 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { curateApi, docApi, kbApi, reviewApi } from '../api'
+import { curateApi, docApi, reviewApi } from '../api'
 import { useAuthStore } from '../stores/auth'
 import { confirmAction } from '../utils/confirm'
 import ChunkDetail from '../components/ChunkDetail.vue'
 import Pager from '../components/Pager.vue'
 
 const route = useRoute()
+const router = useRouter()
 const auth = useAuthStore()
 
-const kbs = ref([])
-const kbId = ref(null)
-const docs = ref([])
 const docId = ref(null)
+/** 文档名（工具条展示，来自 curateApi.info；它对本流程外的文档同样可用） */
+const docName = ref('')
 /** 当前文档是否初洗门已接受（精修中）：true → curateApi（纯 DB，确认时统一向量化）；false → reviewApi/docApi（操作即时向量化） */
 const isCurate = ref(false)
 const chunks = ref([])
@@ -224,23 +219,6 @@ const statusTagType = (row) => {
   return 'success'
 }
 
-/** 文档阶段文案（下拉与标签用）：精修中 > 已向量化 > 向量失败 > 解析中/失败 */
-function stageOf(d) {
-  if (d.curateStatus === 'ACCEPTED') return '精修中'
-  if (d.parseStatus === 'SUCCESS') return '已向量化'
-  if (d.parseStatus === 'ERROR') return '向量失败'
-  if (d.parseStatus === 'FAILED') return '解析失败'
-  return '解析中'
-}
-
-function docLabel(d) {
-  const base = `${d.fileName}（${stageOf(d)}`
-  if (d.curateStatus === 'ACCEPTED') return `${base} · 待审核 ${d.suspectCount ?? 0}）`
-  const parts = [`${(d.chunkCount ?? 0)} 块`]
-  if (d.suspectCount > 0) parts.push(`待审核 ${d.suspectCount}`)
-  return `${base} · ${parts.join(' · ')}）`
-}
-
 /** 编辑/删除可用性：两种阶段均为任意未删除分块（已向量化文档的操作即时生效） */
 function editable(row) {
   return row.cleanStatus !== 'FILTERED'
@@ -260,44 +238,6 @@ function selectableForSelect(row) {
 
 function onSelection(rows) {
   selectedRows.value = rows
-}
-
-async function loadKbs() {
-  kbs.value = await kbApi.list()
-}
-
-/** 文档列表 = 初洗门精修中（ACCEPTED）+ 知识库全部常规文档（去重） */
-async function load() {
-  if (!kbId.value) return
-  loading.value = true
-  try {
-    const [queue, all] = await Promise.all([curateApi.queue(kbId.value), docApi.list(kbId.value)])
-    const accDocs = queue.filter((d) => d.curateStatus === 'ACCEPTED')
-    const accIds = new Set(accDocs.map((d) => String(d.docId)))
-    const normalDocs = (all || [])
-      .filter((d) => !accIds.has(String(d.id)))
-      .map((d) => ({ docId: d.id, fileName: d.fileName, parseStatus: d.parseStatus, curateStatus: null,
-                     chunkCount: d.chunkCount ?? 0, suspectCount: d.suspectCount ?? 0 }))
-    docs.value = [
-      ...accDocs.map((d) => ({ docId: d.docId, fileName: d.fileName, parseStatus: 'SUCCESS',
-                               curateStatus: d.curateStatus, chunkCount: d.chunkCount ?? 0, suspectCount: d.suspectCount ?? 0 })),
-      ...normalDocs
-    ]
-  } finally {
-    loading.value = false
-  }
-}
-
-async function selectDoc(id) {
-  docId.value = id
-  chunks.value = []
-  selectedRows.value = []
-  total.value = 0
-  suspectCount.value = 0
-  if (!id) return
-  const d = docs.value.find((x) => String(x.docId) === String(id))
-  isCurate.value = !!(d && d.curateStatus === 'ACCEPTED')
-  await loadPage(0)
 }
 
 /**
@@ -366,42 +306,32 @@ function hasChunkId(row) {
   return false
 }
 
-async function onKbChange() {
-  docId.value = null
-  isCurate.value = false
-  chunks.value = []
-  await load()
-  await selectDoc(null)
+/** 返回文件列表（首页） */
+function goList() {
+  router.push('/review')
 }
 
-async function onDocChange(id) {
-  await selectDoc(id)
-}
-
+/**
+ * 文档 id 来自路由 `/review/:docId`（列表页按状态分流而来，文档管理页的「分块」按钮也直达这里）。
+ * 用 `curateApi.info` 一次拿到文件名与 curateStatus：它对初洗流程之外的文档同样可用，不必再扫各知识库。
+ * 初洗中（PREVIEWING）的文档不该在本页编辑 —— 反向跳回「文档初洗」页（与那边接受后跳本页对称）。
+ */
 async function init() {
-  await loadKbs()
-  const preferDocId = route.query.docId
-  if (preferDocId) {
-    // 深链直达：先查精修/待审核队列，再回退到知识库全量文档列表定位
-    for (const kb of kbs.value) {
-      kbId.value = kb.id
-      await load()
-      const found = docs.value.find((d) => String(d.docId) === String(preferDocId))
-      if (found) {
-        await selectDoc(found.docId)
-        return
-      }
-    }
-    kbId.value = null
-    docs.value = []
-    ElMessage.warning('未找到该文档，已回到分块工作台')
+  const id = route.params.docId
+  if (!id) {
+    router.replace('/review')
     return
   }
-  kbId.value = kbs.value[0]?.id ?? null
-  if (kbId.value) {
-    await load()
-    await selectDoc(null)
+  const info = await curateApi.info(id)
+  if (info.curateStatus === 'PREVIEWING') {
+    ElMessage.info('该文档仍在初洗阶段，已跳转到「文档初洗」页')
+    router.replace(`/curate/${id}`)
+    return
   }
+  docName.value = info.fileName || ''
+  isCurate.value = info.curateStatus === 'ACCEPTED'
+  docId.value = id
+  await loadPage(0)
 }
 
 function openDetail(row) {
@@ -609,8 +539,10 @@ async function confirm() {
   try {
     await curateApi.confirm(docId.value)
     ElMessage.success('已触发向量化，文档已回到常规状态')
-    await load()
-    await selectDoc(docId.value)
+    // 确认后文档转入「已向量化」：本页切换为常规通道（操作即时向量化），过滤条件复位
+    isCurate.value = false
+    statusFilter.value = ''
+    await loadPage(0)
   } catch (e) {
     /* 拦截器已提示 */
   } finally {
@@ -645,6 +577,7 @@ onMounted(init)
 
 <style scoped>
 .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.doc-name { font-weight: 600; max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .spacer { flex: 1; }
 .hint { margin-bottom: 12px; }
 .content-cell {

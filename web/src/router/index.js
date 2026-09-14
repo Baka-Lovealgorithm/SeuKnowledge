@@ -31,7 +31,13 @@ const routes = [
     meta: { auth: true, title: 'AI 抽取任务', feature: 'aiExtraction' }
   },
   {
+    // 文档分块：首页是文件列表（按状态分流到对应处理页），chunk 编辑在 /review/:docId
     path: '/review',
+    component: () => import('../views/ReviewList.vue'),
+    meta: { auth: true, title: '文档分块' }
+  },
+  {
+    path: '/review/:docId',
     component: () => import('../views/Review.vue'),
     meta: { auth: true, title: '文档分块' }
   },

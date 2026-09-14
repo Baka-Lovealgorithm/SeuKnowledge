@@ -399,8 +399,8 @@ async function flushUploadBatch() {
 }
 
 async function viewChunks(row) {
-  // 跳转「文档分块」工作台（已向量化文档可就地编辑/删除/合并/新增；精修中文档走原精修流程）
-  router.push(`/review?docId=${row.id}`)
+  // 直达「文档分块」的 chunk 编辑页；精修中文档同样落在这里（按 curateStatus 自动走精修通道）
+  router.push(`/review/${row.id}`)
 }
 
 /**

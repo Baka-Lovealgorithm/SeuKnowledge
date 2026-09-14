@@ -9,7 +9,6 @@
         <el-option v-for="d in docs" :key="d.docId" :label="docLabel(d)" :value="d.docId" />
       </el-select>
       <template v-if="status">
-        <el-tag type="warning">初洗中 · 待决断</el-tag>
         <span class="stat">共 {{ info.chunkCount ?? 0 }} chunk ｜ 待审核 {{ suspectCount }}</span>
       </template>
       <el-switch v-if="docId" v-model="onlySuspect" active-text="只看待审核" size="small" @change="onFilterChange" />
@@ -37,10 +36,7 @@
         </el-table-column>
         <el-table-column label="清洗" width="100">
           <template #default="{ row }">
-            <el-tooltip v-if="row.cleanReason" :content="row.cleanReason" placement="top">
-              <el-tag :type="cleanTagType(row)" size="small">{{ cleanTagText(row) }}</el-tag>
-            </el-tooltip>
-            <el-tag v-else :type="cleanTagType(row)" size="small">{{ cleanTagText(row) }}</el-tag>
+            <el-tag :type="cleanTagType(row)" size="small">{{ cleanTagText(row) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="90" fixed="right">
@@ -79,6 +75,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { curateApi, kbApi } from '../api'
 import { renderMarkdown } from '../utils/markdown'
+import { loadViewState, saveViewState } from '../utils/viewState'
 import { useAuthStore } from '../stores/auth'
 import ChunkDetail from '../components/ChunkDetail.vue'
 import Pager from '../components/Pager.vue'
@@ -86,6 +83,9 @@ import Pager from '../components/Pager.vue'
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+
+/** 上次工作位置的持久化标识（与文档分块页各自独立，互不干扰） */
+const STATE_NAME = 'curate'
 
 const kbs = ref([])
 const kbId = ref(null)
@@ -142,8 +142,30 @@ async function loadPage(p = 0) {
     info.value = i
     chunks.value = resp.items
     total.value = resp.total
+    persistState()
   } finally {
     loading.value = false
+  }
+}
+
+/** 记录当前工作位置（知识库 / 文档 / 只看待审核 / 分页），供下次进入本页时恢复 */
+function persistState() {
+  saveViewState(STATE_NAME, auth.workspaceId, {
+    kbId: kbId.value,
+    docId: docId.value,
+    onlySuspect: onlySuspect.value,
+    pageSize: pageSize.value,
+    page: page.value
+  })
+}
+
+/**
+ * 按记忆的页码加载：期间数据可能已变化（待审核块被处置后队列会缩短），目标页越界时收敛到最后一页。
+ */
+async function loadClamped(target) {
+  await loadPage(target)
+  if (!chunks.value.length && total.value > 0 && page.value > 0) {
+    await loadPage(Math.max(0, Math.ceil(total.value / pageSize.value) - 1))
   }
 }
 
@@ -173,6 +195,7 @@ async function selectFirstDoc() {
   info.value = {}
   chunks.value = []
   if (docId.value) await load()
+  else persistState()
 }
 
 async function onKbChange() {
@@ -185,6 +208,7 @@ async function onDocChange(id) {
   info.value = {}
   chunks.value = []
   if (id) await load()
+  else persistState()
 }
 
 async function init() {
@@ -200,7 +224,7 @@ async function init() {
         if (found.curateStatus === 'ACCEPTED') {
           // 已进入精修：跳到文档精修页处理
           ElMessage.info('该文档已进入精修阶段，已跳转到「文档分块」页')
-          router.replace(`/review?docId=${found.docId}`)
+          router.replace(`/review/${found.docId}`)
           return
         }
         docId.value = found.docId
@@ -215,7 +239,31 @@ async function init() {
     await selectFirstKb()
     return
   }
-  await selectFirstKb()
+  await restoreLastState()
+}
+
+/**
+ * 恢复上次的工作位置（知识库 / 文档 / 只看待审核 / 分页）。
+ * 降级链：上次知识库不可用 → 第一个知识库；上次文档已不在初洗队列
+ * （被接受进精修、已确认、已删除）→ 该库队列的第一个文档。
+ */
+async function restoreLastState() {
+  const saved = loadViewState(STATE_NAME, auth.workspaceId)
+  if (saved.onlySuspect) onlySuspect.value = true
+  if (saved.pageSize) pageSize.value = saved.pageSize
+  const targetKb = kbs.value.find((k) => String(k.id) === String(saved.kbId)) || kbs.value[0]
+  kbId.value = targetKb ? targetKb.id : null
+  if (!kbId.value) return
+  await loadQueue()
+  const targetDoc = saved.docId && docs.value.find((d) => String(d.docId) === String(saved.docId))
+  if (!targetDoc) {
+    await selectFirstDoc()
+    return
+  }
+  docId.value = targetDoc.docId
+  info.value = {}
+  chunks.value = []
+  await loadClamped(Number(saved.page) || 0)
 }
 
 async function selectFirstKb() {
@@ -258,7 +306,7 @@ async function accept() {
   try {
     await curateApi.accept(docId.value)
     ElMessage.success('已接受，md 不可再编辑，分块进入精修阶段（「文档分块」页处理）')
-    router.push(`/review?docId=${docId.value}`)
+    router.push(`/review/${docId.value}`)
   } catch (e) {
     /* 拦截器已提示 */
   } finally {
