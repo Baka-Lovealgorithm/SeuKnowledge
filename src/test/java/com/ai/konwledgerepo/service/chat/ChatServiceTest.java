@@ -76,9 +76,9 @@ class ChatServiceTest {
     private static final Long WS_ID = 1L;
     private static final Long SESSION_ID = 10L;
 
-    /** 与 AgentService 默认模板一致：memoryWindow=20 == messageWindow，history 窗口不截断 */
+    /** 与 AgentService 默认模板一致：近窗 3 轮（=6 条 ≤ messageWindow 20 条，取数不截断） */
     private static final AgentConfig AGENT =
-            new AgentConfig("默认 Agent", "prompt", 0.7, 2, 20);
+            new AgentConfig("默认 Agent", "prompt", 0.7, 2, 3, 3);
 
     private ChatSessionRepository sessionRepository;
     private ChatMessageRepository messageRepository;
@@ -102,7 +102,7 @@ class ChatServiceTest {
         titleService = mock(SessionTitleService.class);
         redisCacheService = mock(RedisCacheService.class);
         // ChatService 为门面：内部组装五个子服务（与生产 Spring 注入同构），保持真实逻辑可测
-        SeuQaProperties qaProps = new SeuQaProperties(20, 2, 32, 30, true, false, false, 0.4, false, 60, 200);
+        SeuQaProperties qaProps = new SeuQaProperties(20, 3, 3, 2, 32, 30, true, false, false, 0.4, false, 60, 200);
         SeuCacheProperties cacheProps =
                 new SeuCacheProperties(300, 600, 600, 300, 300, 60, 60, 600, 86400);
         // WorkspaceAccess 用真实实例（归属校验走真实逻辑），ACL 仓库 mock 空授权（PUBLIC 库不受影响）
@@ -125,7 +125,7 @@ class ChatServiceTest {
                 titleService, taskLock, workspaceAccess, qaProps);
         QaAnswerService answerService = new QaAnswerService(executionService);
         ChatStreamService streamService = new ChatStreamService(
-                executionService, sessionService, messageStore, summaryService);
+                executionService, sessionService, messageStore, summaryService, agentService);
         // 反馈域不在本测试路径上（点踩有独立的 MessageFeedbackServiceTest），门面对其只做转发
         service = new ChatService(sessionService, answerService, streamService, mock(MessageFeedbackService.class));
         when(sessionRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
@@ -189,7 +189,7 @@ class ChatServiceTest {
         when(kbService.getEntityCached(KB_ID)).thenReturn(kb);
         // QaExecutionService 问答入口走 workspaceAccess.requireKbAccess（归属 + ACL），需 kb 实体存在
         when(kbRepository.findById(KB_ID)).thenReturn(Optional.of(kb));
-        when(agentService.toAgentConfig(KB_ID, kb.getName(), 2, 20)).thenReturn(AGENT);
+        when(agentService.toAgentConfig(KB_ID, kb.getName())).thenReturn(AGENT);
         when(redisCacheService.get(eq(RedisKeys.history(SESSION_ID)), any(TypeReference.class)))
                 .thenReturn(Optional.empty());
         doNothing().when(titleService).submitAutoTitle(any(), anyString(), eq(WS_ID));

@@ -61,7 +61,7 @@ public class QueryRewriteNode extends QaNodeSupport {
         String rawQuestion = QaContext.effectiveQuestion(state);
         List<HistoryEntry> history = QaContext.history(state);
         String memorySummary = state.value(QaContextKey.MEMORY_SUMMARY).map(String::valueOf).orElse("");
-        String recentJson = QaContext.renderRecentJson(history, 3);
+        String recentJson = QaContext.renderRecentJson(history, QaContext.recentRounds(state));
         String retryHint = buildRetryHint(state, retry);
         String agentPrompt = QaContext.agentPrompt(state);
 

@@ -60,7 +60,9 @@ CREATE TABLE IF NOT EXISTS kb_group_member (
 
 CREATE TABLE IF NOT EXISTS kb_agent (
     max_retry integer,
-    memory_window integer,
+    memory_window integer,              -- 遗留列：旧「记忆窗口条数」语义，代码已不再映射；保留以支持回滚
+    recent_rounds integer,              -- 注入原文的最近对话轮数（1~10，上限 = 全局 message-window/2）
+    summary_interval_rounds integer,    -- 滚动摘要压缩间隔轮数（须 ≤ recent_rounds，否则会丢上下文）
     verify_threshold float(53),
     created_at datetime(6),
     created_by bigint,

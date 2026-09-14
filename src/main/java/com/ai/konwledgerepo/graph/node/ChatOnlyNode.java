@@ -53,7 +53,7 @@ public class ChatOnlyNode extends QaNodeSupport {
         ChatModel chat = modelFactory.getChatModelByUsage(ModelUsage.CHITCHAT.value(), workspaceId);
         // 闲聊上下文：最近对话 + 会话摘要（解决连续闲聊失忆；blank 归一化同路由/改写节点）
         List<HistoryEntry> history = QaContext.history(state);
-        String recentJson = QaContext.renderRecentJson(history, 3);
+        String recentJson = QaContext.renderRecentJson(history, QaContext.recentRounds(state));
         if (recentJson.isBlank() || "[]".equals(recentJson)) {
             recentJson = "（无）";
         }

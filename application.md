@@ -34,7 +34,9 @@
 | `KB_STORAGE_TEMP_DIR` | 空（`java.io.tmpdir/seuknowledge`） | 对象存储文档的物化临时目录；仅读取 MinIO 文档时使用，用完即删 |
 | `KB_FILE_STORAGE_PATH` | ./data/files | **local 后端**的文档落盘根目录（键 `{wsId}/{kbId}/raw/{ext}/…`）；`KB_STORAGE_TYPE=minio` 时不用于写入，但仍用于读取存量本地行 |
 | `KB_FILE_MAX_SIZE` | 20971520 (20MB) | 单文件大小上限（字节，与 multipart 上限对齐；上传超大文件需调大） |
-| `KB_QA_MESSAGE_WINDOW` / `KB_QA_MAX_RETRY` | 20 / 2 | 对话记忆窗口条数 / 自检重试上限 |
+| `KB_QA_MESSAGE_WINDOW` | 20 | 对话记忆**取数上限**（条）。不可调节项、界面不暴露；Agent 的「最近对话轮数」上限 = 此值 / 2 |
+| `KB_QA_RECENT_ROUNDS` / `KB_QA_SUMMARY_INTERVAL_ROUNDS` | 3 / 3 | 近窗轮数 / 摘要压缩间隔轮数（**Agent 未配置时的兜底默认**，日常在 Agent 配置页按知识库调整）。两者须满足 间隔 ≤ 近窗，否则会丢上下文 |
+| `KB_QA_MAX_RETRY` | 2 | 自检重试上限 |
 | `KB_RERANK_CHUNK_TOP` / `KB_RERANK_OTHER_TOP` | 6 / 4 | 精排配额（文档 chunk / 业务知识+问答对合并；**重排模型本身在模型配置页配置**） |
 | `KB_RERANK_MAX_DOCS` / `KB_RERANK_MAX_CHARS` / `KB_RERANK_TIMEOUT_MS` | 20 / 1500 / 10000 | 精排单请求上限 / 单条截断 / 超时（超时自动降级 ES 分） |
 | `KB_CHUNK_SIZE` / `KB_CHUNK_OVERLAP` | 800 / 120 | 文档分块大小（字符）与重叠（标题感知分块） |
@@ -73,7 +75,7 @@
 
 1. 新建「文本模型 CHAT」：选供应商（DASHSCOPE / OPENAI_COMPAT）→ 填模型名（如 `deepseek-chat`）→ 填 Base URL（OPENAI_COMPAT 填服务根地址，**不要带 `/v1`**，系统自动拼接）→ 填 API Key → 勾选用途（GENERATE；VERIFY/ROUTER/EXTRACT/MEMORY/CHITCHAT/TITLE 可另建条目分别绑定）→ 用途留空即为该类型的「通用」兜底配置
 2. 新建「向量模型 EMBEDDING」：如 DashScope `text-embedding-v4` 或 OpenAI 兼容服务
-3. 可选：VISION 识图模型（PDF 扫描页）、RERANK 重排模型（精排质量，如 `gte-rerank-v2`）
+3. 可选：VISION 识图模型（PDF 扫描页）、RERANK 重排模型（精排质量，如 `gte-rerank-v2`；OPENAI_COMPAT 的 Base URL 填法同上——**不要带 `/v1`**，系统按协议自动拼 `/v1/rerank`）
 4. 每条配置点击**连通性测试**，通过后保存
 
 **API Key 安全约定**：模型配置页的 `apiKey` 填 `env:环境变量名` 引用真实 Key（如 `env:ALIBABA_API_KEY`），真实 Key 通过环境变量注入，**不落库、不落日志、不外传**。

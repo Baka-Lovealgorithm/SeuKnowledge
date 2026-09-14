@@ -3,6 +3,7 @@ package com.ai.konwledgerepo.service.chat;
 import com.ai.konwledgerepo.common.GenerationCancelledException;
 import com.ai.konwledgerepo.common.SseStreamContext;
 import com.ai.konwledgerepo.entity.ChatSession;
+import com.ai.konwledgerepo.service.agent.AgentService;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -51,7 +52,8 @@ class ChatStreamServiceTest {
         ChatSessionService sessionService = mock(ChatSessionService.class);
         ChatMessageStore messageStore = mock(ChatMessageStore.class);
         ChatSummaryService summaryService = mock(ChatSummaryService.class);
-        ChatStreamService streamService = new ChatStreamService(executionService, sessionService, messageStore, summaryService);
+        ChatStreamService streamService = new ChatStreamService(executionService, sessionService, messageStore,
+                summaryService, mock(AgentService.class));
         ChatSession session = new ChatSession();
         when(sessionService.getSession(1L, 1L, 7L)).thenReturn(session);
         when(executionService.execute(eq(1L), eq(1L), eq("问题"), eq(7L), any()))
@@ -73,7 +75,8 @@ class ChatStreamServiceTest {
         ChatSessionService sessionService = mock(ChatSessionService.class);
         ChatMessageStore messageStore = mock(ChatMessageStore.class);
         ChatSummaryService summaryService = mock(ChatSummaryService.class);
-        ChatStreamService streamService = new ChatStreamService(executionService, sessionService, messageStore, summaryService);
+        ChatStreamService streamService = new ChatStreamService(executionService, sessionService, messageStore,
+                summaryService, mock(AgentService.class));
         ChatSession session = new ChatSession();
         when(sessionService.getSession(1L, 1L, 7L)).thenReturn(session);
         when(executionService.execute(eq(1L), eq(1L), eq("问题"), eq(7L), any()))

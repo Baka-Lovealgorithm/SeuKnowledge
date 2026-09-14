@@ -39,13 +39,13 @@ class RetryOrFallbackNodeTest {
         objectMapper = new ObjectMapper();
         // 默认节点关闭部分回答（partialAnswer=false），既有低分用例仍走拒答
         node = new RetryOrFallbackNode(qaTracing, objectMapper,
-                new SeuQaProperties(20, 2, 32, 30, false, false, false, 0.4, false, 60, 200));
+                new SeuQaProperties(20, 3, 3, 2, 32, 30, false, false, false, 0.4, false, 60, 200));
     }
 
     /** 开启 partialAnswer 的节点（模拟灰度开关打开） */
     private RetryOrFallbackNode partialNode() {
         return new RetryOrFallbackNode(qaTracing, objectMapper,
-                new SeuQaProperties(20, 2, 32, 30, false, false, true, 0.4, false, 60, 200));
+                new SeuQaProperties(20, 3, 3, 2, 32, 30, false, false, true, 0.4, false, 60, 200));
     }
 
     private ChunkEvidence ev() {
@@ -120,7 +120,7 @@ class RetryOrFallbackNodeTest {
 
     @Test
     void agentThresholdOverride_applied() throws Exception {
-        AgentConfig agent = new AgentConfig("测试Agent", "系统提示", 0.5, 3, 5);
+        AgentConfig agent = new AgentConfig("测试Agent", "系统提示", 0.5, 3, 3, 3);
         Map<String, Object> data = new HashMap<>();
         data.put(QaContextKey.CHUNKS, List.of(ev()));
         data.put(QaContextKey.VERIFY_SCORE, 0.5);
@@ -135,7 +135,7 @@ class RetryOrFallbackNodeTest {
 
     @Test
     void agentThreshold_lowScore_retryExhausted_refuses() throws Exception {
-        AgentConfig agent = new AgentConfig("测试Agent", "系统提示", 0.8, 1, 5);
+        AgentConfig agent = new AgentConfig("测试Agent", "系统提示", 0.8, 1, 3, 3);
         Map<String, Object> data = new HashMap<>();
         data.put(QaContextKey.CHUNKS, List.of(ev()));
         data.put(QaContextKey.VERIFY_SCORE, 0.5);

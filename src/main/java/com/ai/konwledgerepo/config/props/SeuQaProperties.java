@@ -9,6 +9,8 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 @ConfigurationProperties(prefix = "seuknowledge.qa")
 public record SeuQaProperties(
         @DefaultValue("20") int messageWindow,
+        @DefaultValue("3") int recentRounds,
+        @DefaultValue("3") int summaryIntervalRounds,
         @DefaultValue("2") int maxRetry,
         @DefaultValue("32") int concurrencyLimit,
         @DefaultValue("30") int concurrencyTimeoutSeconds,

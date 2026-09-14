@@ -107,7 +107,7 @@ public class MergeAnswerNode extends QaNodeSupport {
     private String generateChitchatReply(OverAllState state, ChatModel chat, List<String> fragments) {
         String question = String.join("\n", fragments);
         List<HistoryEntry> history = QaContext.history(state);
-        String recentJson = QaContext.renderRecentJson(history, 3);
+        String recentJson = QaContext.renderRecentJson(history, QaContext.recentRounds(state));
         if (recentJson.isBlank() || "[]".equals(recentJson)) {
             recentJson = "（无）";
         }

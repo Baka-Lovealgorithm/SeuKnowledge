@@ -30,6 +30,9 @@ public final class QaContext {
     }
 
     /** 读取 Agent 配置快照；未注入时返回 null，节点自行回退默认行为 */
+    /** 近窗轮数缺省值：Agent 缺失或值非法时兜底（与 seuknowledge.qa.recent-rounds 默认一致） */
+    private static final int DEFAULT_RECENT_ROUNDS = 3;
+
     public static AgentConfig agent(OverAllState state) {
         Object value = state.value(QaContextKey.AGENT).orElse(null);
         return value instanceof AgentConfig ac ? ac : null;
@@ -166,6 +169,15 @@ public final class QaContext {
             return "";
         }
         return "Agent 设定：" + agent.systemPrompt() + "\n";
+    }
+
+    /**
+     * 近窗轮数：注入 prompt 的最近对话原文轮数，取自 Agent 配置（缺省 3）。
+     * 注意取数口径固定为全局 message-window，本值只决定节点侧用 {@link #renderRecentJson} 截到几轮。
+     */
+    public static int recentRounds(OverAllState state) {
+        AgentConfig agent = agent(state);
+        return agent == null || agent.recentRounds() <= 0 ? DEFAULT_RECENT_ROUNDS : agent.recentRounds();
     }
 
     /**

@@ -6,6 +6,7 @@ import com.ai.konwledgerepo.common.SseStreamContext;
 import com.ai.konwledgerepo.common.SseStreamContext.SseFlow;
 import com.ai.konwledgerepo.common.Texts;
 import com.ai.konwledgerepo.entity.ChatSession;
+import com.ai.konwledgerepo.service.agent.AgentService;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -24,6 +25,7 @@ public class ChatStreamService {
     private final ChatSessionService sessionService;
     private final ChatMessageStore messageStore;
     private final ChatSummaryService summaryService;
+    private final AgentService agentService;
 
     /** 活动中的流式任务（sessionId → SseFlow），供取消端点查找 */
     private final ConcurrentHashMap<Long, SseFlow> activeFlows = new ConcurrentHashMap<>();
@@ -31,11 +33,13 @@ public class ChatStreamService {
     public ChatStreamService(QaExecutionService executionService,
                              ChatSessionService sessionService,
                              ChatMessageStore messageStore,
-                             ChatSummaryService summaryService) {
+                             ChatSummaryService summaryService,
+                             AgentService agentService) {
         this.executionService = executionService;
         this.sessionService = sessionService;
         this.messageStore = messageStore;
         this.summaryService = summaryService;
+        this.agentService = agentService;
     }
 
     /**
@@ -60,7 +64,8 @@ public class ChatStreamService {
                         ? messageStore.persistInterruptedQuestion(session, userId, question, workspaceId)
                         : messageStore.persistInterruptedAnswer(session, userId, question, partial, workspaceId);
                 answerMessageId = persisted.assistantMessageId();
-                summaryService.maybeUpdate(sessionId, workspaceId, persisted.messageCount());
+                summaryService.maybeUpdate(sessionId, workspaceId, persisted.messageCount(),
+                        agentService.effectiveSummaryIntervalRounds(session.getKbId()));
             } catch (Exception ex) {
                 // 落库失败不影响停止语义
             }

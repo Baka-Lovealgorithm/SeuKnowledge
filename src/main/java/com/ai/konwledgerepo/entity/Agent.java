@@ -35,9 +35,13 @@ public class Agent extends BaseEntity {
     @Column(name = "max_retry")
     private Integer maxRetry = 2;
 
-    /** 记忆策略：对话记忆窗口条数 */
-    @Column(name = "memory_window")
-    private Integer memoryWindow = 20;
+    /** 记忆策略：注入原文的最近对话轮数（1~10，上限由全局 qa.message-window/2 决定） */
+    @Column(name = "recent_rounds")
+    private Integer recentRounds = 3;
+
+    /** 记忆策略：滚动摘要的压缩间隔轮数（须 ≤ recentRounds，否则两次压缩之间的消息会漏出近窗造成空洞） */
+    @Column(name = "summary_interval_rounds")
+    private Integer summaryIntervalRounds = 3;
 
     @Column(name = "created_by")
     private Long createdBy;
@@ -90,12 +94,20 @@ public class Agent extends BaseEntity {
         this.maxRetry = maxRetry;
     }
 
-    public Integer getMemoryWindow() {
-        return memoryWindow;
+    public Integer getRecentRounds() {
+        return recentRounds;
     }
 
-    public void setMemoryWindow(Integer memoryWindow) {
-        this.memoryWindow = memoryWindow;
+    public void setRecentRounds(Integer recentRounds) {
+        this.recentRounds = recentRounds;
+    }
+
+    public Integer getSummaryIntervalRounds() {
+        return summaryIntervalRounds;
+    }
+
+    public void setSummaryIntervalRounds(Integer summaryIntervalRounds) {
+        this.summaryIntervalRounds = summaryIntervalRounds;
     }
 
     public Long getCreatedBy() {

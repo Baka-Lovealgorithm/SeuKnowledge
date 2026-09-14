@@ -170,7 +170,7 @@ docker compose up -d --build backend frontend
 |---|---|
 | `KB_ES_DIMENSIONS` 或向量模型维度 | 新建或重建 `kb_chunk` 索引，再重新向量化全部来源 |
 | ES 分词器、插件或版本 | 构建匹配的 ES 镜像并重新建立索引 |
-| MySQL 表或字段变更 | 上线前使用版本化迁移，长期不能依赖 `ddl-auto=update`。存储后端改造对应 `sql/migrate_v4_minio_storage.sql`（`kb_document` 加 `storage_type` / `object_key`，可空、不回填） |
+| MySQL 表或字段变更 | 上线前使用版本化迁移，长期不能依赖 `ddl-auto=update`。存储后端改造对应 `sql/migrate_v4_minio_storage.sql`（`kb_document` 加 `storage_type` / `object_key`，可空、不回填）；记忆策略改造对应 `sql/migrate_v5_agent_memory_policy.sql`（`kb_agent` 加 `recent_rounds` / `summary_interval_rounds`，可空、不回填，NULL 按默认 3/3 生效；遗留列 `memory_window` 保留不删） |
 | 上传文件存储路径 / 存储后端 | `KB_STORAGE_TYPE=local` 时变更前复制 `runtime/data/files`；切换到 `minio` 前先确认 MinIO 数据卷已纳入备份。既有文件不必搬迁——读取按 `kb_document.storage_type` 逐行路由，存量行继续走原路径 |
 | API 或前端路由变更 | 后端与前端必须作为同一测试版本发布 |
 

@@ -41,21 +41,18 @@ public class ChatHistoryService {
         this.historyTtl = Duration.ofSeconds(cacheProps.historyTtlSeconds());
     }
 
-    /** 会话记忆读取：Redis 缓存优先（请求窗口不超过缓存容量 messageWindow 时），miss 回源 DB 回填。
+    /** 会话记忆读取：Redis 缓存优先，miss 回源 DB 回填。
+     * 取数上限固定为全局 messageWindow（不可调节项，对用户不可见）；
+     * 实际注入 prompt 的轮数由 Agent 的 recentRounds 在节点侧用 renderRecentJson 截断。
      * 返回值已过滤被中断的 assistant 消息（保留其前面的 user 问题）。 */
-    public List<HistoryEntry> cachedHistory(Long sessionId, int window) {
-        int safeWindow = window <= 0 ? messageWindow : window;
+    public List<HistoryEntry> cachedHistory(Long sessionId) {
         Optional<List<HistoryEntry>> cached = redisCacheService.get(RedisKeys.history(sessionId),
                 new TypeReference<List<HistoryEntry>>() {
                 });
-        if (cached.isPresent() && safeWindow <= messageWindow) {
-            List<HistoryEntry> entries = filterInterrupted(cached.get());
-            if (entries.size() > safeWindow) {
-                return new ArrayList<>(entries.subList(entries.size() - safeWindow, entries.size()));
-            }
-            return entries;
+        if (cached.isPresent()) {
+            return filterInterrupted(cached.get());
         }
-        List<HistoryEntry> entries = loadHistoryFromDb(sessionId, safeWindow);
+        List<HistoryEntry> entries = loadHistoryFromDb(sessionId, messageWindow);
         redisCacheService.set(RedisKeys.history(sessionId), entries, historyTtl);
         return entries;
     }

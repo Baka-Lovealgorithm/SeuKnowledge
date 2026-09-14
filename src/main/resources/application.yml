@@ -126,7 +126,9 @@ seuknowledge:
       bucket: ${KB_MINIO_BUCKET:seu-knowledge}
       auto-create-bucket: ${KB_MINIO_AUTO_CREATE_BUCKET:true}   # 启动自检时 bucket 不存在则自动创建（不启用版本控制）
   qa:
-    message-window: ${KB_QA_MESSAGE_WINDOW:20}   # 对话记忆窗口条数
+    message-window: ${KB_QA_MESSAGE_WINDOW:20}   # 对话记忆取数上限（条）；不可调节项、对用户不可见，Agent 近窗轮数上限 = 此值/2
+    recent-rounds: ${KB_QA_RECENT_ROUNDS:3}      # 近窗轮数兜底默认（Agent 未配置时生效）；实际值在 Agent 配置页按知识库调整
+    summary-interval-rounds: ${KB_QA_SUMMARY_INTERVAL_ROUNDS:3}  # 摘要压缩间隔轮数兜底默认；须 ≤ 近窗轮数，否则会丢上下文
     max-retry: ${KB_QA_MAX_RETRY:2}              # 自检重试上限
     concurrency-limit: ${KB_CONCURRENCY_LIMIT:32}           # QA 链路全局并发上限（公平信号量，超限排队等待或超时）
     concurrency-timeout-seconds: ${KB_CONCURRENCY_TIMEOUT:30} # 信号量等待超时秒数（超时拒答"系统繁忙"）

@@ -37,8 +37,11 @@
       <el-form-item label="重试上限">
         <el-input-number v-model="agentForm.maxRetry" :min="0" :max="5" :disabled="!selectedKb" /> <span class="tip">自检不通过时的重试次数</span>
       </el-form-item>
-      <el-form-item label="记忆窗口">
-        <el-input-number v-model="agentForm.memoryWindow" :min="1" :max="100" :disabled="!selectedKb" /> <span class="tip">带入上下文的历史消息条数</span>
+      <el-form-item label="最近对话轮数">
+        <el-input-number v-model="agentForm.recentRounds" :min="1" :max="maxRecentRounds" :disabled="!selectedKb" @change="onRecentRoundsChange" /> <span class="tip">注入原文的最近对话轮数（1~{{ maxRecentRounds }}）：越大上下文越全，token 成本越高</span>
+      </el-form-item>
+      <el-form-item label="压缩间隔轮数">
+        <el-input-number v-model="agentForm.summaryIntervalRounds" :min="1" :max="agentForm.recentRounds" :disabled="!selectedKb" /> <span class="tip">每多少轮把更早的对话压缩为摘要（须 ≤ 最近对话轮数，否则中间的对话会丢失）</span>
       </el-form-item>
       <el-form-item>
         <el-button type="primary" :loading="agentSaving" :disabled="!selectedKb" @click="saveAgent">保存配置</el-button>
@@ -56,9 +59,11 @@ const kbs = ref([])
 const selectedKb = ref(null)
 const agentLoading = ref(false)
 const agentSaving = ref(false)
+// 近窗轮数上限 = 全局 qa.message-window / 2（默认 20 条 → 10 轮）；后端 AgentService 会再校验一次
+const maxRecentRounds = 10
 const agentForm = reactive({
   name: '', description: '', systemPrompt: '',
-  verifyThreshold: 0.7, maxRetry: 2, memoryWindow: 20
+  verifyThreshold: 0.7, maxRetry: 2, recentRounds: 3, summaryIntervalRounds: 3
 })
 
 async function loadKbs() {
@@ -78,14 +83,27 @@ async function loadAgent() {
       systemPrompt: data.systemPrompt || '',
       verifyThreshold: data.verifyThreshold ?? 0.7,
       maxRetry: data.maxRetry ?? 2,
-      memoryWindow: data.memoryWindow ?? 20
+      recentRounds: data.recentRounds ?? 3,
+      summaryIntervalRounds: data.summaryIntervalRounds ?? 3
     })
   } finally {
     agentLoading.value = false
   }
 }
 
+/** 近窗轮数下调时同步收紧压缩间隔上限（间隔 > 近窗会让两次压缩之间的对话丢失） */
+function onRecentRoundsChange(v) {
+  if (agentForm.summaryIntervalRounds > v) {
+    agentForm.summaryIntervalRounds = v
+  }
+}
+
 async function saveAgent() {
+  // 防空洞：后端 AgentService.validateMemoryPolicy 是权威校验，这里先给即时反馈
+  if (agentForm.summaryIntervalRounds > agentForm.recentRounds) {
+    ElMessage.warning('压缩间隔轮数不能大于最近对话轮数，否则两次压缩之间的对话会丢失')
+    return
+  }
   agentSaving.value = true
   try {
     await agentApi.update(selectedKb.value, {
@@ -94,7 +112,8 @@ async function saveAgent() {
       systemPrompt: agentForm.systemPrompt,
       verifyThreshold: agentForm.verifyThreshold,
       maxRetry: agentForm.maxRetry,
-      memoryWindow: agentForm.memoryWindow
+      recentRounds: agentForm.recentRounds,
+      summaryIntervalRounds: agentForm.summaryIntervalRounds
     })
     ElMessage.success('Agent 配置已保存，后续问答立即生效')
   } finally {

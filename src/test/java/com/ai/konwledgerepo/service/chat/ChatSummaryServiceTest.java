@@ -81,7 +81,7 @@ class ChatSummaryServiceTest {
         stubHistory(6);
         when(messageStore.persistSummary(1L, "新摘要内容", 6)).thenReturn(1);
 
-        service.maybeUpdate(1L, 1L, 6);
+        service.maybeUpdate(1L, 1L, 6, 3);
 
         ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
         verify(chat).call(captor.capture());
@@ -115,7 +115,7 @@ class ChatSummaryServiceTest {
         stubHistory(10);
         when(messageStore.persistSummary(1L, "新摘要内容", 26)).thenReturn(1);
 
-        service.maybeUpdate(1L, 1L, 26);
+        service.maybeUpdate(1L, 1L, 26, 3);
 
         verify(historyService).loadRecentFromDb(1L, 10);
         verify(redis).setIfAbsent(eq(RedisKeys.summaryGen(1L)), eq("1"), any());
@@ -131,7 +131,7 @@ class ChatSummaryServiceTest {
         stubHistory(6);
         when(messageStore.persistSummary(1L, "新摘要内容", 6)).thenReturn(1);
 
-        service.maybeUpdate(1L, 1L, 6);
+        service.maybeUpdate(1L, 1L, 6, 3);
 
         verify(historyService).loadRecentFromDb(1L, 6);
         verify(messageStore).persistSummary(1L, "新摘要内容", 6);
@@ -146,7 +146,7 @@ class ChatSummaryServiceTest {
         stubHistory(64);
         when(messageStore.persistSummary(1L, "新摘要内容", 100)).thenReturn(1);
 
-        service.maybeUpdate(1L, 1L, 100);
+        service.maybeUpdate(1L, 1L, 100, 3);
 
         verify(historyService).loadRecentFromDb(1L, 64);
         verify(messageStore).persistSummary(1L, "新摘要内容", 100);
@@ -155,7 +155,7 @@ class ChatSummaryServiceTest {
     @Test
     void maybeUpdate_deltaInsufficient_skips() {
         stubPrevRecord(new ChatSummaryService.SummaryRecord("旧摘要", 20));
-        service.maybeUpdate(1L, 1L, 25);
+        service.maybeUpdate(1L, 1L, 25, 3);
         verify(redis, never()).setIfAbsent(anyString(), anyString(), any());
         verify(historyService, never()).loadRecentFromDb(anyLong(), anyInt());
     }
@@ -164,7 +164,7 @@ class ChatSummaryServiceTest {
     @Test
     void maybeUpdate_negativeDelta_skips() {
         stubPrevRecord(new ChatSummaryService.SummaryRecord("旧摘要", 20));
-        service.maybeUpdate(1L, 1L, 8);
+        service.maybeUpdate(1L, 1L, 8, 3);
         verify(redis, never()).setIfAbsent(anyString(), anyString(), any());
         verify(historyService, never()).loadRecentFromDb(anyLong(), anyInt());
     }
@@ -173,7 +173,7 @@ class ChatSummaryServiceTest {
     void maybeUpdate_lockBusy_skips() {
         stubPrevRecord(ChatSummaryService.SummaryRecord.EMPTY);
         when(redis.setIfAbsent(anyString(), anyString(), any())).thenReturn(false);
-        service.maybeUpdate(1L, 1L, 6);
+        service.maybeUpdate(1L, 1L, 6, 3);
         verify(redis).setIfAbsent(eq(RedisKeys.summaryGen(1L)), eq("1"), any());
         verify(historyService, never()).loadRecentFromDb(anyLong(), anyInt());
         verify(messageStore, never()).persistSummary(anyLong(), anyString(), anyInt());
@@ -186,7 +186,7 @@ class ChatSummaryServiceTest {
         when(redis.setIfAbsent(anyString(), anyString(), any())).thenReturn(true);
         when(historyService.loadRecentFromDb(1L, 6)).thenReturn(List.of());
 
-        service.maybeUpdate(1L, 1L, 6);
+        service.maybeUpdate(1L, 1L, 6, 3);
 
         // 无有效历史：不落库不写缓存（避免空输入产生垃圾摘要），快照不推进
         verify(messageStore, never()).persistSummary(anyLong(), anyString(), anyInt());
@@ -201,9 +201,18 @@ class ChatSummaryServiceTest {
         stubHistory(6);
         when(messageStore.persistSummary(1L, "新摘要内容", 6)).thenReturn(0);
 
-        service.maybeUpdate(1L, 1L, 6);
+        service.maybeUpdate(1L, 1L, 6, 3);
 
         verify(redis, never()).set(eq(RedisKeys.summary(1L)), any(), any());
+    }
+
+    /** 压缩间隔轮数 → 消息条数换算（每轮 user + assistant = 2 条；非法值下限 1 轮） */
+    @Test
+    void intervalMessages_convertsRoundsToMessageCount() {
+        assertEquals(6, ChatSummaryService.intervalMessages(3), "默认 3 轮 = 6 条");
+        assertEquals(2, ChatSummaryService.intervalMessages(1));
+        assertEquals(2, ChatSummaryService.intervalMessages(0), "非法值兜底 1 轮");
+        assertEquals(20, ChatSummaryService.intervalMessages(10));
     }
 
     @Test

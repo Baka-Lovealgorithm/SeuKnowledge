@@ -48,8 +48,6 @@ public class IntentRouteNode extends QaNodeSupport {
 
     private static final Logger log = LoggerFactory.getLogger(IntentRouteNode.class);
     private static final int ROUTER_MAX_ATTEMPTS = 2;
-    /** 路由参考的最近对话轮数（与改写节点一致取 3，配合会话摘要覆盖更早的指代消歧） */
-    private static final int ROUTER_RECENT_ROUNDS = 3;
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     /**
@@ -88,7 +86,7 @@ public class IntentRouteNode extends QaNodeSupport {
         ChatModel chat = modelFactory.getChatModelByUsage(ModelUsage.ROUTER.value(), workspaceId);
         ModelConfig cfg = modelFactory.resolveChatConfig(ModelUsage.ROUTER.value(), workspaceId);
         List<HistoryEntry> history = QaContext.history(state);
-        String recentJson = QaContext.renderRecentJson(history, ROUTER_RECENT_ROUNDS);
+        String recentJson = QaContext.renderRecentJson(history, QaContext.recentRounds(state));
         if (recentJson.isBlank() || "[]".equals(recentJson)) {
             recentJson = "（无）";
         }

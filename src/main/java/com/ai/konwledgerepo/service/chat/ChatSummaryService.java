@@ -29,15 +29,20 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 
 /**
- * 会话滚动摘要服务：旁路异步维护，每新增 6 条消息（=3 轮问答）压缩一次，失败不影响主链路。
+ * 会话滚动摘要服务：旁路异步维护，每新增若干条消息（按 Agent 的压缩间隔轮数换算，默认 3 轮 = 6 条）压缩一次，
+ * 失败不影响主链路。
  * <p>
  * 持久化：DB 为事实源——{@code chat_session.memory_summary}（摘要文本）+ {@code summary_msg_count}
  * （生成时的消息总数快照，兼作触发增量的单调基准）；Redis {@code summary:v2:{sessionId}} 为读缓存，
  * miss 回源 DB 并尽力回填。摘要随会话存亡，不再因缓存过期而丢失长期记忆。
  * <p>
  * 触发基准：会话消息总数（{@code persistAnswer}/{@code persistInterruptedAnswer} 返回值，单调递增），
- * 而非封顶的历史缓存长度——长会话不会因缓存封顶而停止更新；间隔与路由/闲聊节点的最近 3 轮窗口对齐，
- * 摘要覆盖点与近窗起点之间无空洞。
+ * 而非封顶的历史缓存长度——长会话不会因缓存封顶而停止更新。
+ * <p>
+ * <b>与近窗轮数的不变式</b>：压缩间隔轮数由 Agent 配置（{@code summaryIntervalRounds}）且必须 ≤ 近窗轮数
+ * （{@code recentRounds}，由 {@code AgentService.validateMemoryPolicy} 拦截）——两次压缩之间最多积压
+ * 「间隔条数 − 1」条消息，必须全部落在近窗范围内，否则这些消息既不入摘要也不入近窗（空洞丢上下文）。
+ * 默认两者均为 3 轮（6 条）：5 < 6，恰好边界对齐。
  * <p>
  * 取数（增量+重叠）：锚点是摘要快照——每次只喂「上次未压缩的增量 + 快照前 2 轮重叠原文 + 旧摘要」，
  * 不再重复喂已摘要内容；少量重叠原文供提示词"冲突以最近对话为准"规则自我纠错（修正上次压缩损耗）。
@@ -55,8 +60,8 @@ public class ChatSummaryService {
 
     private static final Logger log = LoggerFactory.getLogger(ChatSummaryService.class);
     private static final Duration GEN_TTL = Duration.ofSeconds(120);
-    /** 触发间隔：每新增 6 条消息（=3 轮问答）压缩一次，与近窗 3 轮对齐（触发前最大增量 5 < 近窗 6，覆盖无空洞） */
-    private static final int TRIGGER_INTERVAL = 6;
+    /** 每轮问答折算的消息条数（user + assistant）；压缩间隔按「轮」配置，此处换算为条数 */
+    private static final int MESSAGES_PER_ROUND = 2;
     /** 增量外保留的重叠条数（快照前 2 轮原文）：为"冲突以最近对话为准"规则提供纠错原料，修正上次压缩损耗 */
     private static final int OVERLAP_MESSAGES = 4;
     /** 单次压缩的最大增量条数（原始消息口径）：摘要长时间失败恢复时防单次输入过大，超出部分截断并告警 */
@@ -126,15 +131,20 @@ public class ChatSummaryService {
                 session.getSummaryMsgCount() == null ? 0 : session.getSummaryMsgCount());
     }
 
+    /** 压缩间隔轮数 → 消息条数（下限 1 轮，防非法配置导致每条消息都触发摘要） */
+    static int intervalMessages(int intervalRounds) {
+        return Math.max(1, intervalRounds) * MESSAGES_PER_ROUND;
+    }
+
     /**
      * 消息落库后触发：以会话消息总数（单调递增）对上次摘要快照的增量判定，达
-     * {@link #TRIGGER_INTERVAL} 条时异步压缩。防重锁（SETNX）保证同一会话不并发生成；
+     * {@code intervalRounds} 轮（换算为条数）时异步压缩。防重锁（SETNX）保证同一会话不并发生成；
      * 失败不推进快照，下条消息自愈重试。
      */
-    public void maybeUpdate(Long sessionId, Long workspaceId, int messageCount) {
+    public void maybeUpdate(Long sessionId, Long workspaceId, int messageCount, int intervalRounds) {
         Optional<SummaryRecord> prev = readSummary(sessionId);
         int lastCount = prev.map(SummaryRecord::lastMessageCount).orElse(0);
-        if (messageCount - lastCount < TRIGGER_INTERVAL) {
+        if (messageCount - lastCount < intervalMessages(intervalRounds)) {
             return;
         }
         Boolean ok = redisCacheService.setIfAbsent(RedisKeys.summaryGen(sessionId), "1", GEN_TTL);

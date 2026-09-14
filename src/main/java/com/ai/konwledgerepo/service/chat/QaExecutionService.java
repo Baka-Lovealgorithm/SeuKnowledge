@@ -42,8 +42,6 @@ public class QaExecutionService {
     private final TaskLock taskLock;
     private final WorkspaceAccess workspaceAccess;
     private final Duration lockTtl;
-    private final int maxRetry;
-    private final int messageWindow;
 
     public QaExecutionService(ChatSessionService sessionService,
                               ChatHistoryService historyService,
@@ -67,8 +65,6 @@ public class QaExecutionService {
         this.taskLock = taskLock;
         this.workspaceAccess = workspaceAccess;
         this.lockTtl = Duration.ofSeconds(Math.max(60, qaProps.qaTimeoutSeconds() + 60));
-        this.maxRetry = qaProps.maxRetry();
-        this.messageWindow = qaProps.messageWindow();
     }
 
     /**
@@ -92,8 +88,9 @@ public class QaExecutionService {
                 throw new BizException("知识库已停用，无法问答");
             }
 
-            AgentConfig agent = agentService.toAgentConfig(kb.getId(), kb.getName(), maxRetry, messageWindow);
-            List<HistoryEntry> history = historyService.cachedHistory(sessionId, agent.memoryWindow());
+            AgentConfig agent = agentService.toAgentConfig(kb.getId(), kb.getName());
+            // 取数上限=全局 message-window（不可调节项）；实际注入轮数由 agent.recentRounds 在节点侧截断
+            List<HistoryEntry> history = historyService.cachedHistory(sessionId);
             String memorySummary = summaryService.readSummary(sessionId)
                     .map(ChatSummaryService.SummaryRecord::text).orElse("");
             QaContext.QaInput input = new QaContext.QaInput(
@@ -127,7 +124,8 @@ public class QaExecutionService {
 
             ChatMessageStore.PersistedAnswer persisted = messageStore.persistAnswer(session, userId, question,
                     answer, refs, workspaceId, snapshotQuality(result));
-            summaryService.maybeUpdate(sessionId, workspaceId, persisted.messageCount());
+            summaryService.maybeUpdate(sessionId, workspaceId, persisted.messageCount(),
+                    agent.summaryIntervalRounds());
 
             return new QaAskResult(answer, refs, intent, persisted.assistantMessageId());
         } finally {

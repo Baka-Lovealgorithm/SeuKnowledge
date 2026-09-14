@@ -7,5 +7,5 @@ package com.ai.konwledgerepo.graph;
  * 不在此快照内。
  */
 public record AgentConfig(String name, String systemPrompt, double verifyThreshold,
-                          int maxRetry, int memoryWindow) {
+                          int maxRetry, int recentRounds, int summaryIntervalRounds) {
 }
