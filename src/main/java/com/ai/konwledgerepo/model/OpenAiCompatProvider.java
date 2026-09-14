@@ -62,7 +62,8 @@ public class OpenAiCompatProvider implements ModelProvider {
      * OpenAI 兼容 baseUrl 归一化：Spring AI 会在 baseUrl 之后追加 /v1/chat/completions（或 /v1/embeddings），
      * 若用户填了带 /v1 的地址会拼成 /v1/v1/... 导致 404「接口不存在」。这里剥离末尾的 /v1（连同尾部斜杠），
      * 使「https://host」「https://host/v1」「https://host/v1/」三种写法都解析到同一正确端点。
-     * 注意：仅 Chat/Embedding 适用；RERANK 协议是 baseUrl + /rerank，其 /v1 是必需的，不走此归一化。
+     * 注意：仅 Chat/Embedding 适用；RERANK 由 RerankClient 自行拼端点（口径同样是不带 /v1，
+     * 由 endpointOf 补 /v1/rerank），不经过此处。
      */
     static String normalizeBaseUrl(String baseUrl) {
         if (baseUrl == null || baseUrl.isBlank()) {

@@ -62,6 +62,34 @@ class RerankClientTest {
         assertFalse(RerankClient.testConnection(cfg("DASHSCOPE", null, ""), PROPS, MAPPER));
     }
 
+    // ===== 端点拼接（统一口径：baseUrl 一律不带 /v1） =====
+
+    @Test
+    void endpointOf_openAiCompat_withoutV1_appendsV1Rerank() {
+        assertEquals("https://api.siliconflow.cn/v1/rerank",
+                RerankClient.endpointOf("OPENAI_COMPAT", "https://api.siliconflow.cn"));
+    }
+
+    @Test
+    void endpointOf_openAiCompat_existingV1_notDuplicated() {
+        assertEquals("https://api.siliconflow.cn/v1/rerank",
+                RerankClient.endpointOf("OPENAI_COMPAT", "https://api.siliconflow.cn/v1"));
+        assertEquals("https://api.siliconflow.cn/v1/rerank",
+                RerankClient.endpointOf("OPENAI_COMPAT", "https://api.siliconflow.cn/v1/"));
+    }
+
+    @Test
+    void endpointOf_openAiCompat_fullEndpoint_keptAsIs() {
+        assertEquals("https://api.siliconflow.cn/v1/rerank",
+                RerankClient.endpointOf("OPENAI_COMPAT", "https://api.siliconflow.cn/v1/rerank"));
+    }
+
+    @Test
+    void endpointOf_dashscope_baseUrlIsFullEndpoint() {
+        assertEquals(RerankClient.DASHSCOPE_DEFAULT_BASE_URL,
+                RerankClient.endpointOf("DASHSCOPE", RerankClient.DASHSCOPE_DEFAULT_BASE_URL));
+    }
+
     // ===== 请求体协议 =====
 
     @Test

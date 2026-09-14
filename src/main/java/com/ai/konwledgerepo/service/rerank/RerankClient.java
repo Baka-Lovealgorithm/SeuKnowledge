@@ -25,7 +25,7 @@ import java.util.List;
  * 输入 query + documents 列表，返回与输入顺序一致的 relevance_score（0~1，越高越相关）。
  * <ul>
  *   <li>供应商 DASHSCOPE：官方 text-rerank REST——POST {baseUrl}，body {model, input:{query, documents[]}, parameters:{top_n, return_documents}}，响应 output.results[{index, relevance_score}]；baseUrl 留空用官方默认端点</li>
- *   <li>供应商 OPENAI_COMPAT：Cohere/Jina 风格——POST {baseUrl}/rerank（baseUrl 如 https://api.siliconflow.cn/v1），body {model, query, documents[], top_n, return_documents}（顶层字段）；响应解析宽松适配 data / results / output.results 三种结构，分数字段兼容 relevance_score 与 score</li>
+ *   <li>供应商 OPENAI_COMPAT：Cohere/Jina 风格——POST {baseUrl}/v1/rerank（baseUrl 不带 /v1，如 https://api.siliconflow.cn；已带 /v1 或完整 /v1/rerank 的存量写法亦兼容），body {model, query, documents[], top_n, return_documents}（顶层字段）；响应解析宽松适配 data / results / output.results 三种结构，分数字段兼容 relevance_score 与 score</li>
  *   <li>响应按原始字节 UTF-8 解码（无 charset 头时 StringHttpMessageConverter 默认 ISO-8859-1 会导致中文乱码）</li>
  *   <li>top_n 需覆盖全部文档才返回全量分数；单次输入按 max-docs × max-chars-per-doc 控制（默认 20×1500 字符）</li>
  * </ul>
@@ -62,7 +62,7 @@ public class RerankClient implements EvidenceReranker {
         factory.setConnectTimeout((int) this.timeoutMs);
         factory.setReadTimeout((int) this.timeoutMs);
         this.restClient = RestClient.builder()
-                .baseUrl(endpoint())
+                .baseUrl(endpointOf(provider, baseUrl))
                 .requestFactory(factory)
                 .build();
     }
@@ -168,15 +168,23 @@ public class RerankClient implements EvidenceReranker {
         }
     }
 
-    /** 完整请求端点：DASHSCOPE 的 baseUrl 即完整端点；OPENAI_COMPAT 追加 /rerank（已带 /rerank 则不重复） */
-    private String endpoint() {
+    /**
+     * 完整请求端点（纯函数，供单测）：DASHSCOPE 的 baseUrl 即完整端点；
+     * OPENAI_COMPAT 归一为 {host}/v1/rerank——baseUrl **不带 /v1**（与 Chat/Embedding 口径统一），
+     * 并兼容存量三种写法：`https://host`、`https://host/v1`、`https://host/v1/rerank`（含尾部斜杠）。
+     */
+    static String endpointOf(String provider, String baseUrl) {
         if ("DASHSCOPE".equals(provider)) {
             return baseUrl;
         }
-        if (baseUrl.endsWith("/rerank")) {
-            return baseUrl;
+        String base = baseUrl == null ? "" : baseUrl.trim();
+        while (base.endsWith("/")) {
+            base = base.substring(0, base.length() - 1);
         }
-        return baseUrl.endsWith("/") ? baseUrl + "rerank" : baseUrl + "/rerank";
+        if (base.endsWith("/rerank")) {
+            return base;
+        }
+        return base.endsWith("/v1") ? base + "/rerank" : base + "/v1/rerank";
     }
 
     /**

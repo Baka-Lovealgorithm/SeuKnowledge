@@ -185,9 +185,10 @@ const namePlaceholder = computed(() => ({
   RERANK: '如 gte-rerank-v2'
 }[form.modelType] || ''))
 
+// 口径统一：baseUrl 一律不带 /v1，由系统按协议自动拼接（重排 /v1/rerank，其余 /v1/chat/completions）
 const baseUrlPlaceholder = computed(() => {
-  if (form.modelType === 'RERANK') return '如 https://api.siliconflow.cn/v1（需支持 /v1/rerank，/v1 必需）'
-  return '如 https://api.deepseek.com（不要带 /v1，系统自动拼接 /v1/chat/completions）'
+  if (form.modelType === 'RERANK') return '不要带 /v1，系统自动拼接 /v1/rerank'
+  return '不要带 /v1，系统自动拼接 /v1/chat/completions'
 })
 
 // 切换类型时把用途重算成目标类型的合法值：非文本类型锁唯一用途，文本类型回落「通用」
