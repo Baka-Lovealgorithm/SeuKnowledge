@@ -67,18 +67,31 @@ public interface ChatMessageRepository extends JpaRepository<ChatMessage, Long> 
      * 一次聚合出总览的全部标量指标（按空间 kbId 集合 + 时间窗过滤 ASSISTANT 回答）。
      * <p>
      * 列序即消费顺序，改动必须同步 {@code QaStatsService} 的取值下标：
-     * 0 回答数 / 1 点赞数 / 2 点踩数 / 3 中断数 / 4 无证据数 /
+     * 0 回答数 / 1 点赞数 / 2 点踩数 / 3 中断数 / 4 未召回证据数 /
      * 5 含自检快照数 / 6 自检分均值 / 7 事实一致性均值 / 8 被踩答案的自检分均值。
+     * <p>
+     * <b>第 4 列口径（2026-09-14 收敛）：只统计"业务提问一条证据都没召回"的答案</b>——
+     * {@code refs} 为空 <b>且</b> {@code verifyScore} 非空，两者缺一不可：
+     * <ul>
+     *   <li>业务链路必跑 ANSWER_VERIFY（无关闭自检的开关），且 {@code chunks} 为空时该节点短路写
+     *       {@code VERIFY_SCORE = 0.0}（非 null）→ 有快照 ⇒ 计入；</li>
+     *   <li>闲聊直答走 CHAT_ONLY、<b>不经过自检</b>；被中途停止的答案由 {@code persistInterruptedAnswer}
+     *       固定写 {@code refs="[]"}（无论当时是否已有证据）；存量行无快照 → 三者 {@code verifyScore}
+     *       均为 null ⇒ 排除。</li>
+     * </ul>
+     * 只判 {@code refs} 为空会把这三类一并算进来，把"未走检索的对话"误报成检索失败。
      * <p>
      * 均值与 {@code count(m.verifyScore)} 只统计非空行——存量数据与闲聊直答没有快照，
      * 把它们的 null 当 0 参与计算会把均值压成假低。
+     * 第 5 列同时是"未召回率"的分母（跑过业务链路的回答数），见 {@code QaStatsService#overview}。
      * 注意：调用方必须保证 {@code kbIds} 非空，JPQL 的 {@code in :kbIds} 遇到空集合会生成非法 SQL。
      */
     @Query("select count(m), "
             + "sum(case when m.feedback = 'UP' then 1 else 0 end), "
             + "sum(case when m.feedback = 'DOWN' then 1 else 0 end), "
             + "sum(case when m.interrupted = true then 1 else 0 end), "
-            + "sum(case when m.refs is null or m.refs = '[]' or m.refs = '' then 1 else 0 end), "
+            + "sum(case when (m.refs is null or m.refs = '[]' or m.refs = '') "
+            + "and m.verifyScore is not null then 1 else 0 end), "
             + "count(m.verifyScore), avg(m.verifyScore), avg(m.faithfulnessScore), "
             + "avg(case when m.feedback = 'DOWN' then m.verifyScore end) "
             + "from ChatMessage m, ChatSession s "

@@ -120,8 +120,8 @@ const cards = computed(() => {
     },
     {
       label: '无证据回答',
-      value: o ? pct(o.answerCount ? o.noEvidenceCount / o.answerCount : 0) : '—',
-      hint: o ? `${o.noEvidenceCount} 条未引用任何知识（多为拒答/闲聊）` : ''
+      value: o ? pct(o.noEvidenceRate) : '—',
+      hint: o ? `${o.noEvidenceCount} / ${o.snapshotCount} 条业务提问未召回任何证据（不含闲聊与中断）` : ''
     },
     {
       label: '被中途停止',

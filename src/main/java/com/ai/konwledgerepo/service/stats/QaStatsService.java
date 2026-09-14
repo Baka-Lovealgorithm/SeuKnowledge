@@ -27,9 +27,13 @@ import java.util.Map;
  * 因此入口只在 {@code QaStatsController} 上加 {@code @AdminOrAbove} 暴露给
  * 空间 OWNER/ADMIN，明细接口留一条 INFO 日志作访问痕迹。
  * <p>
- * 口径分两类，混用会得出误导性数字：
+ * 口径分三类，混用会得出误导性数字：
  * <ul>
- * <li><b>全量口径</b>（回答数/点赞点踩/无证据/中断）：对窗口内所有 ASSISTANT 行统计，含采集上线前的存量行；</li>
+ * <li><b>全量口径</b>（回答数/点赞点踩/中断）：对窗口内所有 ASSISTANT 行统计，含采集上线前的存量行；</li>
+ * <li><b>未召回口径</b>（{@code noEvidenceCount / noEvidenceRate}）：只统计跑过业务链路的回答
+ * （判据 {@code verify_score} 非空），分子是其中 refs 为空的。闲聊直答不跑自检、被中途停止的答案
+ * 固定写 {@code refs="[]"}、存量行无快照——三类都排除，否则会把"未走检索的对话"误报成检索失败。
+ * 分母同为业务链路回答数（{@code snapshotCount}），不是回答总数；</li>
  * <li><b>快照口径</b>（自检分、事实一致性、被踩答案自检分）：只统计 verify_score 非空的行，
  * 并同时返回 {@code snapshotCount} 自证分母——存量行与闲聊直答没有快照，
  * 把 null 当 0 参与均值会把分数压成假低。</li>
@@ -62,7 +66,10 @@ public class QaStatsService {
         int window = clampDays(days);
         Collection<Long> kbIds = visibleKbIds(workspaceId, userId);
         if (kbIds.isEmpty()) {
-            return new QaOverviewResponse(window, 0, 0, 0, 0.0, 0, 0, 0, List.of(), 0, null, null, null);
+            // 零值响应，参数顺序与 record 组件一一对应：
+            // days / 回答数 / 赞 / 踩 / 踩率 / 已评价 / 未召回数 / 未召回率 / 中断 / 原因分布 / 快照数
+            // / 自检均值 / 一致性均值 / 被踩自检均值
+            return new QaOverviewResponse(window, 0, 0, 0, 0.0, 0, 0, 0.0, 0, List.of(), 0, null, null, null);
         }
         LocalDateTime from = LocalDateTime.now().minusDays(window);
 
@@ -91,6 +98,9 @@ public class QaStatsService {
         }
         long rated = like + dislike;
         double rate = rated == 0 ? 0.0 : round((double) dislike / rated);
+        // 未召回率分母取「跑过业务链路的回答数」= 含自检快照的行数（snapshot），与 dislikeRate 一样
+        // 在服务端算好：answerCount 含闲聊/中断/存量行，用它会把这些"未走检索的对话"算进分母，把比率稀释成假低。
+        double noEvidenceRate = snapshot == 0 ? 0.0 : round((double) noEvidence / snapshot);
 
         List<QaOverviewResponse.ReasonCount> reasons = messageRepository
                 .aggregateDislikeReasons(kbIds, from).stream()
@@ -101,7 +111,8 @@ public class QaStatsService {
                 .toList();
 
         return new QaOverviewResponse(window, answerCount, like, dislike, rate, rated,
-                noEvidence, interrupted, reasons, snapshot, avgVerify, avgFaith, avgVerifyOfDisliked);
+                noEvidence, noEvidenceRate, interrupted, reasons, snapshot, avgVerify, avgFaith,
+                avgVerifyOfDisliked);
     }
 
     /**

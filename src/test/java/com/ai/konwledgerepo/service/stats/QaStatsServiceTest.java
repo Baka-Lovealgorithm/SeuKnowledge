@@ -38,6 +38,9 @@ import static org.mockito.Mockito.when;
  *   <li><b>自检均值只算含快照的行</b>，且样本为 0 时返回 null 而不是 0/NaN
  *       （NaN 会让 JSON 序列化直接失败，把整个接口打挂）；</li>
  *   <li><b>空间内无知识库时必须短路</b>：JPQL 的 {@code in :kbIds} 遇空集合生成非法 SQL；</li>
+ *   <li><b>未召回率的分母是「业务链路回答数」而不是「回答总数」</b>，且分子只认"跑了检索却零召回"
+ *       （判据 {@code refs} 为空 <b>且</b> {@code verify_score} 非空）——闲聊直答不跑自检、
+ *       被中途停止的答案固定写 {@code refs="[]"}，按"refs 为空"一刀切会把它们误报成检索失败；</li>
  *   <li><b>明细分页只发一次批量查询</b>取原问题，不退化成每行一次 N+1。</li>
  * </ul>
  */
@@ -63,7 +66,7 @@ class QaStatsServiceTest {
         return new KbResponse(KB_ID, "测试库", null, "ACTIVE", false, 0L, LocalDateTime.now(), "PUBLIC", USER_ID);
     }
 
-    /** 聚合列序：0 回答数 1 赞 2 踩 3 中断 4 无证据 5 快照数 6 自检均值 7 一致性均值 8 被踩自检均值 */
+    /** 聚合列序：0 回答数 1 赞 2 踩 3 中断 4 未召回 5 快照数 6 自检均值 7 一致性均值 8 被踩自检均值 */
     private void stubOverview(Object... cells) {
         // 一行结果集：cells 本身就是那一行的 Object[]，不能让 List.of 把它摊平
         List<Object[]> rows = new java.util.ArrayList<>();
@@ -139,6 +142,32 @@ class QaStatsServiceTest {
         assertEquals(0.5, r.dislikeRate(), 1e-9);
         assertEquals(0.3333, r.avgVerifyScore(), 1e-9);
         assertEquals(0.6667, r.avgFaithfulness(), 1e-9);
+    }
+
+    /**
+     * 未召回率的分母是「跑过业务链路的回答数」（snapshotCount），不是 answerCount——
+     * answerCount 含闲聊/中断/存量行，用它会把这些"未走检索的对话"算进分母、把比率稀释成假低。
+     */
+    @Test
+    void overview_noEvidenceRate_usesSnapshotCountNotAnswerCount() {
+        // 20 条回答里只有 4 条跑过业务链路，其中 1 条零召回 → 1/4 = 0.25；若错用回答总数做分母会得到 0.05
+        stubOverview(20L, 0L, 0L, 0L, 1L, 4L, null, null, null);
+
+        QaOverviewResponse r = service.overview(WS_ID, USER_ID, 30);
+
+        assertEquals(1L, r.noEvidenceCount());
+        assertEquals(0.25, r.noEvidenceRate(), 1e-9, "未召回率必须以「业务链路回答数」为分母");
+    }
+
+    /** 窗口内一条业务回答都没有（全是闲聊/中断/存量行）时分母为 0：比率归零而不是 NaN */
+    @Test
+    void overview_noEvidenceRate_zeroBase_rateIsZeroNotNull() {
+        stubOverview(6L, 0L, 0L, 0L, 0L, 0L, null, null, null);
+
+        QaOverviewResponse r = service.overview(WS_ID, USER_ID, 30);
+
+        assertEquals(0.0, r.noEvidenceRate(), 1e-9);
+        assertFalse(Double.isNaN(r.noEvidenceRate()), "NaN 会让 JSON 序列化失败，必须归零");
     }
 
     /** 没有知识库的空间必须短路，绝不能把空集合带进 in 子句 */

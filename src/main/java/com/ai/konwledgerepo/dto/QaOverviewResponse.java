@@ -5,10 +5,15 @@ import java.util.List;
 /**
  * 问答反馈汇总（按当前工作空间 + 时间窗）。
  * <p>
- * 口径分两类：
+ * 口径分三类：
  * <ul>
- * <li>点踩/健康度指标（answerCount / dislikeCount / dislikeRate / noEvidenceCount / interruptedCount）
+ * <li>全量口径（answerCount / likeCount / dislikeCount / dislikeRate / interruptedCount）
  * 对**全部**回答统计，含本次采集上线前的存量行；</li>
+ * <li>未召回口径（noEvidenceCount / noEvidenceRate）<b>只统计跑过业务链路的回答</b>
+ * （判据 {@code verify_score} 非空），分子是其中 {@code refs} 为空的；闲聊直答、被中途停止的答案
+ * 与存量行都不计入——闲聊走 CHAT_ONLY 不经过自检，被停止的答案固定写 {@code refs="[]"}，
+ * 把这两类算进来会把"未走检索的对话"误报成检索失败。分母同为业务链路回答数
+ * （即 {@code snapshotCount}），不是 {@code answerCount}；</li>
  * <li>自检快照指标（avgVerifyScore / avgFaithfulness / avgVerifyScoreOfDisliked）只统计
  * verify_score 非空的行，并用 {@code snapshotCount} 自证口径——存量行与闲聊直答没有快照，
  * 把它们的 null 当 0 分参与均值会把数字压成假低。</li>
@@ -21,10 +26,12 @@ import java.util.List;
  * @param dislikeCount             点踩数
  * @param dislikeRate              踩率 = DOWN / (UP+DOWN)，无人评价时为 0.0
  * @param ratedCount               UP+DOWN 合计（踩率分母，0 表示尚无人评价）
- * @param noEvidenceCount          无证据回答数（refs 为空或 {@code []}）
+ * @param noEvidenceCount          未召回证据的回答数：业务提问且 refs 为空（不含闲聊/直答/中断/存量行）
+ * @param noEvidenceRate           未召回率 = noEvidenceCount / snapshotCount（业务链路回答数为分母），
+ *                                 分母为 0 时为 0.0
  * @param interruptedCount         被中途停止的回答数
  * @param reasonBreakdown          点踩原因分布（按数量倒序，含未填原因的 NULL 桶）
- * @param snapshotCount            含自检快照的回答数（均值口径的分母）
+ * @param snapshotCount            含自检快照的回答数（= 跑过业务链路的回答数；均值与未召回率的分母）
  * @param avgVerifyScore           自检完整性分均值（仅快照行）
  * @param avgFaithfulness          事实一致性均值（仅快照行）
  * @param avgVerifyScoreOfDisliked 被踩答案的自检分均值（与 avgVerifyScore 对比即"踩的是不是低分答案"）
@@ -36,6 +43,7 @@ public record QaOverviewResponse(int days,
                                  double dislikeRate,
                                  long ratedCount,
                                  long noEvidenceCount,
+                                 double noEvidenceRate,
                                  long interruptedCount,
                                  List<ReasonCount> reasonBreakdown,
                                  long snapshotCount,
