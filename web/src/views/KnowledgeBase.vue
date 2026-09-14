@@ -13,12 +13,12 @@
       <el-table-column prop="description" label="描述" min-width="220" show-overflow-tooltip />
       <el-table-column label="状态" width="110">
         <template #default="{ row }">
-          <el-tag :type="statusType(row.status)" size="small">{{ statusText(row.status) }}</el-tag>
+          <el-tag :type="statusType(KB_STATUS, row.status)" size="small">{{ statusText(KB_STATUS, row.status) }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column prop="documentCount" label="文档数" width="90" />
       <el-table-column prop="createdAt" label="创建时间" width="180">
-        <template #default="{ row }">{{ fmt(row.createdAt) }}</template>
+        <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
       </el-table-column>
       <el-table-column label="操作" width="340" fixed="right">
         <template #default="{ row }">
@@ -51,7 +51,7 @@
     <el-dialog v-model="accessVisible" :title="`共享设置：${accessKb ? accessKb.name : ''}`" width="620px">
       <el-form label-width="90px">
         <el-form-item label="可见性">
-          <el-radio-group v-model="accessVisibility" :disabled="!canManageAccess">
+          <el-radio-group v-model="accessVisibility" :disabled="!canManageAccess" @change="onVisibilityChange">
             <el-radio value="PUBLIC">公开（空间内成员可见）</el-radio>
             <el-radio value="RESTRICTED">私有（仅授权用户/组可见）</el-radio>
           </el-radio-group>
@@ -107,11 +107,14 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { kbApi, workspaceApi, groupApi } from '../api'
 import { useAuthStore } from '../stores/auth'
+import { confirmAction } from '../utils/confirm'
+import { formatDateTime } from '../utils/format'
+import { KB_STATUS, statusType, statusText } from '../utils/status'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -147,20 +150,6 @@ function canManage(row) {
 
 /** 共享对话框内控件的可编辑性：与「共享」按钮同一口径（管理权），非纯角色位 */
 const canManageAccess = computed(() => !!accessKb.value && canManage(accessKb.value))
-
-const STATUS = {
-  DRAFT: ['info', '草稿'],
-  BUILDING: ['warning', '构建中'],
-  AVAILABLE: ['success', '可用'],
-  ERROR: ['danger', '异常'],
-  DISABLED: ['info', '停用']
-}
-const statusType = (s) => (STATUS[s] || ['info'])[0]
-const statusText = (s) => (STATUS[s] || [null, s])[1]
-
-function fmt(t) {
-  return t ? t.replace('T', ' ').slice(0, 19) : ''
-}
 
 async function load() {
   loading.value = true
@@ -204,7 +193,7 @@ async function toggleStatus(row) {
 }
 
 async function remove(row) {
-  await ElMessageBox.confirm(`确定删除知识库「${row.name}」？删除后其共享授权将一并清除。`, '提示', { type: 'warning' })
+  if (!(await confirmAction(`确定删除知识库「${row.name}」？删除后其共享授权将一并清除。`))) return
   await kbApi.remove(row.id)
   ElMessage.success('已删除')
   load()
@@ -230,13 +219,22 @@ async function openAccess(row) {
   groups.value = gs
 }
 
-watch(accessVisibility, async (v, old) => {
-  if (!accessKb.value || v === old) return
-  await kbApi.setVisibility(accessKb.value.id, v)
-  ElMessage.success(v === 'RESTRICTED' ? '已设为私有' : '已设为公开')
-  accessKb.value.visibility = v
-  load()
-})
+/**
+ * 可见性切换：仅在用户交互时触发（挂在 el-radio-group 的 @change 上）。
+ * 不能用 watch(accessVisibility)：openAccess 会程序化给该 ref 赋初值，
+ * watch 分不清"用户改的"与"代码写的"，会在每次打开弹窗时误发一次写请求 + 弹出误导提示。
+ */
+async function onVisibilityChange(v) {
+  if (!accessKb.value) return
+  try {
+    await kbApi.setVisibility(accessKb.value.id, v)
+    ElMessage.success(v === 'RESTRICTED' ? '已设为私有' : '已设为公开')
+    accessKb.value.visibility = v
+    load()
+  } catch (e) {
+    /* 拦截器已提示 */
+  }
+}
 
 async function grant() {
   await kbApi.accessGrant(accessKb.value.id, {
@@ -260,7 +258,7 @@ async function changePermission(row) {
 }
 
 async function revoke(row) {
-  await ElMessageBox.confirm(`移除「${row.granteeName}」的访问权限？`, '提示', { type: 'warning' })
+  if (!(await confirmAction(`移除「${row.granteeName}」的访问权限？`))) return
   await kbApi.accessRevoke(accessKb.value.id, row.id)
   ElMessage.success('已移除')
   accessList.value = await kbApi.accessList(accessKb.value.id)

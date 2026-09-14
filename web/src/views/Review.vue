@@ -75,10 +75,8 @@
         </el-table-column>
       </el-table>
       <div v-if="docId" class="pager">
-        <el-pagination v-model:current-page="pageIndex" v-model:page-size="pageSize"
-                       :total="total" :page-sizes="[20, 50, 100, 200]"
-                       layout="total, sizes, prev, pager, next"
-                       @current-change="onPageChange" @size-change="onSizeChange" />
+        <Pager v-model:page="pageIndex" v-model:page-size="pageSize" :total="total"
+               @page-change="onPageChange" @size-change="onSizeChange" />
       </div>
       <el-empty v-if="!loading && docId && !chunks.length" description="该文档暂无分块" />
     </template>
@@ -152,7 +150,9 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { curateApi, docApi, kbApi, reviewApi } from '../api'
 import { useAuthStore } from '../stores/auth'
+import { confirmAction } from '../utils/confirm'
 import ChunkDetail from '../components/ChunkDetail.vue'
+import Pager from '../components/Pager.vue'
 
 const route = useRoute()
 const auth = useAuthStore()
@@ -623,7 +623,7 @@ async function batchKeep() {
   if (rows.some((row) => !hasChunkId(row))) return
   const ids = rows.map((row) => row.chunkId)
   if (!ids.length) return
-  await ElMessageBox.confirm(`批量保留 ${ids.length} 个待审核分块并向量化？`, '批量保留', { type: 'info' })
+  if (!(await confirmAction(`批量保留 ${ids.length} 个待审核分块并向量化？`, '批量保留', { type: 'info' }))) return
   await reviewApi.batch(ids, 'keep')
   ElMessage.success('批量保留完成')
   await loadPage()
@@ -634,7 +634,7 @@ async function batchDrop() {
   if (rows.some((row) => !hasChunkId(row))) return
   const ids = rows.map((row) => row.chunkId)
   if (!ids.length) return
-  await ElMessageBox.confirm(`确定批量删除 ${ids.length} 个待审核分块？`, '批量删除', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' })
+  if (!(await confirmAction(`确定批量删除 ${ids.length} 个待审核分块？`, '批量删除', { confirmButtonText: '删除', cancelButtonText: '取消' }))) return
   await reviewApi.batch(ids, 'drop')
   ElMessage.success('批量删除完成')
   await loadPage()

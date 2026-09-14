@@ -17,7 +17,7 @@
         </template>
       </el-table-column>
       <el-table-column prop="createdAt" label="加入时间" width="170">
-        <template #default="{ row }">{{ fmt(row.createdAt) }}</template>
+        <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
       </el-table-column>
       <el-table-column label="操作" width="290" fixed="right">
         <template #default="{ row }">
@@ -96,10 +96,12 @@
 
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { workspaceApi } from '../api'
 import { useAuthStore } from '../stores/auth'
+import { confirmAction } from '../utils/confirm'
 import { copyText } from '../utils/clipboard'
+import { formatDateTime } from '../utils/format'
 
 const auth = useAuthStore()
 const members = ref([])
@@ -113,8 +115,6 @@ const inviteForm = reactive({ username: '', role: 'MEMBER' })
 
 const roleLabel = (r) => ({ OWNER: '拥有者', ADMIN: '管理员', EDITOR: '编辑者', MEMBER: '普通成员' }[r] || r)
 const roleTag = (r) => ({ OWNER: 'danger', ADMIN: 'warning', EDITOR: 'primary', MEMBER: 'info' }[r] || 'info')
-const fmt = (t) => (t ? t.replace('T', ' ').slice(0, 19) : '')
-
 async function load() {
   loading.value = true
   try { members.value = await workspaceApi.members() } finally { loading.value = false }
@@ -158,14 +158,14 @@ async function submitInvite() {
 }
 
 async function changeRole(row, role) {
-  await ElMessageBox.confirm(`将成员「${row.username}」的角色改为「${roleLabel(role)}」？`, '修改角色', { type: 'warning' })
+  if (!(await confirmAction(`将成员「${row.username}」的角色改为「${roleLabel(role)}」？`, '修改角色'))) return
   await workspaceApi.updateRole(row.id, role)
   ElMessage.success('角色已更新')
   load()
 }
 
 async function remove(row) {
-  await ElMessageBox.confirm(`确定移除成员「${row.username}」？该账号将无法登录。`, '移除成员', { type: 'warning' })
+  if (!(await confirmAction(`确定移除成员「${row.username}」？该账号将无法登录。`, '移除成员'))) return
   await workspaceApi.removeMember(row.id)
   ElMessage.success('已移除')
   load()
@@ -176,9 +176,9 @@ const resetResultVisible = ref(false)
 const resetResult = ref({ username: '', newPassword: '' })
 
 async function resetPwd(row) {
-  await ElMessageBox.confirm(
+  if (!(await confirmAction(
     `确定重置「${row.username}」的密码？将生成随机密码且仅显示一次，该用户下次登录时须先修改密码。`,
-    '重置密码', { type: 'warning', confirmButtonText: '重置', cancelButtonText: '取消' })
+    '重置密码', { confirmButtonText: '重置', cancelButtonText: '取消' }))) return
   const r = await workspaceApi.resetMemberPassword(row.userId)
   resetResult.value = { username: r.username, newPassword: r.newPassword }
   resetResultVisible.value = true
@@ -192,11 +192,11 @@ async function copyResetPassword() {
 }
 
 async function transfer(row) {
-  await ElMessageBox.confirm(
+  if (!(await confirmAction(
     `转让拥有权给「${row.username}」？转让后您将变为管理员，且无法撤销（除非对方再转让给您）。`,
     '转让工作空间',
-    { type: 'warning', confirmButtonText: '转让' }
-  )
+    { confirmButtonText: '转让' }
+  ))) return
   await workspaceApi.transferOwnership(row.id)
   ElMessage.success('已转让，角色已更新')
   auth.refresh()
@@ -204,11 +204,11 @@ async function transfer(row) {
 }
 
 async function deleteWorkspace() {
-  await ElMessageBox.confirm(
+  if (!(await confirmAction(
     '删除当前工作空间将归档全部知识库并移除所有成员，此操作不可恢复！确定删除？',
     '删除工作空间',
     { type: 'error', confirmButtonText: '确认删除', cancelButtonText: '取消' }
-  )
+  ))) return
   await workspaceApi.deleteWorkspace()
   ElMessage.error('工作空间已删除')
   // 刷新用户信息：落到剩余工作区或无工作区引导页

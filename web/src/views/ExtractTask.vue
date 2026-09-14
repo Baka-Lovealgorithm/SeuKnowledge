@@ -49,7 +49,7 @@
       <el-table-column prop="resultSummary" label="结果" min-width="180" />
       <el-table-column prop="errorLog" label="错误日志" min-width="160" show-overflow-tooltip />
       <el-table-column prop="createdAt" label="创建时间" width="160">
-        <template #default="{ row }">{{ fmt(row.createdAt) }}</template>
+        <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
       </el-table-column>
       <el-table-column label="操作" width="150" fixed="right">
         <template #default="{ row }">
@@ -81,9 +81,11 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { docApi, extractApi, kbApi } from '../api'
 import { useAuthStore } from '../stores/auth'
+import { confirmAction } from '../utils/confirm'
+import { formatDateTime } from '../utils/format'
 
 const auth = useAuthStore()
 const kbs = ref([])
@@ -110,8 +112,6 @@ const avgDuration = computed(() => {
   const avg = done.reduce((sum, t) => sum + t.durationMs, 0) / done.length
   return avg >= 1000 ? (avg / 1000).toFixed(1) + 's' : Math.round(avg) + 'ms'
 })
-
-function fmt(t) { return t ? t.replace('T', ' ').slice(0, 19) : '' }
 
 async function loadKbs() { kbs.value = await kbApi.list() }
 
@@ -156,11 +156,11 @@ async function viewResults(row) {
 
 /** 重试失败任务：仅重抽失败文档，重抽前清掉这些文档的旧 DRAFT 草稿 */
 async function retryTask(row) {
-  await ElMessageBox.confirm(
+  if (!(await confirmAction(
     `将重新抽取该任务失败的文档（${row.failedDocIds?.length || '全部'} 个），并清掉这些文档下未审核的草稿，确定重试？`,
     '重试抽取任务',
-    { type: 'warning', confirmButtonText: '重试', cancelButtonText: '取消' }
-  )
+    { confirmButtonText: '重试', cancelButtonText: '取消' }
+  ))) return
   await extractApi.retry(row.id)
   ElMessage.success('已提交重试，正在重新抽取')
   loadTasks()

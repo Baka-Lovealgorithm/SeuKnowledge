@@ -143,10 +143,11 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { Edit, Delete, Expand, Fold } from '@element-plus/icons-vue'
 import { chatApi, docApi, kbApi } from '../api'
 import { useAuthStore } from '../stores/auth'
+import { confirmAction } from '../utils/confirm'
 import MdContent from '../components/MdContent.vue'
 
 const auth = useAuthStore()
@@ -207,8 +208,6 @@ function resetStage() {
   if (sessionId.value) stageStore.delete(sessionId.value)
 }
 
-function fmt(t) { return t ? t.replace('T', ' ').slice(5, 16) : '' }
-
 /** 错误消息可读化：超时/网络异常等后端消息原样展示，空则兜底 */
 function friendlyError(raw) {
   const msg = (raw || '').trim()
@@ -260,7 +259,8 @@ async function onKbChange() {
   if (matched.length === 0) {
     draft.value = true
   } else {
-    selectSession(matched[0])
+    // await：让本函数返回时首会话已加载完，restoreLastState 才能在确定状态下决定是否改选上次会话
+    await selectSession(matched[0])
   }
 }
 
@@ -275,6 +275,10 @@ function newChat() {
   scrollBottom()
 }
 
+/** 会话消息请求代次：快速连点会话、或"onKbChange 选首个 + restoreLastState 选上次"并发时，
+ *  只接受最后一次选择的响应，避免先发后到的旧数据盖掉当前会话。 */
+let selectReqSeq = 0
+
 async function selectSession(s) {
   if (manageMode.value) return
   draft.value = false
@@ -285,7 +289,9 @@ async function selectSession(s) {
     // 正在处理中：保留当前视图，不重载消息
     return
   }
+  const reqId = ++selectReqSeq
   const msgs = await chatApi.messages(s.id)
+  if (reqId !== selectReqSeq) return   // 已被更新的选择覆盖：丢弃过期响应
   messages.value = msgs
   refsList.value = msgs.map((m) => parseRefs(m.refs))
   scrollBottom()
@@ -630,7 +636,7 @@ async function confirmRename() {
 
 async function removeSession(s) {
   if (manageMode.value) return
-  await ElMessageBox.confirm(`确定删除会话 #${s.id}？会话中的消息将一并删除。`, '提示', { type: 'warning' })
+  if (!(await confirmAction(`确定删除会话 #${s.id}？会话中的消息将一并删除。`))) return
   await chatApi.remove(s.id)
   sessions.value = sessions.value.filter((x) => x.id !== s.id)
   if (s.id === sessionId.value) {
@@ -662,7 +668,7 @@ function toggleSelect(s) {
 
 async function deleteSelected() {
   if (selectedIds.size === 0) return
-  await ElMessageBox.confirm(`确定删除选中的 ${selectedIds.size} 个会话？`, '提示', { type: 'warning' })
+  if (!(await confirmAction(`确定删除选中的 ${selectedIds.size} 个会话？`))) return
   for (const id of selectedIds) {
     await chatApi.remove(id).catch(() => {})
   }

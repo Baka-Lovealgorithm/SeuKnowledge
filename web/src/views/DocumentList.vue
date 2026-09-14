@@ -39,7 +39,7 @@
       </el-table-column>
       <el-table-column prop="fileType" label="类型" width="80" />
       <el-table-column prop="fileSize" label="大小" width="100">
-        <template #default="{ row }">{{ sizeText(row.fileSize) }}</template>
+        <template #default="{ row }">{{ formatSize(row.fileSize) }}</template>
       </el-table-column>
       <el-table-column label="解析状态" width="110">
         <template #default="{ row }">
@@ -64,7 +64,7 @@
       </el-table-column>
       <el-table-column prop="errorMsg" label="错误信息" min-width="180" show-overflow-tooltip />
       <el-table-column prop="createdAt" label="上传时间" width="170">
-        <template #default="{ row }">{{ fmt(row.createdAt) }}</template>
+        <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
       </el-table-column>
       <el-table-column label="操作" width="350" fixed="right">
         <template #default="{ row }">
@@ -76,9 +76,8 @@
       </el-table-column>
     </el-table>
     <div class="pager">
-      <el-pagination v-model:current-page="pageIndex" v-model:page-size="pageSize"
-                     :total="filteredList.length" :page-sizes="[20, 50]"
-                     layout="total, sizes, prev, pager, next" />
+      <Pager v-model:page="pageIndex" v-model:page-size="pageSize"
+             :total="filteredList.length" :page-sizes="[20, 50]" />
     </div>
   </div>
 </template>
@@ -89,6 +88,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { docApi } from '../api'
 import { useAuthStore } from '../stores/auth'
+import { confirmAction } from '../utils/confirm'
+import { formatDateTime, formatSize } from '../utils/format'
+import Pager from '../components/Pager.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -197,15 +199,6 @@ function vectorTip(row) {
 function canReindex(row) {
   return auth.canWrite && !row.curateStatus && (row.parseStatus === 'SUCCESS' || row.parseStatus === 'ERROR')
 }
-
-function sizeText(n) {
-  if (!n) return '-'
-  if (n > 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB'
-  if (n > 1024) return (n / 1024).toFixed(1) + ' KB'
-  return n + ' B'
-}
-
-function fmt(t) { return t ? t.replace('T', ' ').slice(0, 19) : '' }
 
 /** 是否存在过渡态文档（解析未落定，或向量还在追平），决定要不要继续轮询 */
 function hasActive() {
@@ -330,22 +323,19 @@ async function flushUploadBatch() {
     if (dupNames.size) {
       const dupList = valid.filter((f) => dupNames.has(f.name.toLowerCase()))
       const fresh = valid.filter((f) => !dupNames.has(f.name.toLowerCase()))
-      try {
-        await ElMessageBox.confirm(
-          `以下 ${dupList.length} 个文件已存在：${dupList.map((f) => f.name).join('、')}。` +
-          `覆盖将删除旧文档及其向量/初洗内容后重新上传。`,
-          '存在同名文件',
-          { type: 'warning', confirmButtonText: '全部覆盖', cancelButtonText: '跳过这些' }
+      if (await confirmAction(
+        `以下 ${dupList.length} 个文件已存在：${dupList.map((f) => f.name).join('、')}。` +
+        `覆盖将删除旧文档及其向量/初洗内容后重新上传。`,
+        '存在同名文件',
+        { confirmButtonText: '全部覆盖', cancelButtonText: '跳过这些' }
+      )) {
+        // 「复用 / 重新解析」二选一：取消即视为「重新解析」，不是错误路径
+        reuse = await confirmAction(
+          '是否复用已有解析结果？文件内容与缓存一致时将跳过云端解析（节省消耗），分块与向量化仍会正常生成；选择「重新解析」将全量解析。',
+          '复用解析结果',
+          { type: 'info', confirmButtonText: '复用', cancelButtonText: '重新解析' }
         )
-        try {
-          await ElMessageBox.confirm(
-            '是否复用已有解析结果？文件内容与缓存一致时将跳过云端解析（节省消耗），分块与向量化仍会正常生成；选择「重新解析」将全量解析。',
-            '复用解析结果',
-            { type: 'info', confirmButtonText: '复用', cancelButtonText: '重新解析' }
-          )
-          reuse = true
-        } catch { reuse = false }
-      } catch {
+      } else {
         // 跳过这些（含关闭）：dup 剔除，仅新文件继续
         toUpload = fresh
         dupSkipped = dupList.length
@@ -426,7 +416,7 @@ async function retry(row) {
       + '——你在初洗里编辑过的 md 历史版本会一并丢弃，且不可恢复。确定继续？'
     : `确定重新解析「${row.fileName}」？将删除现有分块与向量后重新解析生成`
       + '——你在「文档分块」里做过的人工编辑（修改/删除/新增/合并）会全部丢失，且不可恢复。确定继续？'
-  await ElMessageBox.confirm(msg, '重新解析', { type: 'warning', confirmButtonText: '确定重新解析', cancelButtonText: '取消' })
+  if (!(await confirmAction(msg, '重新解析', { confirmButtonText: '确定重新解析', cancelButtonText: '取消' }))) return
   await docApi.retry(row.id)
   ElMessage.success('已触发重新解析')
   load()
@@ -487,7 +477,7 @@ async function rename(row) {
 }
 
 async function remove(row) {
-  await ElMessageBox.confirm(`确定删除文档「${row.fileName}」？`, '提示', { type: 'warning' })
+  if (!(await confirmAction(`确定删除文档「${row.fileName}」？`))) return
   await docApi.remove(row.id)
   ElMessage.success('已删除')
   load()

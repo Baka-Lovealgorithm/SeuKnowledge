@@ -128,9 +128,10 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { modelApi } from '../api'
 import { features } from '../config/features'
+import { confirmAction } from '../utils/confirm'
 
 const list = ref([])
 const loading = ref(false)
@@ -254,7 +255,7 @@ async function test(row) {
 }
 
 async function remove(row) {
-  await ElMessageBox.confirm(`确定删除模型配置「${row.name}」？`, '提示', { type: 'warning' })
+  if (!(await confirmAction(`确定删除模型配置「${row.name}」？`))) return
   await modelApi.remove(row.id)
   ElMessage.success('已删除')
   load()

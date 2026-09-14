@@ -50,10 +50,8 @@
         </el-table-column>
       </el-table>
       <div v-if="docId" class="pager">
-        <el-pagination v-model:current-page="pageIndex" v-model:page-size="pageSize"
-                       :total="total" :page-sizes="[20, 50, 100, 200]"
-                       layout="total, sizes, prev, pager, next"
-                       @current-change="onPageChange" @size-change="onSizeChange" />
+        <Pager v-model:page="pageIndex" v-model:page-size="pageSize" :total="total"
+               @page-change="onPageChange" @size-change="onSizeChange" />
       </div>
     </template>
 
@@ -83,6 +81,7 @@ import { curateApi, kbApi } from '../api'
 import { renderMarkdown } from '../utils/markdown'
 import { useAuthStore } from '../stores/auth'
 import ChunkDetail from '../components/ChunkDetail.vue'
+import Pager from '../components/Pager.vue'
 
 const route = useRoute()
 const router = useRouter()

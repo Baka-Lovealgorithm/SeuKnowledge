@@ -11,7 +11,7 @@
       <el-table-column prop="description" label="描述" min-width="180" show-overflow-tooltip />
       <el-table-column prop="memberCount" label="成员数" width="90" />
       <el-table-column prop="createdAt" label="创建时间" width="170">
-        <template #default="{ row }">{{ fmt(row.createdAt) }}</template>
+        <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
       </el-table-column>
       <el-table-column label="操作" width="230" fixed="right">
         <template #default="{ row }">
@@ -65,7 +65,7 @@
       <el-table :data="memberList" border size="small" max-height="300">
         <el-table-column prop="username" label="用户名" min-width="140" />
         <el-table-column prop="createdAt" label="加入时间" width="170">
-          <template #default="{ row }">{{ fmt(row.createdAt) }}</template>
+          <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
         </el-table-column>
         <el-table-column label="操作" width="80" align="center">
           <template #default="{ row }">
@@ -79,8 +79,10 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { groupApi, workspaceApi } from '../api'
+import { confirmAction } from '../utils/confirm'
+import { formatDateTime } from '../utils/format'
 
 const groups = ref([])
 const loading = ref(false)
@@ -102,8 +104,6 @@ const newMemberUserId = ref(null)
 const memberOptions = computed(() =>
   allMembers.value.filter((m) => !memberList.value.some((gm) => gm.userId === m.userId))
 )
-
-const fmt = (t) => (t ? t.replace('T', ' ').slice(0, 19) : '')
 
 async function load() {
   loading.value = true
@@ -167,11 +167,10 @@ async function submitRename() {
 }
 
 async function remove(row) {
-  await ElMessageBox.confirm(
+  if (!(await confirmAction(
     `确定删除组「${row.name}」？其成员关系与该组的所有知识库授权记录将一并清除。`,
-    '删除组',
-    { type: 'warning' }
-  )
+    '删除组'
+  ))) return
   await groupApi.remove(row.id)
   ElMessage.success('组已删除')
   load()
@@ -197,7 +196,7 @@ async function addMember() {
 }
 
 async function removeMember(row) {
-  await ElMessageBox.confirm(`确定将「${row.username}」移出组？`, '移除成员', { type: 'warning' })
+  if (!(await confirmAction(`确定将「${row.username}」移出组？`, '移除成员'))) return
   await groupApi.removeMember(currentGroup.value.id, row.userId)
   ElMessage.success('已移除')
   memberList.value = await groupApi.members(currentGroup.value.id)

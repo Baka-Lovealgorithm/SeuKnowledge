@@ -19,7 +19,7 @@
       <el-table-column prop="answer" label="答案" min-width="220" show-overflow-tooltip />
       <el-table-column label="状态" width="90">
         <template #default="{ row }">
-          <el-tag :type="statusType(row.status)" size="small">{{ statusText(row.status) }}</el-tag>
+          <el-tag :type="statusType(ENTRY_STATUS, row.status)" size="small">{{ statusText(ENTRY_STATUS, row.status) }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column prop="version" label="版本" width="70" />
@@ -68,9 +68,11 @@
 
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { qaApi, kbApi } from '../api'
 import { useAuthStore } from '../stores/auth'
+import { confirmAction } from '../utils/confirm'
+import { ENTRY_STATUS, statusType, statusText } from '../utils/status'
 
 const auth = useAuthStore()
 const kbs = ref([])
@@ -87,10 +89,6 @@ const normalizingId = ref(null)
 
 const emptyForm = () => ({ question: '', answer: '' })
 const form = reactive(emptyForm())
-
-const STATUS = { DRAFT: ['warning', '草稿'], APPROVED: ['success', '已通过'], REJECTED: ['danger', '已拒绝'], DISABLED: ['info', '已禁用'] }
-const statusType = (s) => (STATUS[s] || ['info'])[0]
-const statusText = (s) => (STATUS[s] || [null, s])[1]
 
 async function loadKbs() { kbs.value = await kbApi.list() }
 
@@ -144,7 +142,7 @@ async function viewVersions(row) {
 }
 
 async function rollback(row) {
-  await ElMessageBox.confirm(`确定回退到版本 ${row.version}？`, '提示', { type: 'warning' })
+  if (!(await confirmAction(`确定回退到版本 ${row.version}？`))) return
   await qaApi.rollback(row.id, row.version)
   ElMessage.success('已回退')
   versionVisible.value = false
@@ -152,7 +150,7 @@ async function rollback(row) {
 }
 
 async function remove(row) {
-  await ElMessageBox.confirm(`确定删除问答对「${row.question}」？`, '提示', { type: 'warning' })
+  if (!(await confirmAction(`确定删除问答对「${row.question}」？`))) return
   await qaApi.remove(row.id)
   ElMessage.success('已删除')
   load()
