@@ -178,7 +178,7 @@ docker compose up -d --build backend frontend
 
 ## 9. 生产加固清单
 
-- 为前端容器配置域名和 TLS 终止；本仓库的 Nginx 只负责应用反向代理，不负责证书管理。
+- 为前端容器配置域名和 TLS 终止；本仓库的 Nginx 只负责应用反向代理，不负责证书管理。纯 HTTP 部署会让浏览器的「安全上下文」限制生效——剪贴板 API 等只在 HTTPS / localhost 下可用（前端对复制已做 `execCommand` 降级兜底，但 HTTPS 才是根治）。
 - 只向公网开放前端端口，MySQL、ES、Redis 和后端只留在 Compose 内部网络。
 - 使用云平台或 CI 的密钥管理，不要广泛复制生产 `.env` 文件。
 - MySQL 和管理员账号使用不同的强随机密码，首次登录后修改管理员密码。

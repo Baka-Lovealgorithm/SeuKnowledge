@@ -99,6 +99,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { workspaceApi } from '../api'
 import { useAuthStore } from '../stores/auth'
+import { copyText } from '../utils/clipboard'
 
 const auth = useAuthStore()
 const members = ref([])
@@ -185,12 +186,9 @@ async function resetPwd(row) {
 }
 
 async function copyResetPassword() {
-  try {
-    await navigator.clipboard.writeText(resetResult.value.newPassword)
-    ElMessage.success('已复制')
-  } catch {
-    ElMessage.warning('复制失败，请手动选择复制')
-  }
+  const ok = await copyText(resetResult.value.newPassword)
+  if (ok) ElMessage.success('已复制')
+  else ElMessage.warning('复制失败，请手动选择复制')
 }
 
 async function transfer(row) {

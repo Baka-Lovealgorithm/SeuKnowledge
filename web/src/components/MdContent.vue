@@ -5,6 +5,7 @@
 <script setup>
 import { computed, onMounted, onUpdated, nextTick, ref } from 'vue'
 import { renderMarkdown } from '../utils/markdown'
+import { copyText } from '../utils/clipboard'
 import 'highlight.js/styles/github-dark.css'
 
 const props = defineProps({
@@ -48,16 +49,22 @@ function injectCodeBlocks() {
       '<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25v-7.5Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25h-7.5Z"/>' +
       '</svg><span>复制</span>'
     btn.title = '复制代码'
-    btn.onclick = () => {
+    btn.onclick = async () => {
       const text = pre.textContent || ''
-      navigator.clipboard.writeText(text).then(() => {
-        btn.classList.add('copied')
-        btn.querySelector('span').textContent = '已复制'
-        setTimeout(() => {
-          btn.classList.remove('copied')
-          btn.querySelector('span').textContent = '复制'
-        }, 2000)
-      }).catch(() => {})
+      const label = btn.querySelector('span')
+      const ok = await copyText(text)
+      if (!ok) {
+        // 失败在按钮上原地反馈，不弹全局提示（一条消息里可能同时存在多个代码块）
+        if (label) label.textContent = '复制失败'
+        setTimeout(() => { if (label) label.textContent = '复制' }, 2000)
+        return
+      }
+      btn.classList.add('copied')
+      if (label) label.textContent = '已复制'
+      setTimeout(() => {
+        btn.classList.remove('copied')
+        if (label) label.textContent = '复制'
+      }, 2000)
     }
     header.appendChild(btn)
   })
