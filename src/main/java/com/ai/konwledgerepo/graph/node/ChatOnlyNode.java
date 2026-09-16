@@ -59,8 +59,11 @@ public class ChatOnlyNode extends QaNodeSupport {
         }
         String memorySummary = state.value(QaContextKey.MEMORY_SUMMARY).map(String::valueOf).orElse("");
         String summaryText = memorySummary.isBlank() ? "（无）" : memorySummary;
+        // 注入 Agent 设定：闲聊仅取角色身份/称呼/语气，模板内已声明作答要求不适用（避免"只依据证据作答"导致闲聊拒答）
+        String agentPrompt = QaContext.agentPrompt(state);
         String prompt = promptCatalog.render("chat-only", Map.of(
-                "question", question, "recentJson", recentJson, "summaryText", summaryText));
+                "question", question, "recentJson", recentJson, "summaryText", summaryText,
+                "agentPrompt", agentPrompt));
         String answer;
         StreamContext streaming = streamContext();
         if (streaming.streamable()) {
