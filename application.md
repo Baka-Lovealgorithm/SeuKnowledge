@@ -53,6 +53,7 @@
 | `KB_TRACING_ENABLED` | true | OpenTelemetry 追踪总开关 |
 | `LOG_LEVEL_LLM` | debug | LLM I/O 调试日志级别（含 prompt/输出等敏感内容，生产建议 `info`） |
 | `ACCESS_LOG_ENABLED` | true | Tomcat HTTP 访问日志开关 |
+| `TOMCAT_ACCEPT_COUNT` / `TOMCAT_MAX_CONNECTIONS` | 500 / 1000 | Tomcat 连接接入：listen backlog（内核排队连接数）/ 同时处理的连接上限。**默认 backlog 100 是「突发并发连接」的天花板**——实测 500 并发时有 74% 的请求在 TCP 层被直接拒绝（`connectex: actively refused`），登录容量约 200 并发即依赖此值；目标并发继续上升须同步调大（`max-connections` 由 Tomcat 默认 8192 收紧而来，SSE 长连接等场景需一并调大） |
 
 ## 配置模型服务（必配，否则问答/抽取不可用）
 

@@ -58,12 +58,22 @@ spring:
       max-file-size: ${KB_FILE_MAX_SIZE:20MB}
       max-request-size: ${KB_REQUEST_MAX_SIZE:100MB}
 
-# ===== 内嵌容器（Tomcat 访问日志，零代码）=====
+# ===== 内嵌容器（Tomcat 连接接入 + 访问日志，零代码）=====
 server:
   # 端口约定：18080 为本机开发约定端口（8080 属 Windows 保留端口段，曾致前后端端口不对应），
   # 与前端 vite 代理默认目标对齐（web/vite.config.js）；可用环境变量 SERVER_PORT 覆盖
   port: ${SERVER_PORT:18080}
   tomcat:
+    # 连接接入层（2026-09-16 压测实测后设定）：
+    #   accept-count（listen backlog）默认 100 是「突发并发连接」的天花板——登录压测在 500 并发时
+    #   74% 的请求直接 connectex: actively refused（Windows RST）；同样并发下打 /actuator/health
+    #   的失败率完全一致，证明瓶颈在连接接入层而非业务链路；重复实测通过数稳定在 ~100~190，
+    #   与请求的并发数几乎无关。调到 500 后天花板精确抬到 500（200 并发 probe 从 58% → 100%）。
+    #   若目标并发继续上升，需同步调大本值（Windows 未把 backlog 截断到 SOMAXCONN=200）。
+    accept-count: ${TOMCAT_ACCEPT_COUNT:500}
+    # 同时处理的连接上限。Tomcat 默认 8192，此处收紧到 1000：本应用登录侧受 BCrypt（纯 CPU，
+    # 单次 ~70ms）限制吞吐约 230 次/秒，1000 已远超可服务规模；如需更高并发请一并调大。
+    max-connections: ${TOMCAT_MAX_CONNECTIONS:1000}
     accesslog:
       enabled: ${ACCESS_LOG_ENABLED:true}   # HTTP 访问日志开关（写入 logs/ 目录）
       directory: ${user.dir}/logs           # Tomcat 相对路径基于临时目录，显式指向工作目录下 logs/
