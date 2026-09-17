@@ -4,28 +4,28 @@
 
 ## 功能亮点
 
-- 多工作空间与四角色权限（拥有者 / 管理员 / 编辑者 / 成员），数据按空间隔离
+- 多工作空间与四角色权限（拥有者 / 管理员 / 编辑者 / 普通成员），数据按空间隔离
 - 知识库级 ACL：公开 / 私有两级可见性，私有库可按用户与组授权、权限取高
-- 账号安全：登录用户自助修改密码（校验当前密码）；拥有者/管理员可重置成员密码（随机密码仅返回一次，该用户下次登录强制改密）；登录连续失败自动锁定
-- 文档管理：.txt/.md/.html/.pdf/.docx/.pptx/.xlsx/.xls 上传 → 解析分块 → 向量化入 ES；HTML/PDF/DOCX 走 LlamaParse 转 Markdown；表格、代码围栏感知分块；Excel 本地 POI 解析（数据不出本地）；列表支持按解析状态 / 文件类型筛选与分页
-- 文档初洗 / 精修：人工分块质量把关，可在线编辑 md 重分块、逐块审核后入库
+- 账号安全：登录用户自助修改密码（校验当前密码）；拥有者/管理员可重置成员密码（随机密码仅返回一次，该用户下次登录强制改密）；登录连续失败自动锁定（默认 5 次失败 / 15 分钟计数窗口 / 锁定 15 分钟）
+- 文档管理：.txt/.md/.html/.pdf/.docx/.pptx/.xlsx/.xls 上传 → 解析分块 → 向量化入 ES；HTML/DOCX **必须**经 LlamaParse 转 Markdown（需开启，无本地回退），PDF 优先 LlamaParse、未启用时回退 PDFBox；表格、代码围栏感知分块；Excel 本地 POI 解析（数据不出本地）；列表支持按解析状态 / 文件类型筛选与分页
+- 文档初洗 / 精修：规则清洗按名单分流（AUTO-DROP 直接丢弃、SUSPECT 打标待人工处置），可在线编辑 md 重分块、逐块审核后入库
 - 文档分块工作台：入口为文件列表（按文件名模糊搜索、按阶段状态筛选、只看有待审核块），按文件状态分流——初洗中进「文档初洗」、精修中 / 已向量化进分块编辑页。分块编辑按页码顺序分页浏览，可按状态筛选（全部 / 待审核 / 通过 / 已删除）与一键通过；确认向量化后仍可逐块编辑、删除、相邻合并与插入新块，操作即时单块向量化，无需整文档重解析
-- 模型配置：DashScope + OpenAI 兼容双供应商，按用途绑定（生成 / 检索 / 识图 / 重排等）
-- Agent 配置：可视化编辑系统提示词与答案 / 记忆策略参数（最近对话轮数、压缩间隔轮数），保存即热生效
+- 模型配置：DashScope + OpenAI 兼容双供应商，按类型（CHAT / EMBEDDING / VISION / RERANK）与用途（生成 / 自检 / 路由 / 抽取 / 记忆 / 闲聊 / 标题）分别绑定
+- Agent 配置：可视化编辑系统提示词与答案 / 记忆策略参数（最近对话轮数、压缩间隔轮数），保存即热生效；闲聊场景同样注入 Agent 人设，但只取角色身份、称呼与语气，不套用「仅依据证据作答」等约束
 - 智能问答：多源召回（chunk + 业务知识 + 问答对）+ 交叉编码器精排 + 自检重试，答案带 [1][2] 证据引用；标题祖先链与文档名参与 BM25 召回（旧索引启动时自动补齐，无需重建向量，见 [ES_TITLE_RECALL_UPGRADE.md](ES_TITLE_RECALL_UPGRADE.md)）
 - 答案评价与点踩汇总：👍/👎 落库，`/stats` 汇总页（仅空间管理员可见）给踩率、原因分布与自检分明细
 - 多轮会话记忆：滚动摘要持久化到会话表，与最近对话共同注入路由 / 改写节点
 - AI 抽取：自动抽取业务知识与问答对，人工审核 + 版本回退
-- 可观测性：OpenTelemetry Trace → Langfuse 可视化，含 LLM token 统计
+- 可观测性：OpenTelemetry Trace → Langfuse 可视化，含 LLM token 统计（批量异步上报，未配置自动 no-op）
 
 ## 技术栈
 
 | 层 | 技术 |
 |---|---|
-| 后端 | Java 21、Spring Boot 3.5、Spring AI 1.1（spring-ai-alibaba graph-core 状态图） |
-| 数据 | MySQL 8（业务数据）、Elasticsearch 8（向量与混合检索 BM25+knn+RRF）、Redis（登录态 / 缓存 / 任务进度） |
-| 文件存储 | MinIO 对象存储（默认）或本地磁盘（`KB_STORAGE_TYPE=local`），两种后端纯配置切换，**无自动降级** |
-| 前端 | Vue 3 + Vite + Pinia + Element Plus |
+| 后端 | Java 21、Spring Boot 3.5.13、Spring AI 1.1.2 + spring-ai-alibaba 1.1.2.2（graph-core 状态图） |
+| 数据 | MySQL 8（业务数据）、Elasticsearch 8（向量与混合检索 BM25+knn+RRF，需 analysis-smartcn 中文分词插件）、Redis 7（登录态 / 缓存 / 任务进度） |
+| 文件存储 | MinIO 对象存储（**应用默认值**）或本地磁盘（`KB_STORAGE_TYPE=local`），两种后端纯配置切换，**无自动降级** |
+| 前端 | Vue 3 + Vite 6 + Pinia + Element Plus |
 | 模型 | DashScope（通义千问 / text-embedding / qwen-vl / gte-rerank）+ OpenAI 兼容（DeepSeek / ollama / one-api 等） |
 | 可观测性 | OpenTelemetry SDK + OTLP → Langfuse（未配置自动 no-op） |
 
@@ -42,10 +42,11 @@
 |---|---|---|---|
 | JDK | **21** | 编译 / 运行后端 | 本项目使用 Java 21 特性（虚拟线程等），低于 21 无法编译 |
 | Maven | 3.8+ | 构建后端 | 无 Maven 也可用仓库自带的 `mvnw` / `mvnw.cmd`（自动下载） |
-| Node.js | 18+ | 构建 / 运行前端 | 含 npm |
+| Node.js | 18+ | 构建 / 运行前端 | 含 npm（Vite 6 要求 Node 18/20/22+） |
 | MySQL | 8.x | 业务数据 | 库名默认 `seuknowledge`，**启动时自动创建**；表结构由 JPA 自动维护，无需手工建表 |
 | Elasticsearch | 8.x | chunk 向量与混合检索 | **启动时自动创建 `kb_chunk` 索引**（默认 1024 维）；需安装中文分词插件，见下文 |
 | Redis | 7.x | 登录态 / 缓存 / 任务进度 | **可选**——未启动时应用自动降级直连 DB，功能不受影响（fail-open） |
+| MinIO | 任意近期版本 | 原始文件对象存储 | **可选但需注意**：`KB_STORAGE_TYPE` 默认是 `minio`，**未启动 MinIO 又不改配置时上传文档会失败**；本机调试建议设 `KB_STORAGE_TYPE=local` 改用磁盘 |
 
 > Elasticsearch 中文分词插件（必装，版本必须与 ES 完全一致，装后重启 ES）：
 >
@@ -75,9 +76,13 @@ cd seuknowledge
 |---|---|---|
 | `SERVER_PORT` | 18080 | 后端端口 |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | 127.0.0.1 / 6379 / 空 | Redis 连接 |
-| `LLAMA_CLOUD_API_KEY` | 空 | LlamaParse API Key（HTML/PDF/DOCX 解析用） |
+| `KB_STORAGE_TYPE` | minio | 文件存储后端：`minio` 或 `local`；选 `local` 时文件落到 `KB_FILE_STORAGE_PATH`（默认 `./data/files`） |
+| `KB_MINIO_ENDPOINT` | http://localhost:9000 | MinIO 接入地址（`KB_STORAGE_TYPE=minio` 时生效） |
+| `LLAMA_CLOUD_API_KEY` | 空 | LlamaParse API Key（**HTML/DOCX 解析必需**，PDF 用它提质） |
 
-> 其余环境变量（连接池、ES 超时、缓存 TTL、限流、存储后端、分块、线程池、追踪等）见 [application.md](application.md)。
+> 其余环境变量（连接池、ES 超时、缓存 TTL、限流、清洗规则、QA 调优、存储后端、分块、线程池、追踪等）见 [application.md](application.md)。
+>
+> **要让 `.docx` / `.html` 可解析，必须启用 LlamaParse**：这两类**没有本地回退**，需同时设置 `KB_LLAMAPARSE_ENABLED=true` 与 `LLAMA_CLOUD_API_KEY`，否则上传后解析直接报错（`HTML/DOCX 解析需要启用 LlamaParse`）。`.pdf` 未启用时自动回退本地 PDFBox（纯文本、无 OCR）；`.txt` / `.md` / `.pptx` / `.xlsx` / `.xls` 全部本地解析，不需要云端。
 
 ### 3. 启动后端
 
@@ -90,7 +95,9 @@ $env:MYSQL_PASSWORD='xxx'; $env:ES_URIS='http://localhost:9200'; .\mvnw.cmd spri
 ```
 
 - 默认端口 **18080**（可用 `SERVER_PORT` 覆盖）；Swagger UI：`http://localhost:18080/swagger-ui.html`
-- 首次启动自动建表并创建内置管理员账号 `admin / admin123`（可用 `seuknowledge.security.admin-username` / `admin-password` 覆盖；**生产环境请修改默认密码**）
+- **本机不想额外拉起 MinIO**：追加 `KB_STORAGE_TYPE=local`（例如 PowerShell 下 `$env:KB_STORAGE_TYPE='local'`），文件落到 `./data/files`；保持默认 `minio` 则需先启动 MinIO，否则上传文档会直接失败（该后端**不做自动降级**）
+- 首次启动自动建表并创建内置管理员账号 `admin / admin123`（可用 `seuknowledge.security.admin-username` / `admin-password` 覆盖；**仅在账号首次创建时生效，之后改值不会重置已有账号**；生产环境请修改默认密码）
+- 启动时会做基础设施自检（Redis / MySQL / ES，`KB_STORAGE_TYPE=minio` 时含 MinIO）并在日志打印 `[OK]/[FAIL]` 健康表；默认只告警不阻断，可用 `KB_INFRA_FAIL_FAST=true` 改为阻断启动
 - 已有数据库从旧版本升级：见 [application.md](application.md) 的「数据库初始化与升级」
 
 ### 4. 启动前端
@@ -115,3 +122,4 @@ npm run dev
 
 - [application.md](application.md) — 详细配置：环境变量全表、模型服务配置、对象存储布局、数据库升级、日志、测试
 - [DEPLOYMENT.md](DEPLOYMENT.md) — Docker Compose 部署、运维、备份与回滚
+- [ES_TITLE_RECALL_UPGRADE.md](ES_TITLE_RECALL_UPGRADE.md) — 存量 ES 索引的标题召回升级（新版应用启动会自动完成，手工迁移时看这份）

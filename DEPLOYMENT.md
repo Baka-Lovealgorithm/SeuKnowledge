@@ -55,7 +55,7 @@ MYSQL_PASSWORD=a-long-random-database-password
 SEUKNOWLEDGE_SECURITY_ADMIN_PASSWORD=a-long-random-initial-admin-password
 ```
 
-`.env` 含密钥且被 Git 忽略，不能上传。若要让 HTML/PDF/DOCX 使用 LlamaParse，继续设置：
+`.env` 含密钥且被 Git 忽略，不能上传。若要让 HTML/PDF/DOCX 使用 LlamaParse，继续设置（注意：**`.docx` 与 `.html` 只能走 LlamaParse，不开启则上传后解析报错**；`.pdf` 未开启时回退本地 PDFBox）：
 
 ```dotenv
 KB_LLAMAPARSE_ENABLED=true
@@ -88,6 +88,8 @@ docker compose exec backend wget -q -O - http://localhost:18080/actuator/health
 健康端点应返回 `{"status":"UP"}`。接着使用首次启动前配置的管理员账号登录，配置模型服务，上传一份小文档并验证一次知识库问答。
 
 注意：初始管理员密码只在管理员账号首次创建时生效。之后修改 `SEUKNOWLEDGE_SECURITY_ADMIN_PASSWORD` 不会重置已有账号。
+
+**基础设施自检是硬门槛**：`docker-compose.yml` 里后端显式设置了 `KB_INFRA_FAIL_FAST=true`，启动时对 MySQL / ES / Redis（以及启用 `KB_STORAGE_TYPE=minio` 时的 MinIO）逐项探测，任一项不通就**拒绝启动**——这与本地默认的「只告警」不同。症状是 `docker compose ps` 里 backend 反复重启、日志里有 `[FAIL]` 那一行；此时应先修基础设施（或确认依赖服务已 healthy），而不是去关这个开关。
 
 ## 4. 日常运维
 
@@ -170,7 +172,8 @@ docker compose up -d --build backend frontend
 |---|---|
 | `KB_ES_DIMENSIONS` 或向量模型维度 | 新建或重建 `kb_chunk` 索引，再重新向量化全部来源 |
 | ES 分词器、插件或版本 | 构建匹配的 ES 镜像并重新建立索引 |
-| MySQL 表或字段变更 | 上线前使用版本化迁移，长期不能依赖 `ddl-auto=update`。存储后端改造对应 `sql/migrate_v4_minio_storage.sql`（`kb_document` 加 `storage_type` / `object_key`，可空、不回填）；记忆策略改造对应 `sql/migrate_v5_agent_memory_policy.sql`（`kb_agent` 加 `recent_rounds` / `summary_interval_rounds`，可空、不回填，NULL 按默认 3/3 生效；遗留列 `memory_window` 保留不删） |
+| ES Mapping 变更（标题与文档名参与 BM25 召回） | 新版后端每次启动都会检查 `title` / `docName` 的 `text` 分词子字段，缺失则自动追加并回填存量文档（幂等、零 embedding 成本、不重建索引）。若要在**不升级应用**的前提下先做，按 [ES_TITLE_RECALL_UPGRADE.md](ES_TITLE_RECALL_UPGRADE.md) 手工执行；未完成时 BM25 自动退化为只查 `content`，与升级前效果一致、不会报错 |
+| MySQL 表或字段变更 | 上线前使用版本化迁移，长期不能依赖 `ddl-auto=update`。历史脚本：草稿唯一约束 `sql/migrate_v2_unique_draft.sql`；答案评价与自检快照 `sql/migrate_v3_qa_feedback.sql`（`kb_chat_message` 加反馈与快照各四列，可空不回填）；存储后端 `sql/migrate_v4_minio_storage.sql`（`kb_document` 加 `storage_type` / `object_key`，可空、不回填）；Agent 记忆策略 `sql/migrate_v5_agent_memory_policy.sql`（`kb_agent` 加 `recent_rounds` / `summary_interval_rounds`，可空、不回填，NULL 按默认 3/3 生效；遗留列 `memory_window` 保留不删） |
 | 上传文件存储路径 / 存储后端 | `KB_STORAGE_TYPE=local` 时变更前复制 `runtime/data/files`；切换到 `minio` 前先确认 MinIO 数据卷已纳入备份。既有文件不必搬迁——读取按 `kb_document.storage_type` 逐行路由，存量行继续走原路径 |
 | API 或前端路由变更 | 后端与前端必须作为同一测试版本发布 |
 
@@ -183,6 +186,7 @@ docker compose up -d --build backend frontend
 - 使用云平台或 CI 的密钥管理，不要广泛复制生产 `.env` 文件。
 - MySQL 和管理员账号使用不同的强随机密码，首次登录后修改管理员密码。
 - 生产保持 `LOG_LEVEL_LLM=info` 或更严格，因为 DEBUG 日志可能含提示词、回答和知识库内容。
+- 按目标并发调整 Tomcat 连接接入参数：默认 `TOMCAT_ACCEPT_COUNT=500` / `TOMCAT_MAX_CONNECTIONS=1000`（见 [application.md](application.md)）。实测默认 backlog 100 会让高并发连接在 TCP 层被直接拒绝；流式问答等 SSE 长连接较多时需同步调大 `max-connections`。
 - 定期备份 MySQL 与 `runtime/data`，并至少演练一次恢复。
 - 监控磁盘空间、ES 内存、容器重启、后端日志和文档解析失败。
 - 在测试环境构建和验收镜像，再替换生产版本。

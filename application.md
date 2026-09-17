@@ -1,6 +1,6 @@
 # application.md — 配置与运维详解
 
-后端所有配置集中在 `src/main/resources/application.yml`，**全部支持环境变量覆盖**（推荐部署方式，密钥不入库、不入日志）。本文收录常用的环境变量、模型服务配置、对象存储布局、数据库升级、日志与测试说明；完整键清单见 `application.yml` 的 `seuknowledge.*` 段（均带默认值）。
+后端所有配置集中在 `src/main/resources/application.yml`，**全部支持环境变量覆盖**（推荐部署方式，密钥不入库、不入日志）。本文收录完整的环境变量清单（按用途分组）、模型服务配置、对象存储布局、数据库升级、日志与测试说明；键名与默认值以 `application.yml` 的 `seuknowledge.*` 段为准。
 
 > 启动 / 部署入口见 [README.md](README.md)；Docker Compose 部署见 [DEPLOYMENT.md](DEPLOYMENT.md)；存量 ES 索引的标题召回升级见 [ES_TITLE_RECALL_UPGRADE.md](ES_TITLE_RECALL_UPGRADE.md)。
 
@@ -17,32 +17,69 @@
 | `ES_USERNAME` / `ES_PASSWORD` | 空 | ES 认证（如开启） |
 | `ES_CONN_TIMEOUT` / `ES_SOCKET_TIMEOUT` | 3s / 30s | ES 连接/读超时：一次问答最多 30 次 ES 查询，防止慢节点拖死链路 |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` / `REDIS_DATABASE` | 127.0.0.1 / 6379 / 空 / 0 | Redis 连接（Redis 未启动自动降级直连 DB，fail-open） |
+| `REDIS_TIMEOUT` / `REDIS_POOL_MAX_ACTIVE` | 2s / 16 | Redis 命令超时 / Lettuce 连接池最大活跃连接数 |
 | `LLAMA_CLOUD_API_KEY` | 空 | LlamaParse API Key（敏感，建议环境变量注入） |
 | `LANGFUSE_OTEL_ENDPOINT` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | 空 | Langfuse 追踪（可选，不配置自动 no-op） |
 
-### 功能类（有默认值，按需调整）
+### 运行与安全
 
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
 | `SERVER_PORT` | 18080 | 后端端口 |
+| `KB_VIRTUAL_THREADS` | true | Tomcat 请求线程虚拟线程化（Spring Boot 3.2+；关闭则回退平台线程池） |
+| `KB_INFRA_CHECK` / `KB_INFRA_FAIL_FAST` | true / false | 启动时 Redis / MySQL / ES 连通性自检（`KB_STORAGE_TYPE=minio` 时含 MinIO）/ 任一项失败即阻断启动。**Compose 部署显式设为 `true`**，本地默认只告警 |
 | `KB_TOKEN_TTL` | 604800 | 登录 token 有效期（秒） |
+| `KB_LOGIN_FAIL_MAX` / `KB_LOGIN_FAIL_WINDOW` / `KB_LOGIN_LOCK` | 5 / 900 / 900 | 连续登录失败锁定：触发阈值 / 计数窗口（秒）/ 锁定时长（秒） |
+| `KB_RATE_LIMIT_ENABLED` / `KB_RATE_LIMIT_ASK_PER_MINUTE` | true / 30 | 问答限流开关与每用户每分钟上限（默认开启，Redis 不可用时 fail-open 放行） |
+| `ACCESS_LOG_ENABLED` | true | Tomcat HTTP 访问日志开关（写入 `logs/`） |
+| `TOMCAT_ACCEPT_COUNT` / `TOMCAT_MAX_CONNECTIONS` | 500 / 1000 | Tomcat 连接接入：listen backlog（内核排队连接数）/ 同时处理的连接上限。**默认 backlog 100 是「突发并发连接」的天花板**——实测 500 并发时有 74% 的请求在 TCP 层被直接拒绝（`connectex: actively refused`），登录容量约 200 并发即依赖此值；目标并发继续上升须同步调大（`max-connections` 由 Tomcat 默认 8192 收紧而来，SSE 长连接等场景需一并调大） |
+
+### 缓存
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
 | `KB_CACHE_MEMBER_TTL` / `KB_CACHE_MODEL_TTL` / `KB_CACHE_AGENT_TTL` / `KB_CACHE_KB_TTL` / `KB_CACHE_KB_COUNT_TTL` / `KB_CACHE_KB_LIST_TTL` / `KB_CACHE_SESSION_TTL` / `KB_CACHE_HISTORY_TTL` / `KB_CACHE_TASK_TTL` | 300 / 600 / 600 / 300 / 300 / 60 / 60 / 600 / 86400 | 各类缓存 TTL（秒） |
-| `KB_RATE_LIMIT_ENABLED` / `KB_RATE_LIMIT_ASK_PER_MINUTE` | true / 30 | 问答限流开关与每用户每分钟上限（默认开启） |
+
+### 文件与对象存储
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
 | `KB_STORAGE_TYPE` | minio | 文件存储后端：`minio`（对象存储，默认）或 `local`（本地磁盘）。**纯配置切换、不自动降级**——MinIO 不可用即上传失败，不会静默落本地。该值只决定**新写入**去向；读取按 `kb_document.storage_type` 逐行路由，故切换后端后存量文档仍可读 |
 | `KB_MINIO_ENDPOINT` / `KB_MINIO_ACCESS_KEY` / `KB_MINIO_SECRET_KEY` / `KB_MINIO_BUCKET` | http://localhost:9000 / minioadmin / minioadmin / seu-knowledge | MinIO 接入参数（**默认凭证仅供本地开发，生产必须用环境变量覆盖**） |
 | `KB_MINIO_AUTO_CREATE_BUCKET` | true | bucket 不存在时自动创建（**不启用版本控制**；md 的历史版本由 `kb_document_curate` 承载） |
 | `KB_STORAGE_TEMP_DIR` | 空（`java.io.tmpdir/seuknowledge`） | 对象存储文档的物化临时目录；仅读取 MinIO 文档时使用，用完即删 |
-| `KB_FILE_STORAGE_PATH` | ./data/files | **local 后端**的文档落盘根目录（键 `{wsId}/{kbId}/raw/{ext}/…`）；`KB_STORAGE_TYPE=minio` 时不用于写入，但仍用于读取存量本地行 |
+| `KB_FILE_STORAGE_PATH` | ./data/files | **local 后端**的文档落盘根目录（键 `{wsId}/{kbId}/raw/{ext}/…`）；`KB_STORAGE_TYPE=minio` 时不用于写入，但仍用于读取存量本地行。Compose 中为 `/app/data/files` |
 | `KB_FILE_MAX_SIZE` | 20971520 (20MB) | 单文件大小上限（字节，与 multipart 上限对齐；上传超大文件需调大） |
+| `KB_REQUEST_MAX_SIZE` | 100MB | 单次 HTTP 请求总大小上限（multipart `max-request-size`；一次提交多个文件时需大于 `KB_FILE_MAX_SIZE`） |
+
+### 问答链路
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
 | `KB_QA_MESSAGE_WINDOW` | 20 | 对话记忆**取数上限**（条）。不可调节项、界面不暴露；Agent 的「最近对话轮数」上限 = 此值 / 2 |
 | `KB_QA_RECENT_ROUNDS` / `KB_QA_SUMMARY_INTERVAL_ROUNDS` | 3 / 3 | 近窗轮数 / 摘要压缩间隔轮数（**Agent 未配置时的兜底默认**，日常在 Agent 配置页按知识库调整）。两者须满足 间隔 ≤ 近窗，否则会丢上下文 |
 | `KB_QA_MAX_RETRY` | 2 | 自检重试上限 |
+| `KB_CONCURRENCY_LIMIT` / `KB_CONCURRENCY_TIMEOUT` | 32 / 30 | 问答链路全局并发上限（公平信号量）/ 等待信号量超时秒数（超时拒答「系统繁忙」） |
+| `KB_QA_PARALLEL` | true | 节点内并行开关（`false` 回退串行，供 A/B 对比；两条路径结果应一致） |
+| `KB_QA_EARLY_ABORT` | false | 自检阶段一新增证据无改善时，提前进入证据不足分支（重试次数 ≥ 1 时生效） |
+| `KB_QA_PARTIAL_ANSWER` / `KB_QA_PARTIAL_FLOOR` | false / 0.4 | 低分但无矛盾断言且分数不低于下限时，输出部分回答 + 缺漏声明（灰度默认关）/ 部分回答的最低分 |
+| `KB_QA_VERIFY_JSON_MODE` | false | 自检节点启用 API 级 JSON 输出约束（DashScope / OpenAI 兼容 `response_format`），默认关 |
+| `KB_LLM_TIMEOUT` / `KB_QA_TIMEOUT` | 60 / 200 | 单次 LLM / Embedding 调用超时（秒，`LlmTrace` 层兜底）/ 整条问答链路执行超时（秒，`QaGraphRunner` 兜底） |
+| `KB_RECALL_CHUNK_TOP` / `KB_RECALL_SOURCE_TOP` | 15 / 8 | 每查询每来源进精排的候选条数：文档 chunk / 业务知识与问答对（各） |
 | `KB_RERANK_CHUNK_TOP` / `KB_RERANK_OTHER_TOP` | 6 / 4 | 精排配额（文档 chunk / 业务知识+问答对合并；**重排模型本身在模型配置页配置**） |
 | `KB_RERANK_MAX_DOCS` / `KB_RERANK_MAX_CHARS` / `KB_RERANK_TIMEOUT_MS` | 20 / 1500 / 10000 | 精排单请求上限 / 单条截断 / 超时（超时自动降级 ES 分） |
+
+### 文档解析与向量化
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
 | `KB_CHUNK_SIZE` / `KB_CHUNK_OVERLAP` | 800 / 120 | 文档分块大小（字符）与重叠（标题感知分块） |
 | `KB_VISION_PARSING` | true | PDF 识图总开关（需配置 VISION 类型模型） |
 | `KB_VISION_AUTO` / `KB_VISION_MIN_TEXT` / `KB_VISION_DPI` / `KB_VISION_PARALLEL` | true / 50 / 100 / 3 | 按需识图开关 / 扫描页判定阈值 / 渲染分辨率 / 并行度 |
-| `KB_LLAMAPARSE_ENABLED` / `KB_LLAMAPARSE_TIER` / `KB_LLAMAPARSE_LANGUAGE` | false / cost_effective / ch_sim | LlamaParse 开关 / 档位 / OCR 语言 |
+| `KB_LLAMAPARSE_ENABLED` / `KB_LLAMAPARSE_TIER` / `KB_LLAMAPARSE_LANGUAGE` | false / cost_effective / ch_sim | LlamaParse 开关 / 档位 / OCR 语言。**`.docx` 与 `.html` 只能走 LlamaParse，没有本地回退**——关闭时这两类上传后解析直接报错（`.html` 另有 `KB_HTML_LOCAL_PARSER_ENABLED` 可改走本地）；`.pdf` 关闭时自动回退本地 PDFBox；`.txt` / `.md` / `.pptx` / `.xlsx` / `.xls` 不受它影响 |
+| `KB_LLAMAPARSE_BASE_URL` / `KB_LLAMAPARSE_VERSION` | https://api.cloud.llamaindex.ai / latest | LlamaParse 服务地址 / tier 对应的解析器版本 |
+| `KB_LLAMAPARSE_POLL_INTERVAL` / `KB_LLAMAPARSE_MAX_POLL` | 5 / 900 | 任务轮询间隔（秒）/ 最大等待时间（秒，超时抛错，PDF 回退 PDFBox） |
+| `KB_LLAMAPARSE_INSTRUCTION` | 空 | 自定义解析指令（留空用官方默认） |
 | `KB_HTML_LOCAL_PARSER_ENABLED` | false | 保留的本地 Jsoup HTML 备用解析开关；默认 HTML 使用 LlamaParse，启用后 HTML 不经过 LlamaParse、初洗门与原始 Markdown 导出 |
 | `KB_LLAMAPARSE_OUTPUT_DIR` | ./data/llamaparse | LlamaParse 原始转换 Markdown 导出目录（初洗前，按内容哈希命名；可为空禁用） |
 | `KB_LLAMAPARSE_TAKE_SCREENSHOT` / `KB_LLAMAPARSE_FILL_MISSING_PAGES` | true / true | 整页截图返回 / 缺页 VLM 补全（后者需 VISION 模型） |
@@ -52,8 +89,22 @@
 | `KB_EXTRACT_CONCURRENCY` | 2 | 抽取任务全局并发上限（公平信号量，超限排队等待） |
 | `KB_TRACING_ENABLED` | true | OpenTelemetry 追踪总开关 |
 | `LOG_LEVEL_LLM` | debug | LLM I/O 调试日志级别（含 prompt/输出等敏感内容，生产建议 `info`） |
-| `ACCESS_LOG_ENABLED` | true | Tomcat HTTP 访问日志开关 |
-| `TOMCAT_ACCEPT_COUNT` / `TOMCAT_MAX_CONNECTIONS` | 500 / 1000 | Tomcat 连接接入：listen backlog（内核排队连接数）/ 同时处理的连接上限。**默认 backlog 100 是「突发并发连接」的天花板**——实测 500 并发时有 74% 的请求在 TCP 层被直接拒绝（`connectex: actively refused`），登录容量约 200 并发即依赖此值；目标并发继续上升须同步调大（`max-connections` 由 Tomcat 默认 8192 收紧而来，SSE 长连接等场景需一并调大） |
+
+### 文档清洗规则（P1 初洗门）
+
+纯规则、零模型成本。命中 **AUTO-DROP** 名单的块直接丢弃（不进 ES）；命中 **SUSPECT** 名单的块打标待人工处置（落 MySQL 但不进 ES，精修「保留/编辑」后才补索引）。
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `KB_CLEAN_ENABLED` | true | 清洗总开关 |
+| `KB_CLEAN_HF_RATIO` / `KB_CLEAN_HF_WINDOW` / `KB_CLEAN_HF_MAX_LEN` | 0.8 / 3 / 50 | 页眉页脚判定：归一化行出现率阈值 / 页首页尾窗口行数 / 行最大长度（防正文长段落误判） |
+| `KB_CLEAN_SHORT_MIN` | 10 | A4 超短碎片阈值：长度低于且（无中文 或 无数字） |
+| `KB_CLEAN_NEAR_DUP_SIM` | 0.9 | C2 近重复：3-gram Jaccard 相似度阈值（同文档内保留首个） |
+| `KB_CLEAN_TEMPLATE_RATIO` | 0.6 | C1 页眉页脚模板：归一化文本出现于 chunk 的比例阈值 |
+| `KB_CLEAN_LONG_DUP_MIN` | 80 | C3 跨 chunk 长重复：相同行最小长度 |
+| `KB_CLEAN_FIG_TITLE_MAX` / `KB_CLEAN_FIG_CONTENT_MIN` | 30 / 40 | B1 孤立图题：图题后无内容的最大长度 / E3 保护：图题+内容达到此长度视为视觉内容放行 |
+| `KB_CLEAN_AUTO_DROP` | A1,A2,A5,C1 | AUTO-DROP 名单（命中直接删除、不进 ES），逗号分隔 |
+| `KB_CLEAN_SUSPECT` | A3,A4,B1,B2,B3,C2,C3,P5 | SUSPECT 名单（命中打标待人工），逗号分隔 |
 
 ## 配置模型服务（必配，否则问答/抽取不可用）
 
@@ -114,6 +165,7 @@ mysql -uroot -p < sql/schema.sql
 - **DRAFT 草稿唯一约束**：`sql/migrate_v2_unique_draft.sql`（去重 + 生成列索引，防并发重复草稿）。全新部署的 schema.sql 已含此约束，无需迁移。
 - **答案评价**：`sql/migrate_v3_qa_feedback.sql`，为 `kb_chat_message` 增加反馈四列（`feedback` / `feedback_at` / `feedback_reason` / `feedback_note`）与答案自检快照四列（`verify_score` / `faithfulness_score` / `retry_count` / `missing_info`）。**全部可空、不回填、无索引、无外键**，存量消息与既有功能不受影响；仅 `role='ASSISTANT'` 的行会有值。快照列对存量行是 NULL，因此汇总页的均值类指标只统计含快照的行（页面同时给出该口径的样本数）。
 - **对象存储**：`sql/migrate_v4_minio_storage.sql`，为 `kb_document` 增加 `storage_type` / `object_key` 两列。**`file_path` 保留不动、存量行不回填**——`storage_type` 为 NULL 或 `local` 的行一律按本地磁盘解释，因此升级后无需搬迁任何文件；只有新上传的文档才写入 `KB_STORAGE_TYPE` 指定的后端。
+- **Agent 记忆策略**：`sql/migrate_v5_agent_memory_policy.sql`，为 `kb_agent` 增加 `recent_rounds` / `summary_interval_rounds` 两列（可空、不回填，NULL 按默认 3/3 生效）；遗留列 `memory_window` 保留不删。
 
 ## 日志
 
