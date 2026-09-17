@@ -43,6 +43,9 @@ data/
 logs/
 runtime/
 
+### 外部交付的知识库复现数据包（数据库、ES 快照和文件存储，不推送 GitHub）###
+/reproduction-package/
+
 ### 容器部署本地密钥（仅提交 .env.example）###
 .env
 .env.*

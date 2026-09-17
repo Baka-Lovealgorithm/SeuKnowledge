@@ -41,9 +41,16 @@ Compose 中的 ES 镜像会在构建时安装 `analysis-smartcn`。`ES_VERSION` 
 
 ## 3. 首次部署
 
-在仓库根目录执行：
+在仓库根目录创建本机环境文件：
+
+```bash
+# Linux / macOS
+cp .env.example .env
+nano .env
+```
 
 ```powershell
+# Windows PowerShell
 Copy-Item .env.example .env
 notepad .env
 ```
@@ -66,6 +73,8 @@ LLAMA_CLOUD_API_KEY=your-llamaparse-key
 
 `.env.example` 已预置 `KB_STORAGE_TYPE=local`，Compose 部署请保持该值——本套 Compose 的服务清单里没有 MinIO（详见第 1 节）。该值是**运行期**开关（不像 `VITE_ENABLE_AI_EXTRACTION` 需要重建），改完 `docker compose up -d backend` 重启后端即可生效，但只影响新上传的文档。
 
+Compose 不会把 `.env` 中的任意键自动注入容器；`docker-compose.yml` 必须显式声明。当前已透传 `KB_STORAGE_TYPE`、本地文件路径、MinIO 连接参数、`KB_ES_INDEX` 和 `KB_ES_DIMENSIONS`。因此，`KB_STORAGE_TYPE=local` 会实际传入后端，不会回退到应用默认的 `minio` 并触发 MinIO 自检失败。若日后自行加入 MinIO 服务，请把 `KB_MINIO_ENDPOINT` 改为容器网络地址（通常是 `http://minio:9000`），而不是宿主机的 `localhost`。
+
 构建并启动整套服务：
 
 ```powershell
@@ -73,7 +82,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-首次构建会下载 Maven、Node、Java、Nginx、MySQL、Redis、Elasticsearch 和中文分词插件，耗时数分钟属于正常现象。
+首次构建会下载 Maven、Node、Java、Nginx、MySQL、Redis、Elasticsearch 和中文分词插件，耗时数分钟属于正常现象。后端构建镜像固定为 `maven:3.9.16-eclipse-temurin-21`；不要改回带 `-jammy` 后缀的同版本标签，该标签在 Docker Hub 不存在，会在构建的 metadata 阶段失败。
 
 浏览器访问 `http://localhost:8088`。前端会将 `/api` 代理到后端，浏览器不需要直接访问 `18080`；后端、MySQL、ES 和 Redis 都不会暴露到宿主机。
 
@@ -88,6 +97,69 @@ docker compose exec backend wget -q -O - http://localhost:18080/actuator/health
 健康端点应返回 `{"status":"UP"}`。接着使用首次启动前配置的管理员账号登录，配置模型服务，上传一份小文档并验证一次知识库问答。
 
 注意：初始管理员密码只在管理员账号首次创建时生效。之后修改 `SEUKNOWLEDGE_SECURITY_ADMIN_PASSWORD` 不会重置已有账号。
+
+### 3.1 ZRDDS 复现数据包恢复（可选，已在 Linux Docker Engine 26.1.5 / Compose 2.26.1 验证）
+
+该流程用于恢复已经完成解析、分块和向量化的 ZRDDS 数据，而不是常规空白部署。数据包是外部交付物，应解压至仓库根目录的 `reproduction-package/`；该目录已被 Git 忽略，**不得**随源码推送。恢复只可针对全新的 MySQL、Elasticsearch 卷和 `runtime/` 目录，避免覆盖已有业务数据。
+
+数据包要求 ES 8.19.4 和同版本 `analysis-smartcn`。数据包的代码基线是 `3871adf0dcb88d95dddf5de2df5fecd5563b1e4a`；请使用包含该基线且包含本部署修复的后继提交（例如合并本指南更新后的 `main`），不要直接退回到旧基线，因为旧版 Compose 没有透传 `KB_STORAGE_TYPE`，旧 Dockerfile 也引用了已失效的 Maven 标签。先验证当前代码是该基线的后继，再准备环境文件：
+
+```bash
+git switch main
+git merge-base --is-ancestor 3871adf0dcb88d95dddf5de2df5fecd5563b1e4a HEAD
+cp reproduction-package/.env.example .env
+nano .env
+```
+
+第二条命令没有输出且退出码为 0 即通过；若失败，不要混用这份数据包与当前代码。
+
+至少将 `MYSQL_PASSWORD=CHANGE_ME` 改为新的密码；保持 `ES_VERSION=8.19.4`、`KB_STORAGE_TYPE=local`、`KB_FILE_STORAGE_PATH=/app/data/files`、`KB_LLAMAPARSE_ENABLED=false`、`KB_ES_INDEX=kb_chunk` 和 `KB_ES_DIMENSIONS=1024`。模型 API Key 不包含在数据包中，恢复后需在界面中自行配置。
+
+先启动基础设施，不要启动 `backend`，以免它提前创建空的 `kb_chunk`：
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f reproduction-package/elasticsearch/docker-compose.snapshot.override.yml \
+  up -d mysql elasticsearch redis
+
+docker compose ps
+```
+
+待三个服务健康后，导入 MySQL、复制本地文件，并恢复 ES Snapshot：
+
+```bash
+docker exec -i seuknowledge-mysql-1 sh -lc \
+  'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD"' \
+  < reproduction-package/mysql/seuknowledge_sanitized.sql
+
+mkdir -p runtime/data/files
+cp -a reproduction-package/storage/data/files/. runtime/data/files/
+
+docker exec seuknowledge-elasticsearch-1 curl -fsS -X PUT \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"fs","settings":{"location":"/mnt/repro-snapshot","readonly":true}}' \
+  http://localhost:9200/_snapshot/zrdds_repro_repo
+
+docker exec seuknowledge-elasticsearch-1 curl -fsS -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"indices":"kb_chunk","include_global_state":false}' \
+  'http://localhost:9200/_snapshot/zrdds_repro_repo/zrdds_kb4_kb6_20260917/_restore?wait_for_completion=true'
+```
+
+确认 ES 返回 `"count":9430` 后，启动应用：
+
+```bash
+docker exec seuknowledge-elasticsearch-1 \
+  curl -fsS http://localhost:9200/kb_chunk/_count
+
+docker compose \
+  -f docker-compose.yml \
+  -f reproduction-package/elasticsearch/docker-compose.snapshot.override.yml \
+  up -d backend frontend
+```
+
+恢复成功的最低验证值为：MySQL `1058,6,7878,1552`（KB4/KB6 文档、KB4/KB6 chunk）、ES `kb_chunk` 共 9430 条、`runtime/data/files` 共 2126 个文件。浏览器访问 `http://localhost:8088`，初始账号是 `demo_admin / admin123`；首次登录后应立即修改密码。
 
 **基础设施自检是硬门槛**：`docker-compose.yml` 里后端显式设置了 `KB_INFRA_FAIL_FAST=true`，启动时对 MySQL / ES / Redis（以及启用 `KB_STORAGE_TYPE=minio` 时的 MinIO）逐项探测，任一项不通就**拒绝启动**——这与本地默认的「只告警」不同。症状是 `docker compose ps` 里 backend 反复重启、日志里有 `[FAIL]` 那一行；此时应先修基础设施（或确认依赖服务已 healthy），而不是去关这个开关。
 

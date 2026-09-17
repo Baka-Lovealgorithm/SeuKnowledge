@@ -2,7 +2,7 @@
 
 # Build with a pinned Maven/JDK toolchain so image builds do not depend on
 # Maven Wrapper's download shell or the host Maven installation.
-FROM maven:3.9.16-eclipse-temurin-21-jammy AS build
+FROM maven:3.9.16-eclipse-temurin-21 AS build
 WORKDIR /workspace
 
 COPY pom.xml ./
